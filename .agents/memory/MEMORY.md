@@ -1,0 +1,2 @@
+- [Tauri Linux packaging](tauri-linux-packaging.md) — Nix builds may need pkg-config-discovered zlib linker paths; Debian bundling is more reliable than AppImage in headless environments.
+- [P2P control plane](p2p-control-plane.md) — Keep room state, WebRTC signaling, and media transport separate; protect reconnects from stale sockets.
