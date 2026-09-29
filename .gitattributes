@@ -1,0 +1,1 @@
+artifacts/p2pchat/src-tauri/target/release/deps/libp2pchat_lib.a filter=lfs diff=lfs merge=lfs -text
