@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "P2PChat"
+description = "A private peer-to-peer messenger experience for small groups: create a server, invite friends by link, chat in channels, join voice rooms, and stay connected through automatic host migration and network fallback."
+version = "1.0.0"
+id = "artifacts/p2pchat"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23707
+
+[services.development]
+run = "pnpm --filter @workspace/p2pchat run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/p2pchat", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/p2pchat/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23707"
+BASE_PATH = "/"
