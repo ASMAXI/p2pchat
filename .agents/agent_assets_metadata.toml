@@ -1,0 +1,16 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "kjy_EvCLfSxEtU0xS1N2n"
+uri = "file://artifacts/p2pchat/src-tauri/target/release/bundle/deb/P2PChat_0.1.0_amd64.deb"
+type = "unspecified"
+title = "P2PChat для Linux (amd64)"
+description = "Установочный Debian-пакет desktop-версии P2PChat 0.1.0. Включает текущий local-first интерфейс в Tauri-оболочке."
+logical_id = "3bca021e-1f2f-4d66-82e3-37d13ec9515a"
+content_hash = "sha256:f519db22d1e8db7adab1b9f2076c89202c35819ba8d78abf629504b48052cb2e"
+size = 4154936
+mtime_ms = 1787995307893
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:e8743e93-7bf2-4a35-a568-1a39b47aac0e/3bca021e-1f2f-4d66-82e3-37d13ec9515a/1ca73f38-864a-41e8-9c10-6f6b19d19e83"
+storage_version_token = "1787995394430625"
+content_type = "application/octet-stream"
