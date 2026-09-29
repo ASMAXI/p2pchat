@@ -1,0 +1,24 @@
+modules = ["nodejs-24", "rust-stable", "java-graalvm22.3"]
+
+[deployment]
+router = "application"
+deploymentTarget = "autoscale"
+
+[deployment.postBuild]
+args = ["pnpm", "store", "prune"]
+env = { "CI" = "true" }
+
+[workflows]
+runButton = "Project"
+
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 20000
+
+[nix]
+channel = "stable-25_05"
+packages = ["glib", "gtk3", "webkitgtk_4_1", "libsoup_3", "librsvg", "pkg-config", "zlib", "xdg-utils"]
