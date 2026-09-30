@@ -1,56 +1,37 @@
-# P2PChat
+## P2PChat
 
-Закрытый локальный мессенджер для небольших групп: создать комнату, пригласить друзей ссылкой, общаться в текстовых каналах и подключаться к голосовым комнатам без ручной настройки сети.
+Закрытый мессенджер для небольших групп: desktop-клиент поднимает локальный peer-узел, комната реплицируется между участниками, роль координатора мигрирует при уходе хоста.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `pnpm --filter @workspace/api-server run dev` — optional bootstrap node (порт 5000 по умолчанию)
+- `pnpm --filter @workspace/p2pchat run desktop:dev` — desktop с встроенным узлом
+- `pnpm run test` — unit + критический E2E
+- `pnpm run typecheck` — typecheck workspace
+- `pnpm run build` — typecheck + build
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- pnpm workspaces, TypeScript 5.9
+- Protocol core: `lib/p2p-identity`, `lib/p2p-protocol`, `lib/p2p-room`
+- Bootstrap API: Express + SQLite + WebSocket
+- Desktop: Tauri 2 + embedded Axum peer node
+- UI: React + Vite
 
-## Where things live
+## Architecture
 
-- `artifacts/p2pchat/src/App.tsx` — onboarding, workspace, voice rooms, invite flow и diagnostics
-- `artifacts/p2pchat/src/index.css` — визуальная тема P2PChat
-- `artifacts/p2pchat` — основной web-артефакт с local-first persistence
-- `attached_assets/P2PChat_TZ_v1_1_NAT_Host_Migration_1787950669170.pdf` — исходное ТЗ v1.1
-
-## Architecture decisions
-
-- Первый пользовательский срез работает local-first: данные комнаты, сообщения и голосовое состояние сохраняются в localStorage.
-- Сетевые сложности из ТЗ представлены отдельным diagnostics-сценарием и не перегружают обычный UX.
-- Роуты `/`, `/server` и `/diagnostics` разделяют onboarding, рабочее пространство и диагностику соединения.
-- UI-копирайт и основные состояния следуют русскоязычному пользовательскому сценарию из ТЗ v1.1.
+- Identity: Ed25519, peerId = hash(publicKey)
+- Messages: signed + AES-GCM; relay/bootstrap не видит plaintext
+- Coordinator: временная роль с epoch; миграция детерминирована
+- Invite: `p2pchat://join?room=&token=&key=&api=`
 
 ## Product
 
-- Создание приватного сервера с именем
-- Вход по invite-коду/ссылке и копирование приглашения
-- Текстовые и голосовые каналы
-- Отправка сообщений и создание каналов
-- Join/leave, mute и deafen голосовой комнаты
-- Friendly diagnostics для direct path, sync и host migration
+- Создание комнаты / вход по invite
+- Текст + presence + каналы
+- Голос Phase 2 (WebRTC mesh уже подключен к signaling)
+- Diagnostics без внутренних epoch-ошибок в UX
 
 ## User preferences
 
-- Интерфейс приложения — на русском языке.
-
-## Gotchas
-
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- Интерфейс на русском.

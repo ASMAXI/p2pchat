@@ -38,20 +38,22 @@ import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import {
-  connectRoom,
-  createRoom,
-  getApiOrigin,
+  createLocalRoom,
+  getBootstrapOrigin,
   getPeerId,
-  inviteWithApiOrigin,
   isDesktopShell,
-  joinRoom,
+  isLocalhostOrigin,
+  openRoomSession,
   parseInvite,
-  setApiOrigin,
+  prepareJoin,
+  setBootstrapOrigin,
+  statusLabel,
   VoiceMesh,
-  type RoomMessage as ApiRoomMessage,
   type RoomMember as ApiRoomMember,
   type RoomState as ApiRoomState,
 } from '@/lib/p2p-client';
+import type { RoomSession } from '@workspace/p2p-room';
+import type { SessionStatus } from '@workspace/p2p-room';
 
 type ConnectivityState = 'connected' | 'checking' | 'offline';
 type ChannelType = 'text' | 'voice';
@@ -66,6 +68,7 @@ type Server = {
   inviteToken?: string;
   invite?: string;
   peerId?: string;
+  roomKey?: string;
 };
 type Channel = { id: string; name: string; type: ChannelType; unreadCount: number; members: number };
 type Message = {
@@ -106,16 +109,6 @@ const readStore = <T,>(key: string, fallback: T): T => {
 };
 const writeStore = (key: string, value: unknown) => localStorage.setItem(key, JSON.stringify(value));
 
-const apiMessageToMessage = (message: ApiRoomMessage, peerId: string): Message => ({
-  id: message.id,
-  author: message.author,
-  avatar: initials(message.author),
-  content: message.content,
-  timestamp: new Date(message.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
-  isCurrentUser: message.authorId === peerId,
-  channelId: message.channelId,
-});
-
 const roomStateToClientState = (state: ApiRoomState, peerId: string, invite?: string) => {
   const onlineMembers = state.members.filter((member) => member.online);
   const server: Server = {
@@ -144,7 +137,6 @@ const roomStateToClientState = (state: ApiRoomState, peerId: string, invite?: st
   return {
     server,
     channels: state.channels,
-    messages: state.messages.map((message) => apiMessageToMessage(message, peerId)),
     voiceRooms,
   };
 };
@@ -200,7 +192,7 @@ function Home() {
   const [name, setName] = useState('');
   const [invite, setInvite] = useState('');
   const [displayName, setDisplayName] = useState(() => readStore(PROFILE_NAME_KEY, ''));
-  const [apiOrigin, setApiOriginState] = useState(getApiOrigin);
+  const [apiOrigin, setApiOriginState] = useState(getBootstrapOrigin);
   const [toast, setToast] = useState('');
   const [busy, setBusy] = useState(false);
   const existing = readStore<Server | null>(SERVER_KEY, null);
@@ -208,18 +200,21 @@ function Home() {
   const createServer = async (event: FormEvent) => {
     event.preventDefault();
     const memberName = displayName.trim() || 'Вы';
-    const peerId = getPeerId();
     setBusy(true);
     try {
-      setApiOrigin(apiOrigin);
-      const response = await createRoom({ name: name.trim() || 'Комната без названия', peerId, displayName: memberName });
-      const roomInvite = inviteWithApiOrigin(response.invite ?? '', getApiOrigin());
-      const clientState = roomStateToClientState(response.room, peerId, roomInvite);
-      clientState.server.inviteToken = response.inviteToken;
+      if (apiOrigin.trim()) setBootstrapOrigin(apiOrigin);
+      const created = await createLocalRoom({
+        name: name.trim() || 'Комната без названия',
+        displayName: memberName,
+        bootstrapOrigin: apiOrigin.trim() || undefined,
+      });
+      const clientState = roomStateToClientState(created.state, created.identity.peerId, created.meta.invite);
+      clientState.server.inviteToken = created.meta.inviteToken;
+      clientState.server.roomKey = created.meta.roomKey;
       writeStore(PROFILE_NAME_KEY, memberName);
       writeStore(SERVER_KEY, clientState.server);
       writeStore(CHANNELS_KEY, clientState.channels);
-      writeStore(MESSAGES_KEY, clientState.messages);
+      writeStore(MESSAGES_KEY, []);
       writeStore(VOICE_KEY, clientState.voiceRooms);
       setLocation('/server');
     } catch (error) {
@@ -236,17 +231,34 @@ function Home() {
       setToast('Вставьте полную ссылку приглашения из комнаты');
       return;
     }
-    const peerId = getPeerId();
+    if (parsed.origins.every((origin) => isLocalhostOrigin(origin)) && parsed.origins.length > 0) {
+      setToast('В ссылке только localhost — укажите LAN/публичный адрес или bootstrap ниже.');
+    }
     setBusy(true);
     try {
-      const response = await joinRoom({ invite, displayName: memberName }, parsed.apiOrigin || apiOrigin);
-      const clientState = roomStateToClientState(response.room, peerId, invite.trim());
-      clientState.server.inviteToken = parsed.inviteToken;
+      if (apiOrigin.trim()) setBootstrapOrigin(apiOrigin);
+      const prepared = await prepareJoin({
+        invite,
+        displayName: memberName,
+        bootstrapOrigin: apiOrigin.trim() || undefined,
+      });
       writeStore(PROFILE_NAME_KEY, memberName);
-      writeStore(SERVER_KEY, clientState.server);
-      writeStore(CHANNELS_KEY, clientState.channels);
-      writeStore(MESSAGES_KEY, clientState.messages);
-      writeStore(VOICE_KEY, clientState.voiceRooms);
+      writeStore(SERVER_KEY, {
+        id: prepared.meta.roomId,
+        roomId: prepared.meta.roomId,
+        name: 'Комната',
+        memberCount: 0,
+        role: 'Участник',
+        connectivityState: 'checking',
+        hostName: '…',
+        peerId: prepared.identity.peerId,
+        inviteToken: prepared.meta.inviteToken,
+        invite: prepared.meta.invite,
+        roomKey: prepared.meta.roomKey,
+      } satisfies Server);
+      writeStore(CHANNELS_KEY, []);
+      writeStore(MESSAGES_KEY, []);
+      writeStore(VOICE_KEY, []);
       setLocation('/server');
     } catch (error) {
       setToast(error instanceof Error ? error.message : 'Не удалось войти в комнату');
@@ -291,9 +303,9 @@ function Home() {
                <input id="display-name" className="field-input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Например, Миша" data-testid="input-display-name" />
              </div>
               {isDesktopShell() && <div className="mb-5">
-                <label className="field-label" htmlFor="api-origin">Адрес сервера синхронизации</label>
-                <input id="api-origin" className="field-input" value={apiOrigin} onChange={(event) => setApiOriginState(event.target.value)} placeholder="https://ваш-сервер.example.com" data-testid="input-api-origin" />
-                <p className="mt-2 text-xs leading-5 text-[hsl(var(--muted-foreground))]">Для Windows-клиента нужен опубликованный адрес API. Он попадёт в invite-ссылку для друзей.</p>
+                <label className="field-label" htmlFor="api-origin">Резервный bootstrap (необязательно)</label>
+                <input id="api-origin" className="field-input" value={apiOrigin} onChange={(event) => setApiOriginState(event.target.value)} placeholder="http://192.168.0.10:5000" data-testid="input-api-origin" />
+                <p className="mt-2 text-xs leading-5 text-[hsl(var(--muted-foreground))]">При создании комнаты coordinator запускается на этом компьютере автоматически. Укажите адрес только если подключаетесь через интернет или к чужому узлу.</p>
               </div>}
              {mode === 'create' ? (
               <form onSubmit={createServer} className="animate-rise" data-testid="form-create-server">
@@ -357,6 +369,7 @@ function CreateChannelDialog({ onClose, onCreate }: { onClose: () => void; onCre
 
 function InviteDialog({ server, onClose, onNotify }: { server: Server; onClose: () => void; onNotify: (text: string) => void }) {
   const link = server.invite ?? `p2p.chat/join/room/${server.id.slice(-6).toUpperCase()}`;
+  const isLocal = isLocalhostOrigin(server.invite ?? '');
   const copy = async () => {
     try { await navigator.clipboard.writeText(link); } catch { /* clipboard can be unavailable in local previews */ }
     onNotify('Ссылка скопирована в буфер обмена');
@@ -365,6 +378,10 @@ function InviteDialog({ server, onClose, onNotify }: { server: Server; onClose: 
   return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="dialog-card">
     <div className="mb-6 flex items-start justify-between"><div><div className="font-mono text-[10px] uppercase tracking-[.18em] text-[hsl(var(--muted-foreground))]">Доступ в комнату</div><h3 className="font-display mt-2 text-2xl font-bold tracking-[-.05em]">Позвать своих</h3></div><button className="icon-btn" onClick={onClose} aria-label="Закрыть" data-testid="button-close-invite-dialog"><X size={18} /></button></div>
     <p className="text-sm leading-6 text-[hsl(var(--muted-foreground))]">Отправьте ссылку друзьям — она уже готова. Новые участники появятся в списке сразу после входа.</p>
+    {isLocal && <div className="mt-4 rounded-xl border border-[hsl(var(--accent))]/30 bg-[hsl(var(--accent)/.08)] p-3 text-xs leading-5 text-[hsl(var(--accent))]">
+      <strong>Внимание:</strong> в ссылке только localhost. Друзья в другой сети не подключатся.
+      <div className="mt-2 font-mono text-[10px]">В одной Wi‑Fi приглашение должно содержать LAN-адрес (его подставит desktop-клиент). Между сетями нужен публичный bootstrap или туннель.</div>
+    </div>}
     <div className="mt-5 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.55)] p-3"><div className="font-mono text-[11px] tracking-tight text-[hsl(var(--foreground))]" data-testid="text-invite-link">{link}</div></div>
     <button className="primary-btn mt-5 w-full" onClick={copy} data-testid="button-copy-invite"><Copy size={16} /> Скопировать ссылку</button>
   </div></div>;
@@ -412,9 +429,10 @@ function Workspace() {
   const [muted, setMuted] = useState(false);
   const [deafened, setDeafened] = useState(false);
   const [members, setMembers] = useState<ApiRoomMember[]>([]);
-  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'offline'>('offline');
+  const [connectionStatus, setConnectionStatus] = useState<SessionStatus>('offline');
+  const [isCoordinator, setIsCoordinator] = useState(false);
   const [peerId] = useState(getPeerId);
-  const connectionRef = useRef<ReturnType<typeof connectRoom> | null>(null);
+  const sessionRef = useRef<RoomSession | null>(null);
   const voiceMeshRef = useRef<VoiceMesh | null>(null);
   const voiceChannelRef = useRef<string | null>(null);
   const displayName = readStore(PROFILE_NAME_KEY, 'Вы');
@@ -432,74 +450,94 @@ function Workspace() {
       setConnectionStatus('offline');
       return;
     }
-    const handleConnectionStatus = (status: 'connecting' | 'connected' | 'offline') => {
-      setConnectionStatus(status);
-      writeStore(CONNECTION_KEY, status);
-    };
-    const connection = connectRoom(
-      { roomId: server.roomId, inviteToken: server.inviteToken, peerId, displayName },
-      (event) => {
-        if (event.type === 'state' || event.type === 'presence') {
-          const next = roomStateToClientState(event.state, peerId, server.invite);
+    let closed = false;
+    let closer: (() => void) | null = null;
+    void openRoomSession({
+      onView: (view) => {
+        if (closed) return;
+        setConnectionStatus(view.status);
+        writeStore(CONNECTION_KEY, view.status);
+        setIsCoordinator(view.isCoordinator);
+        if (view.state) {
+          const next = roomStateToClientState(view.state, peerId, server.invite);
           next.server.inviteToken = server.inviteToken;
-          setServer((current) => ({ ...current, ...next.server }));
+          setServer((current) => ({ ...current, ...next.server, invite: current.invite ?? next.server.invite }));
           setChannels(next.channels);
-          setMessages(next.messages);
           setVoiceRooms(next.voiceRooms);
-          setMembers(event.state.members);
-        } else if (event.type === 'message') {
-          const nextMessage = apiMessageToMessage(event.message, peerId);
-          setMessages((current) => current.some((message) => message.id === nextMessage.id) ? current : [...current, nextMessage]);
-        } else if (event.type === 'voice') {
-          if (event.channelId !== voiceChannelRef.current) return;
-          if (event.joined) {
-            void voiceMeshRef.current?.addPeer(event.peerId, peerId < event.peerId).catch((error) => {
-              setToast(error instanceof Error ? error.message : 'Не удалось подключить голосовой канал');
-            });
-          } else {
-            voiceMeshRef.current?.removePeer(event.peerId);
-          }
-        } else if (event.type === 'signal') {
-          void voiceMeshRef.current?.handleSignal(event.fromPeerId, event.data).catch((error) => {
-            setToast(error instanceof Error ? error.message : 'Ошибка голосового signaling');
+          setMembers(view.state.members);
+        }
+        setMessages(
+          view.messages.map((message) => ({
+            id: message.id,
+            author: message.author,
+            avatar: initials(message.author),
+            content: message.text ?? '🔒 не удалось расшифровать',
+            timestamp: new Date(message.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+            isCurrentUser: message.authorId === peerId,
+            channelId: message.channelId,
+          })),
+        );
+      },
+      onError: (message) => {
+        if (!closed) setToast(message);
+      },
+      onVoice: (event) => {
+        if (event.channelId !== voiceChannelRef.current) return;
+        if (event.joined) {
+          void voiceMeshRef.current?.addPeer(event.peerId, peerId < event.peerId).catch((error) => {
+            setToast(error instanceof Error ? error.message : 'Не удалось подключить голосовой канал');
           });
-        } else if (event.type === 'error') {
-          setToast(event.message);
+        } else {
+          voiceMeshRef.current?.removePeer(event.peerId);
         }
       },
-      handleConnectionStatus,
-    );
-    connectionRef.current = connection;
+      onSignal: (event) => {
+        void voiceMeshRef.current?.handleSignal(event.fromPeerId, event.data).catch((error) => {
+          setToast(error instanceof Error ? error.message : 'Ошибка голосового signaling');
+        });
+      },
+    }).then((handles) => {
+      if (closed) {
+        handles?.close();
+        return;
+      }
+      if (!handles) {
+        setConnectionStatus('offline');
+        return;
+      }
+      sessionRef.current = handles.session;
+      closer = handles.close;
+    });
     return () => {
-      connection.close();
-      connectionRef.current = null;
+      closed = true;
+      closer?.();
+      sessionRef.current = null;
       voiceMeshRef.current?.stop();
       voiceMeshRef.current = null;
       voiceChannelRef.current = null;
     };
-  }, [server.roomId, server.inviteToken, peerId, displayName]);
+  }, [server.roomId, server.inviteToken, peerId]);
 
   const sendMessage = () => {
     const content = draft.trim();
     if (!content) return;
-    if (server.roomId && connectionStatus !== 'connected') {
-      setToast('Нет соединения с комнатой — сообщение не отправлено');
+    if (!sessionRef.current) {
+      setToast('Переподключаемся к комнате…');
       return;
     }
-    const messageId = uid('message');
-    const next: Message = { id: messageId, author: displayName, avatar: initials(displayName), content, timestamp: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }), isCurrentUser: true, channelId: selectedId };
-    setMessages((current) => [...current, next]);
-    if (server.roomId) connectionRef.current?.send({ type: 'message', channelId: selectedId, content, messageId });
+    if (!sessionRef.current.sendChat(selectedId, content)) {
+      setToast('Сообщение слишком длинное или нет ключа комнаты');
+      return;
+    }
     setDraft('');
   };
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } };
   const addChannel = (channelName: string, type: ChannelType) => {
     if (server.roomId) {
-      if (connectionStatus !== 'connected') {
+      if (!sessionRef.current?.createChannel(channelName, type)) {
         setToast('Нет соединения с комнатой');
         return;
       }
-      connectionRef.current?.send({ type: 'create_channel', name: channelName, channelType: type });
       setShowChannelDialog(false);
       setToast(`Создаём канал «${channelName}»`);
       return;
@@ -519,12 +557,12 @@ function Workspace() {
       }
       try {
         const mesh = voiceMeshRef.current ?? new VoiceMesh(peerId, (toPeerId, data) => {
-          connectionRef.current?.send({ type: 'signal', toPeerId, data });
+          sessionRef.current?.sendSignal(toPeerId, data);
         });
         await mesh.start();
         voiceMeshRef.current = mesh;
         voiceChannelRef.current = room.id;
-        connectionRef.current?.send({ type: 'voice_join', channelId: room.id });
+        sessionRef.current?.setVoiceChannel(room.id);
       } catch (error) {
         setToast(error instanceof Error ? error.message : 'Не удалось получить доступ к микрофону');
         return;
@@ -536,7 +574,7 @@ function Workspace() {
   };
   const leaveVoice = () => {
     if (!activeVoice) return;
-    if (server.roomId) connectionRef.current?.send({ type: 'voice_leave', channelId: activeVoice });
+    sessionRef.current?.setVoiceChannel(null);
     voiceMeshRef.current?.stop();
     voiceMeshRef.current = null;
     voiceChannelRef.current = null;
@@ -557,19 +595,20 @@ function Workspace() {
       role: name === server.hostName ? 'owner' as const : 'member' as const,
       joinedAt: '',
     }));
+  const connectionHint = statusLabel(connectionStatus);
   return <div className="noise workspace-shell">
     <WorkspaceNav onDiagnostics={() => setLocation('/diagnostics')} />
     <ChannelPane server={server} channels={channels} selectedId={selectedId} onSelect={selectChannel} onAdd={() => setShowChannelDialog(true)} onInvite={() => setShowInviteDialog(true)} />
     <main className="content-pane">
       <header className="topbar">
-        <div className="flex min-w-0 items-center gap-3"><button className="icon-btn mobile-channel-chip" aria-label="Открыть список каналов" data-testid="button-open-channels"><Menu size={18} /></button><div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]">{selectedChannel?.type === 'voice' ? <Volume2 size={16} /> : <Hash size={16} />}</div><div className="min-w-0"><h1 className="truncate font-display text-[16px] font-bold tracking-[-.03em]">{selectedChannel?.name ?? 'общий'}</h1><p className="topbar-subtitle truncate text-[10px] text-[hsl(var(--muted-foreground))]">{selectedChannel?.type === 'voice' ? 'Голосовая комната' : connectionStatus === 'connected' ? 'Синхронизировано между участниками' : connectionStatus === 'connecting' ? 'Подключаемся к комнате…' : 'Нет соединения с комнатой'}</p></div></div>
+        <div className="flex min-w-0 items-center gap-3"><button className="icon-btn mobile-channel-chip" aria-label="Открыть список каналов" data-testid="button-open-channels"><Menu size={18} /></button><div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]">{selectedChannel?.type === 'voice' ? <Volume2 size={16} /> : <Hash size={16} />}</div><div className="min-w-0"><h1 className="truncate font-display text-[16px] font-bold tracking-[-.03em]">{selectedChannel?.name ?? 'общий'}</h1><p className="topbar-subtitle truncate text-[10px] text-[hsl(var(--muted-foreground))]">{selectedChannel?.type === 'voice' ? 'Голосовая комната' : connectionHint}</p></div></div>
         <div className="flex items-center gap-2"><button className="ghost-btn hidden sm:inline-flex" onClick={() => setShowInviteDialog(true)} data-testid="button-top-invite"><UserPlus size={15} /> <span>Пригласить</span></button><button className="icon-btn" onClick={() => setLocation('/diagnostics')} aria-label="Открыть диагностику" data-testid="button-open-diagnostics"><Activity size={17} /></button></div>
       </header>
-       {selectedVoice ? <div className="flex flex-1 flex-col items-center justify-center px-6 text-center"><div className="relative grid h-24 w-24 place-items-center rounded-[28px] bg-[hsl(var(--primary)/.18)] text-[hsl(var(--secondary))]"><Volume2 size={36} /><span className="animate-pulse-dot absolute right-1 top-1 h-3 w-3 rounded-full bg-[hsl(var(--primary))]" /></div><p className="mt-7 font-mono text-[10px] uppercase tracking-[.2em] text-[hsl(var(--muted-foreground))]">Голосовая комната</p><h2 className="font-display mt-2 text-3xl font-bold tracking-[-.06em]">{selectedVoice.name}</h2><p className="mt-3 max-w-sm text-sm leading-6 text-[hsl(var(--muted-foreground))]">Нажмите «войти», чтобы разрешить микрофон и подключиться по WebRTC.</p><div className="mt-7 flex items-center gap-3"><button className="primary-btn" onClick={() => activeVoice === selectedVoice.id ? leaveVoice() : void joinVoice(selectedVoice)} data-testid="button-main-voice-toggle">{activeVoice === selectedVoice.id ? <><X size={16} /> Покинуть комнату</> : <><Radio size={16} /> Войти в комнату</>}</button></div><div className="mt-9 flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]"><Users size={14} /> {selectedVoice.participantCount} сейчас в комнате</div></div> : <div className="chat-area"><div className="message-scroll scrollbar-thin"><MessageList messages={channelMessages} /></div><div className="composer"><div className="composer-inner"><button className="icon-btn shrink-0" onClick={() => setShowChannelDialog(true)} aria-label="Добавить вложение" data-testid="button-add-attachment"><Plus size={18} /></button><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onComposerKeyDown} placeholder={`Написать в #${selectedChannel?.name ?? 'общий'}...`} aria-label="Новое сообщение" data-testid="input-message" rows={1} /><button className="primary-btn !h-9 !w-9 !p-0" onClick={sendMessage} aria-label="Отправить сообщение" data-testid="button-send-message"><Send size={15} /></button></div><div className="mt-2 flex items-center gap-1.5 px-1 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]"><LockKeyhole size={10} /> сообщения синхронизируются в комнате <span className="ml-auto">enter — отправить</span></div></div></div>}
+       {selectedVoice ? <div className="flex flex-1 flex-col items-center justify-center px-6 text-center"><div className="relative grid h-24 w-24 place-items-center rounded-[28px] bg-[hsl(var(--primary)/.18)] text-[hsl(var(--secondary))]"><Volume2 size={36} /><span className="animate-pulse-dot absolute right-1 top-1 h-3 w-3 rounded-full bg-[hsl(var(--primary))]" /></div><p className="mt-7 font-mono text-[10px] uppercase tracking-[.2em] text-[hsl(var(--muted-foreground))]">Голосовая комната</p><h2 className="font-display mt-2 text-3xl font-bold tracking-[-.06em]">{selectedVoice.name}</h2><p className="mt-3 max-w-sm text-sm leading-6 text-[hsl(var(--muted-foreground))]">Нажмите «войти», чтобы разрешить микрофон и подключиться по WebRTC.</p><div className="mt-7 flex items-center gap-3"><button className="primary-btn" onClick={() => activeVoice === selectedVoice.id ? leaveVoice() : void joinVoice(selectedVoice)} data-testid="button-main-voice-toggle">{activeVoice === selectedVoice.id ? <><X size={16} /> Покинуть комнату</> : <><Radio size={16} /> Войти в комнату</>}</button></div><div className="mt-9 flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]"><Users size={14} /> {selectedVoice.participantCount} сейчас в комнате</div></div> : <div className="chat-area"><div className="message-scroll scrollbar-thin"><MessageList messages={channelMessages} /></div><div className="composer"><div className="composer-inner"><button className="icon-btn shrink-0" onClick={() => setShowChannelDialog(true)} aria-label="Добавить вложение" data-testid="button-add-attachment"><Plus size={18} /></button><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onComposerKeyDown} placeholder={`Написать в #${selectedChannel?.name ?? 'общий'}...`} aria-label="Новое сообщение" data-testid="input-message" rows={1} /><button className="primary-btn !h-9 !w-9 !p-0" onClick={sendMessage} aria-label="Отправить сообщение" data-testid="button-send-message"><Send size={15} /></button></div><div className="mt-2 flex items-center gap-1.5 px-1 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]"><LockKeyhole size={10} /> end-to-end · {isCoordinator ? 'вы координатор' : connectionHint} <span className="ml-auto">enter — отправить</span></div></div></div>}
     </main>
     <aside className="member-pane scrollbar-thin">
-      <div className="mb-7"><div className="flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Комната</span><span className="h-2 w-2 rounded-full bg-[hsl(var(--primary))]" /></div><div className="mt-4 flex items-center gap-2"><div className="grid h-8 w-8 place-items-center rounded-lg bg-[hsl(var(--primary))] text-xs font-extrabold text-[hsl(var(--primary-foreground))]">{initials(server.name)}</div><div><div className="text-xs font-bold">{server.name}</div><div className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">хост: {server.hostName}</div></div></div></div>
-      <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={member.id === peerId ? { background: 'hsl(var(--accent))', color: 'hsl(var(--accent-foreground))' } : undefined}>{initials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="text-xs font-semibold">{member.name}</span>{member.name === server.hostName && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">хост</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
+      <div className="mb-7"><div className="flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Комната</span><span className="h-2 w-2 rounded-full bg-[hsl(var(--primary))]" /></div><div className="mt-4 flex items-center gap-2"><div className="grid h-8 w-8 place-items-center rounded-lg bg-[hsl(var(--primary))] text-xs font-extrabold text-[hsl(var(--primary-foreground))]">{initials(server.name)}</div><div><div className="text-xs font-bold">{server.name}</div><div className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">координатор: {server.hostName}</div></div></div></div>
+      <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={member.id === peerId ? { background: 'hsl(var(--accent))', color: 'hsl(var(--accent-foreground))' } : undefined}>{initials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="text-xs font-semibold">{member.name}</span>{member.name === server.hostName && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">координатор</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
       <div><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Голосовые</span><button className="icon-btn" style={{ width: 22, height: 22 }} onClick={() => setShowChannelDialog(true)} aria-label="Создать голосовую комнату" data-testid="button-member-add-voice"><Plus size={14} /></button></div>{voiceRooms.map((room) => <VoiceCard key={room.id} room={room} active={activeVoice === room.id} onJoin={() => void joinVoice(room)} onLeave={leaveVoice} muted={muted} deafened={deafened} onMute={() => setMuted((value) => { const next = !value; voiceMeshRef.current?.setMuted(next); return next; })} onDeafen={() => setDeafened((value) => { const next = !value; voiceMeshRef.current?.setDeafened(next); return next; })} />)}</div>
     </aside>
     {showChannelDialog && <CreateChannelDialog onClose={() => setShowChannelDialog(false)} onCreate={addChannel} />}
@@ -584,13 +623,13 @@ function Diagnostics() {
   const [checking, setChecking] = useState(false);
   const [lastChecked, setLastChecked] = useState('только что');
   const server = readStore<Server>(SERVER_KEY, seedServer);
-  const connectionStatus = readStore<'connecting' | 'connected' | 'offline'>(CONNECTION_KEY, 'offline');
-  const connectionLabel = connectionStatus === 'connected' ? 'Стабильно' : connectionStatus === 'connecting' ? 'Подключение' : 'Офлайн';
+  const connectionStatus = readStore<SessionStatus>(CONNECTION_KEY, 'offline');
+  const connectionLabel = connectionStatus === 'connected' ? 'Стабильно' : connectionStatus === 'reconnecting' ? 'Переподключение' : connectionStatus === 'connecting' ? 'Подключение' : 'Офлайн';
   const diagnostics = [
-    ['Control plane', connectionStatus === 'connected' ? 'Работает' : connectionLabel, 'Комната синхронизирует участников и сообщения через защищённый WebSocket.'],
-    ['Обмен сообщениями', connectionStatus === 'connected' ? 'Работает' : 'Ожидает', connectionStatus === 'connected' ? 'Новые сообщения доходят всем подключённым участникам.' : 'Вернитесь в комнату, чтобы восстановить соединение.'],
-    ['Голосовой signaling', 'Готов', 'События входа и выхода из голосовых комнат передаются через control plane.'],
-    ['Переезд хоста', 'Защищён', 'Если текущий хост уйдёт, backend выберет нового участника автоматически.'],
+    ['Control plane', connectionStatus === 'connected' ? 'Работает' : connectionLabel, 'Участники синхронизируют состояние через peer-узлы; координатор мигрирует при уходе хоста.'],
+    ['Обмен сообщениями', connectionStatus === 'connected' ? 'Работает' : 'Ожидает', connectionStatus === 'connected' ? 'Сообщения подписаны и зашифрованы end-to-end.' : 'Вернитесь в комнату, чтобы восстановить соединение.'],
+    ['Голосовой signaling', 'Готов', 'События входа и выхода из голосовых комнат идут через control plane комнаты.'],
+    ['Переезд координатора', 'Защищён', 'При отключении координатора оставшиеся узлы выбирают преемника по детерминированным правилам.'],
   ];
   const check = () => { setChecking(true); window.setTimeout(() => { setChecking(false); setLastChecked('только что'); }, 1000); };
   return <div className="noise min-h-[100dvh] app-grid" style={{ background: 'hsl(var(--background))' }}>
@@ -600,7 +639,7 @@ function Diagnostics() {
       <section className="mt-12 grid gap-3 sm:grid-cols-3">
          <div className="metric-card animate-rise stagger-1"><div className="flex items-center justify-between"><span className="font-mono text-[9px] uppercase tracking-[.14em] text-[hsl(var(--muted-foreground))]">Соединение</span><Wifi size={16} className="text-[hsl(var(--primary))]" /></div><div className="mt-4 font-display text-2xl font-bold">{connectionLabel}</div><div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">WebSocket control plane</div></div>
         <div className="metric-card animate-rise stagger-2"><div className="flex items-center justify-between"><span className="font-mono text-[9px] uppercase tracking-[.14em] text-[hsl(var(--muted-foreground))]">Задержка</span><Zap size={16} className="text-[hsl(var(--accent))]" /></div><div className="mt-4 font-display text-2xl font-bold">18 <small className="font-sans text-sm font-medium">мс</small></div><div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">до ближайшего участника</div></div>
-         <div className="metric-card animate-rise stagger-3"><div className="flex items-center justify-between"><span className="font-mono text-[9px] uppercase tracking-[.14em] text-[hsl(var(--muted-foreground))]">Роль узла</span><Network size={16} className="text-[hsl(var(--secondary))]" /></div><div className="mt-4 font-display text-2xl font-bold">{server.role ?? 'Участник'}</div><div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">хост: {server.hostName}</div></div>
+         <div className="metric-card animate-rise stagger-3"><div className="flex items-center justify-between"><span className="font-mono text-[9px] uppercase tracking-[.14em] text-[hsl(var(--muted-foreground))]">Роль узла</span><Network size={16} className="text-[hsl(var(--secondary))]" /></div><div className="mt-4 font-display text-2xl font-bold">{server.role ?? 'Участник'}</div><div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">координатор: {server.hostName}</div></div>
       </section>
       <section className="mt-3 overflow-hidden rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] animate-rise stagger-3">
         <div className="flex items-center justify-between border-b border-[hsl(var(--border))] px-5 py-5 sm:px-7"><div><h2 className="font-display text-xl font-bold tracking-[-.04em]">Состояние комнаты</h2><p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Последняя проверка: {lastChecked}</p></div><button className="ghost-btn" onClick={check} disabled={checking} data-testid="button-refresh-diagnostics"><RefreshCw size={15} className={checking ? 'animate-spin' : ''} /> {checking ? 'Проверяем' : 'Проверить снова'}</button></div>
@@ -608,7 +647,7 @@ function Diagnostics() {
            {diagnostics.map(([title, state, description], index) => <div className="flex items-center gap-4 py-5" key={title} data-testid={`diagnostic-row-${index}`}><div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[hsl(var(--primary)/.14)] text-[hsl(var(--secondary))]"><Check size={17} /></div><div className="min-w-0 flex-1"><div className="text-sm font-bold">{title}</div><div className="mt-1 text-xs leading-5 text-[hsl(var(--muted-foreground))]">{description}</div></div><span className="hidden rounded-full bg-[hsl(var(--primary)/.18)] px-2.5 py-1 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--secondary))] sm:block">{state}</span></div>)}
         </div>
         <button className="flex w-full items-center gap-2 border-t border-[hsl(var(--border))] px-5 py-4 text-left text-xs font-bold text-[hsl(var(--muted-foreground))] transition hover:bg-[hsl(var(--muted)/.55)] hover:text-[hsl(var(--foreground))] sm:px-7" onClick={() => setRevealed((value) => !value)} data-testid="button-reveal-diagnostics"><Info size={15} /> {revealed ? 'Скрыть технические детали' : 'Показать технические детали'}<ChevronDown size={15} className={`ml-auto transition ${revealed ? 'rotate-180' : ''}`} /></button>
-         {revealed && <div className="grid gap-3 border-t border-[hsl(var(--border))] bg-[hsl(var(--muted)/.4)] px-5 py-5 font-mono text-[10px] text-[hsl(var(--muted-foreground))] sm:grid-cols-2 sm:px-7 animate-rise"><div>transport <span className="float-right text-[hsl(var(--foreground))]">websocket / server-assisted</span></div><div>discovery <span className="float-right text-[hsl(var(--foreground))]">invite token</span></div><div>encryption <span className="float-right text-[hsl(var(--foreground))]">TLS at deployment</span></div><div>host handoff <span className="float-right text-[hsl(var(--foreground))]">active</span></div></div>}
+         {revealed && <div className="grid gap-3 border-t border-[hsl(var(--border))] bg-[hsl(var(--muted)/.4)] px-5 py-5 font-mono text-[10px] text-[hsl(var(--muted-foreground))] sm:grid-cols-2 sm:px-7 animate-rise"><div>transport <span className="float-right text-[hsl(var(--foreground))]">local coordinator + websocket</span></div><div>discovery <span className="float-right text-[hsl(var(--foreground))]">invite + LAN endpoint</span></div><div>identity <span className="float-right text-[hsl(var(--foreground))]">Ed25519 peerId</span></div><div>coordinator <span className="float-right text-[hsl(var(--foreground))]">epoch migration</span></div></div>}
       </section>
       <div className="mt-7 flex items-start gap-3 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card)/.55)] p-4 text-xs leading-5 text-[hsl(var(--muted-foreground))]"><LockKeyhole size={15} className="mt-0.5 shrink-0 text-[hsl(var(--secondary))]" /><span><strong className="text-[hsl(var(--foreground))]">Это нормально.</strong> В большинстве случаев вам никогда не понадобится этот экран. Мы показали его, чтобы вы знали: комната следит за собой.</span></div>
     </main>

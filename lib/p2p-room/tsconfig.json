@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "lib": ["es2022", "dom"]
+  },
+  "references": [{ "path": "../p2p-protocol" }, { "path": "../p2p-identity" }],
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

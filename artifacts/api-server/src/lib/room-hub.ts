@@ -1,480 +1,520 @@
-import { randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { existsSync, mkdirSync, renameSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { WebSocket, WebSocketServer } from "ws";
+import { randomToken, verifyPeerSignature } from "@workspace/p2p-identity";
+import {
+  compareMessages,
+  joinProofText,
+  LIMITS,
+  messageProofText,
+  PROTOCOL_VERSION,
+  type ClientCommand,
+  type ErrorCode,
+  type OutgoingMessage,
+  type RoomStatus,
+  type ServerEvent,
+  type WireChannel,
+  type WireMember,
+  type WireMessage,
+  type WireRoomState,
+} from "@workspace/p2p-protocol";
+import { electCoordinator } from "@workspace/p2p-room";
 import { logger } from "./logger";
 
-export type ChannelType = "text" | "voice";
-
-export type RoomChannel = {
-  id: string;
-  name: string;
-  type: ChannelType;
-  unreadCount: number;
-  members: number;
-};
-
-export type RoomMessage = {
-  id: string;
-  authorId: string;
-  author: string;
-  content: string;
-  timestamp: string;
-  channelId: string;
-};
-
-export type RoomMember = {
-  id: string;
-  name: string;
-  role: "owner" | "member";
-  joinedAt: string;
-  online: boolean;
-};
-
-export type RoomState = {
-  id: string;
-  name: string;
-  ownerId: string;
-  hostId: string;
-  hostName: string;
-  channels: RoomChannel[];
-  messages: RoomMessage[];
-  members: RoomMember[];
-  voiceParticipants: Record<string, Array<{ id: string; name: string }>>;
-};
-
-type PersistedRoom = Omit<RoomState, "voiceParticipants"> & {
-  inviteToken: string;
-};
-
-type RoomRuntime = Omit<PersistedRoom, "members"> & {
-  members: RoomMember[];
-  clients: Map<string, ClientConnection>;
-  voiceParticipants: Map<string, Map<string, string>>;
-};
+type PersistedRoom = Omit<WireRoomState, "voiceParticipants">;
 
 type ClientConnection = {
   peerId: string;
   displayName: string;
-  roomId: string;
   socket: WebSocket;
+  host: boolean;
+  sentAt: number[];
 };
 
-type ClientEvent =
-  | { type: "join"; roomId: string; inviteToken: string; peerId: string; displayName: string }
-  | { type: "message"; channelId: string; content: string; messageId?: string }
-  | { type: "create_channel"; name: string; channelType: ChannelType }
-  | { type: "voice_join"; channelId: string }
-  | { type: "voice_leave"; channelId: string }
-  | { type: "signal"; toPeerId: string; data: unknown }
-  | { type: "ping" };
+type RoomRuntime = {
+  state: PersistedRoom;
+  inviteToken: string;
+  clients: Map<string, ClientConnection>;
+  voice: Map<string, Map<string, string>>;
+  /** Peer whose own node this is and who currently coordinates the room here. */
+  hostPeerId: string | null;
+};
 
-type ServerEvent =
-  | { type: "state"; state: RoomState }
-  | { type: "message"; message: RoomMessage }
-  | { type: "presence"; state: RoomState }
-  | { type: "voice"; channelId: string; peerId: string; displayName: string; joined: boolean }
-  | { type: "error"; message: string }
-  | { type: "pong" };
+export type RoomHubOptions = {
+  databaseFile?: string;
+  /**
+   * An always-on bootstrap node coordinates every room itself. A peer node (the desktop app
+   * or a test peer) only serves a room while its owner is connected with `host: true`.
+   */
+  alwaysHost?: boolean;
+};
 
-const DEFAULT_DATA_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../data");
-const DATABASE_FILE = resolve(
-  process.env["P2PCHAT_DB_FILE"] ?? resolve(DEFAULT_DATA_DIR, "rooms.sqlite"),
-);
-const LEGACY_JSON_FILES = [
-  resolve(DEFAULT_DATA_DIR, "rooms.json"),
-  resolve(process.cwd(), "artifacts/api-server/data/rooms.json"),
-];
-
-const defaultChannels = (): RoomChannel[] => [
-  { id: "general", name: "общий", type: "text", unreadCount: 0, members: 1 },
-  { id: "lounge", name: "вечерний лоунж", type: "voice", unreadCount: 0, members: 0 },
-];
-
-const now = () => new Date().toISOString();
-const id = (prefix: string) => `${prefix}-${randomUUID()}`;
-
-export function createInvite(roomId: string, inviteToken: string): string {
-  return `p2pchat://join?room=${encodeURIComponent(roomId)}&token=${encodeURIComponent(inviteToken)}`;
+class HubError extends Error {
+  constructor(
+    readonly code: ErrorCode,
+    message: string,
+    readonly redirect?: string[],
+  ) {
+    super(message);
+  }
 }
 
-export function parseInvite(input: string): { roomId: string; inviteToken: string } | null {
-  const value = input.trim();
-  if (!value) return null;
+const DEFAULT_DATABASE_FILE = resolve(dirname(fileURLToPath(import.meta.url)), "../data/rooms.sqlite");
+const now = () => new Date().toISOString();
 
-  try {
-    const url = new URL(value.includes("://") ? value : `https://${value}`);
-    const roomId = url.searchParams.get("room");
-    const inviteToken = url.searchParams.get("token");
-    if (roomId && inviteToken) return { roomId, inviteToken };
-  } catch {
-    // Fall through to the compact path format for pasted legacy links.
-  }
+const isString = (value: unknown, max: number): value is string =>
+  typeof value === "string" && value.length > 0 && value.length <= max;
 
-  const match = value.match(/(?:join[/:])([^/?#]+)(?:[/:]([^/?#]+))?/i);
-  if (!match?.[1] || !match[2]) return null;
-  return { roomId: decodeURIComponent(match[1]), inviteToken: decodeURIComponent(match[2]) };
+function isValidMessage(roomId: string, message: WireMessage): boolean {
+  return (
+    isString(message?.id, 120) &&
+    isString(message.channelId, 120) &&
+    isString(message.content, LIMITS.maxCiphertextLength) &&
+    isString(message.timestamp, 40) &&
+    isString(message.authorPublicKey, 128) &&
+    isString(message.signature, 256) &&
+    verifyPeerSignature(message.authorId, message.authorPublicKey, messageProofText(roomId, message), message.signature)
+  );
 }
 
 export class RoomHub {
   private readonly rooms = new Map<string, RoomRuntime>();
   private readonly database: DatabaseSync;
-  private loaded = false;
+  private readonly alwaysHost: boolean;
+  private readonly sockets = new Set<WebSocket>();
+  private closed = false;
 
-  constructor() {
-    mkdirSync(dirname(DATABASE_FILE), { recursive: true });
-    this.database = new DatabaseSync(DATABASE_FILE);
-    this.database.exec(`
-      PRAGMA journal_mode = WAL;
-      CREATE TABLE IF NOT EXISTS rooms (
-        id TEXT PRIMARY KEY,
-        invite_token TEXT NOT NULL,
-        state_json TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-    `);
+  constructor(options: RoomHubOptions = {}) {
+    const file = resolve(options.databaseFile ?? process.env["P2PCHAT_DB_FILE"] ?? DEFAULT_DATABASE_FILE);
+    this.alwaysHost = options.alwaysHost ?? true;
+    mkdirSync(dirname(file), { recursive: true });
+    this.database = RoomHub.openDatabase(file);
+    this.load();
   }
 
-  async init(): Promise<void> {
-    if (this.loaded) return;
-    this.loaded = true;
-    const rows = this.database
-      .prepare("SELECT id, invite_token, state_json FROM rooms")
-      .all() as Array<{ id: string; invite_token: string; state_json: string }>;
-    if (rows.length === 0) await this.migrateLegacyJson();
-    for (const row of rows) {
-      const state = JSON.parse(row.state_json) as Omit<RoomState, "voiceParticipants">;
-      this.rooms.set(row.id, {
-        ...state,
-        inviteToken: row.invite_token,
-        members: state.members.map((member) => ({ ...member, online: false })),
-        clients: new Map(),
-        voiceParticipants: new Map(),
-      });
+  private static openDatabase(file: string): DatabaseSync {
+    const open = () => {
+      const database = new DatabaseSync(file);
+      database.exec(`
+        PRAGMA journal_mode = WAL;
+        CREATE TABLE IF NOT EXISTS rooms (
+          id TEXT PRIMARY KEY,
+          invite_token TEXT NOT NULL,
+          state_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+      const check = database.prepare("PRAGMA integrity_check").get() as { integrity_check?: string } | undefined;
+      if (check?.integrity_check !== "ok") {
+        database.close();
+        throw new Error("integrity check failed");
+      }
+      return database;
+    };
+    try {
+      return open();
+    } catch (error) {
+      logger.warn({ err: error, file }, "Room cache is damaged, starting with a clean cache");
+      if (existsSync(file)) renameSync(file, `${file}.corrupt-${Date.now()}`);
+      return open();
     }
   }
 
-  private async migrateLegacyJson(): Promise<void> {
-    for (const file of LEGACY_JSON_FILES) {
+  private load(): void {
+    const rows = this.database
+      .prepare("SELECT id, invite_token, state_json FROM rooms")
+      .all() as Array<{ id: string; invite_token: string; state_json: string }>;
+    for (const row of rows) {
       try {
-        const raw = await readFile(file, "utf8");
-        const legacyRooms = JSON.parse(raw) as PersistedRoom[];
-        for (const room of legacyRooms) {
-          this.rooms.set(room.id, {
-            ...room,
-            members: room.members.map((member) => ({ ...member, online: false })),
-            clients: new Map(),
-            voiceParticipants: new Map(),
-          });
-        }
-        if (this.rooms.size > 0) {
-          await this.persist();
-          logger.info({ file, rooms: this.rooms.size }, "Migrated legacy room store to SQLite");
-          return;
-        }
+        const state = JSON.parse(row.state_json) as PersistedRoom;
+        if (!Array.isArray(state.members) || !Array.isArray(state.messages)) continue;
+        state.epoch = state.epoch ?? 0;
+        state.members = state.members.map((member) => ({ ...member, online: false }));
+        this.rooms.set(row.id, {
+          state,
+          inviteToken: row.invite_token,
+          clients: new Map(),
+          voice: new Map(),
+          hostPeerId: null,
+        });
       } catch (error) {
-        const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-        if (code !== "ENOENT") logger.warn({ err: error, file }, "Could not migrate legacy room store");
+        logger.warn({ err: error, roomId: row.id }, "Skipping unreadable room record");
       }
     }
   }
 
-  async createRoom(input: {
-    name: string;
-    ownerId: string;
-    displayName: string;
-  }): Promise<{ state: RoomState; invite: string; inviteToken: string }> {
-    await this.init();
-    const roomId = randomBytes(8).toString("hex");
-    const inviteToken = randomBytes(24).toString("base64url");
-    const owner = {
-      id: input.ownerId,
-      name: input.displayName,
-      role: "owner" as const,
-      joinedAt: now(),
-      online: false,
-    };
-    const room: RoomRuntime = {
-      id: roomId,
-      name: input.name.trim() || "Комната без названия",
-      ownerId: input.ownerId,
-      hostId: input.ownerId,
-      hostName: input.displayName,
-      channels: defaultChannels(),
-      messages: [],
-      members: [owner],
-      inviteToken,
-      clients: new Map(),
-      voiceParticipants: new Map(),
-    };
-    this.rooms.set(room.id, room);
-    await this.persist();
-    return {
-      state: this.state(room),
-      invite: createInvite(room.id, room.inviteToken),
-      inviteToken: room.inviteToken,
-    };
+  /** Kept for API compatibility with the previous entrypoint. */
+  async init(): Promise<void> {}
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const socket of this.sockets) socket.terminate();
+    this.database.close();
   }
 
-  joinByInvite(input: {
-    invite: string;
-    displayName: string;
-  }): { state: RoomState; room: RoomRuntime } {
-    const parsed = parseInvite(input.invite);
-    if (!parsed) throw new Error("Некорректная ссылка приглашения");
-    const room = this.rooms.get(parsed.roomId);
-    if (!room || room.inviteToken !== parsed.inviteToken) {
-      throw new Error("Комната не найдена или ссылка приглашения устарела");
-    }
-    return { state: this.state(room), room };
+  status(roomId: string, inviteToken: string): RoomStatus | null {
+    const room = this.rooms.get(roomId);
+    if (!room || room.inviteToken !== inviteToken) return null;
+    const hosting = this.alwaysHost || Boolean(room.hostPeerId && room.clients.get(room.hostPeerId)?.host);
+    return { roomId, hosting, alwaysHost: this.alwaysHost, epoch: room.state.epoch, hostId: room.state.hostId };
   }
 
   attach(wss: WebSocketServer): void {
     wss.on("connection", (socket) => {
-      const client: Partial<ClientConnection> = { socket };
-      let closed = false;
-
+      this.sockets.add(socket);
+      let bound: { roomId: string; peerId: string } | null = null;
       const send = (event: ServerEvent) => {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event));
       };
 
-      socket.on("message", async (raw) => {
-        let event: ClientEvent;
+      socket.on("message", (raw) => {
+        let command: ClientCommand;
         try {
-          event = JSON.parse(raw.toString()) as ClientEvent;
+          command = JSON.parse(raw.toString()) as ClientCommand;
         } catch {
-          send({ type: "error", message: "Некорректное сообщение протокола" });
+          send({ type: "error", code: "PROTOCOL", message: "Некорректное сообщение протокола" });
           return;
         }
-
         try {
-          if (event.type === "join") {
-            const joined = await this.acceptClient(event, socket);
-            client.peerId = joined.peerId;
-            client.roomId = joined.roomId;
-            client.displayName = joined.displayName;
-            send({ type: "state", state: this.state(this.rooms.get(joined.roomId)!) });
-            this.broadcastPresence(joined.roomId);
+          if (command.type === "join") {
+            if (bound) throw new HubError("PROTOCOL", "Соединение уже привязано к комнате");
+            bound = this.join(command, socket);
             return;
           }
-
-          if (event.type === "ping") {
-            send({ type: "pong" });
+          if (command.type === "ping") {
+            send({ type: "pong", nonce: Number(command.nonce) || 0 });
             return;
           }
-
-          if (!client.roomId || !client.peerId) {
-            send({ type: "error", message: "Сначала подключитесь к комнате" });
-            return;
-          }
-
-          const room = this.rooms.get(client.roomId);
-          if (!room) {
-            send({ type: "error", message: "Комната больше не существует" });
-            return;
-          }
-
-          if (event.type === "signal") {
-            const target = room.clients.get(event.toPeerId);
-            if (target) {
-              target.socket.send(JSON.stringify({
-                type: "signal",
-                fromPeerId: client.peerId,
-                data: event.data,
-              }));
-            }
-            return;
-          }
-
-          if (event.type === "message") {
-            const content = event.content.trim();
-            if (!content || content.length > 4000) {
-              send({ type: "error", message: "Сообщение должно содержать от 1 до 4000 символов" });
-              return;
-            }
-            if (!room.channels.some((channel) => channel.id === event.channelId && channel.type === "text")) {
-              send({ type: "error", message: "Текстовый канал не найден" });
-              return;
-            }
-            const message: RoomMessage = {
-              id: event.messageId?.trim() || id("message"),
-              authorId: client.peerId,
-              author: client.displayName ?? "Участник",
-              content,
-              timestamp: now(),
-              channelId: event.channelId,
-            };
-            room.messages.push(message);
-            await this.persist();
-            this.broadcast(room.id, { type: "message", message });
-            return;
-          }
-
-          if (event.type === "create_channel") {
-            const name = event.name.trim();
-            if (!name || name.length > 50) {
-              send({ type: "error", message: "Название канала должно содержать от 1 до 50 символов" });
-              return;
-            }
-            const channel: RoomChannel = {
-              id: id("channel"),
-              name,
-              type: event.channelType,
-              unreadCount: 0,
-              members: event.channelType === "voice" ? 0 : room.clients.size,
-            };
-            room.channels.push(channel);
-            await this.persist();
-            this.broadcastPresence(room.id);
-            return;
-          }
-
-          if (event.type === "voice_join" || event.type === "voice_leave") {
-            const channel = room.channels.find(
-              (item) => item.id === event.channelId && item.type === "voice",
-            );
-            if (!channel) {
-              send({ type: "error", message: "Голосовой канал не найден" });
-              return;
-            }
-            const participants = room.voiceParticipants.get(event.channelId) ?? new Map<string, string>();
-            if (event.type === "voice_join") {
-              participants.set(client.peerId, client.displayName ?? "Участник");
-              room.voiceParticipants.set(event.channelId, participants);
-              for (const [peerId, name] of participants) {
-                if (peerId !== client.peerId) {
-                  socket.send(JSON.stringify({
-                    type: "voice",
-                    channelId: event.channelId,
-                    peerId,
-                    displayName: name,
-                    joined: true,
-                  }));
-                }
-              }
-            } else {
-              participants.delete(client.peerId);
-              if (participants.size === 0) room.voiceParticipants.delete(event.channelId);
-            }
-            await this.persist();
-            this.broadcast(room.id, {
-              type: "voice",
-              channelId: event.channelId,
-              peerId: client.peerId,
-              displayName: client.displayName ?? "Участник",
-              joined: event.type === "voice_join",
-            });
-            this.broadcastPresence(room.id);
-          }
+          if (!bound) throw new HubError("PROTOCOL", "Сначала подключитесь к комнате");
+          const room = this.rooms.get(bound.roomId);
+          const client = room?.clients.get(bound.peerId);
+          if (!room || !client || client.socket !== socket) return;
+          this.handle(room, client, command);
         } catch (error) {
-          logger.warn({ err: error }, "WebSocket event failed");
-          send({
-            type: "error",
-            message: error instanceof Error ? error.message : "Ошибка обработки события",
-          });
+          if (error instanceof HubError) {
+            send({ type: "error", code: error.code, message: error.message, redirect: error.redirect });
+          } else {
+            logger.warn({ err: error }, "WebSocket event failed");
+            send({ type: "error", code: "INVALID", message: "Ошибка обработки события" });
+          }
         }
       });
 
       socket.on("close", () => {
-        if (closed) return;
-        closed = true;
-        if (client.roomId && client.peerId) {
-          void this.removeClient(client.roomId, client.peerId, client.socket);
-        }
+        this.sockets.delete(socket);
+        if (bound && !this.closed) this.depart(bound.roomId, bound.peerId, socket);
       });
-
-      socket.on("error", (error) => {
-        logger.warn({ err: error }, "WebSocket client error");
-      });
+      socket.on("error", (error) => logger.warn({ err: error }, "WebSocket client error"));
     });
   }
 
-  private async acceptClient(
-    event: Extract<ClientEvent, { type: "join" }>,
-    socket: WebSocket,
-  ): Promise<ClientConnection> {
-    const room = this.rooms.get(event.roomId);
-    if (!room || room.inviteToken !== event.inviteToken) {
-      throw new Error("Комната не найдена или ссылка приглашения устарела");
+  private join(command: Extract<ClientCommand, { type: "join" }>, socket: WebSocket): { roomId: string; peerId: string } {
+    if (command.protocol !== PROTOCOL_VERSION) {
+      throw new HubError("PROTOCOL", "Версия приложения несовместима с комнатой — обновите P2PChat");
     }
-    const displayName = event.displayName.trim().slice(0, 40);
-    if (!event.peerId || !displayName) throw new Error("Необходимо имя участника");
+    const { roomId, peerId, publicKey, inviteToken } = command;
+    if (!isString(roomId, 80) || !isString(peerId, 100) || !isString(publicKey, 128) || !isString(inviteToken, 200)) {
+      throw new HubError("INVALID", "Некорректный запрос входа");
+    }
+    if (Math.abs(Date.now() - Number(command.ts)) > LIMITS.joinClockSkewMs) {
+      throw new HubError("UNAUTHORIZED", "Проверьте системное время на компьютере");
+    }
+    if (!verifyPeerSignature(peerId, publicKey, joinProofText(roomId, peerId, command.ts), command.proof)) {
+      throw new HubError("UNAUTHORIZED", "Не удалось подтвердить личность участника");
+    }
+    const displayName = String(command.displayName ?? "").normalize("NFC").trim().slice(0, 40) || "Участник";
+    const endpoints = Array.isArray(command.endpoints)
+      ? command.endpoints.filter((item) => isString(item, 200)).slice(0, 8)
+      : [];
+    const mayHost = this.alwaysHost || command.host === true;
+    const snapshot = command.snapshot?.id === roomId ? command.snapshot : undefined;
 
-    const previous = room.clients.get(event.peerId);
-    if (previous && previous.socket !== socket) previous.socket.close(1000, "reconnected");
+    let room = this.rooms.get(roomId);
+    if (!room) {
+      if (!mayHost || !snapshot) {
+        throw this.alwaysHost
+          ? new HubError("NOT_FOUND", "Комната не найдена или ссылка приглашения устарела")
+          : new HubError("NOT_COORDINATOR", "Этот участник сейчас не координирует комнату");
+      }
+      room = this.importRoom(snapshot, inviteToken);
+    } else if (room.inviteToken !== inviteToken) {
+      throw new HubError("UNAUTHORIZED", "Ссылка приглашения недействительна");
+    }
 
-    const existing = room.members.find((member) => member.id === event.peerId);
+    if (!this.alwaysHost && !command.host) {
+      const hostClient = room.hostPeerId ? room.clients.get(room.hostPeerId) : undefined;
+      if (!hostClient) {
+        const hint = room.state.members.find((member) => member.id === room!.state.hostId)?.endpoints;
+        throw new HubError("NOT_COORDINATOR", "Этот участник сейчас не координирует комнату", hint);
+      }
+    }
+
+    const merged = snapshot ? this.reconcile(room, snapshot) : [];
+
+    const previous = room.clients.get(peerId);
+    if (previous && previous.socket !== socket) previous.socket.close(4000, "reconnected");
+
+    const existing = room.state.members.find((member) => member.id === peerId);
     if (existing) {
-      existing.name = displayName;
-      existing.online = true;
+      if (existing.publicKey && existing.publicKey !== publicKey) {
+        throw new HubError("UNAUTHORIZED", "Ключ участника не совпадает с сохранённым");
+      }
+      Object.assign(existing, { name: displayName, publicKey, endpoints, online: true });
     } else {
-      room.members.push({
-        id: event.peerId,
+      room.state.members.push({
+        id: peerId,
         name: displayName,
-        role: "member",
+        role: peerId === room.state.ownerId ? "owner" : "member",
         joinedAt: now(),
         online: true,
+        publicKey,
+        endpoints,
       });
     }
-    room.clients.set(event.peerId, {
-      peerId: event.peerId,
-      displayName,
-      roomId: room.id,
-      socket,
-    });
-    if (!room.hostId || !room.clients.has(room.hostId)) this.electHost(room);
-    await this.persist();
-    return room.clients.get(event.peerId)!;
+    room.clients.set(peerId, { peerId, displayName, socket, host: !this.alwaysHost && command.host === true, sentAt: [] });
+
+    if (!this.alwaysHost && command.host) {
+      if (room.hostPeerId !== peerId || room.state.hostId !== peerId) room.state.epoch += 1;
+      room.hostPeerId = peerId;
+      room.state.hostId = peerId;
+      room.state.hostName = displayName;
+    } else if (this.alwaysHost && !room.clients.has(room.state.hostId)) {
+      this.electHost(room);
+    }
+
+    this.persist(room);
+    this.sendTo(socket, { type: "state", state: this.snapshot(room, true) });
+    for (const message of merged) {
+      for (const client of room.clients.values()) {
+        if (client.peerId !== peerId) this.sendTo(client.socket, { type: "message", message });
+      }
+    }
+    this.broadcastPresence(room);
+    return { roomId, peerId };
   }
 
-  private async removeClient(roomId: string, peerId: string, socket?: WebSocket): Promise<void> {
-    const room = this.rooms.get(roomId);
-    if (!room) return;
-    const current = room.clients.get(peerId);
-    if (current && socket && current.socket !== socket) return;
-    room.clients.delete(peerId);
-    const member = room.members.find((item) => item.id === peerId);
-    if (member) member.online = false;
-    for (const [channelId, participants] of room.voiceParticipants) {
-      participants.delete(peerId);
-      if (participants.size === 0) room.voiceParticipants.delete(channelId);
+  private importRoom(snapshot: WireRoomState, inviteToken: string): RoomRuntime {
+    const state: PersistedRoom = {
+      id: snapshot.id,
+      name: String(snapshot.name ?? "").slice(0, 80) || "Комната без названия",
+      ownerId: String(snapshot.ownerId ?? ""),
+      hostId: String(snapshot.hostId ?? ""),
+      hostName: String(snapshot.hostName ?? ""),
+      epoch: Number(snapshot.epoch) || 0,
+      channels: [],
+      messages: [],
+      members: [],
+    };
+    const room: RoomRuntime = { state, inviteToken, clients: new Map(), voice: new Map(), hostPeerId: null };
+    this.rooms.set(state.id, room);
+    return room;
+  }
+
+  /**
+   * Merges a peer's replica: signed messages are unioned, newer epochs win metadata.
+   * Returns the messages this node did not have yet.
+   */
+  private reconcile(room: RoomRuntime, snapshot: WireRoomState): WireMessage[] {
+    const known = new Set(room.state.messages.map((message) => message.id));
+    const added: WireMessage[] = [];
+    for (const message of Array.isArray(snapshot.messages) ? snapshot.messages : []) {
+      if (known.has(message?.id) || !isValidMessage(room.state.id, message)) continue;
+      room.state.messages.push(message);
+      known.add(message.id);
+      added.push(message);
     }
-    if (room.hostId === peerId) this.electHost(room);
-    await this.persist();
-    this.broadcastPresence(room.id);
+    if (added.length > 0) {
+      room.state.messages.sort(compareMessages);
+      room.state.messages = room.state.messages.slice(-LIMITS.maxStoredMessages);
+    }
+    for (const channel of Array.isArray(snapshot.channels) ? snapshot.channels : []) {
+      if (room.state.channels.length >= LIMITS.maxChannels) break;
+      if (!isString(channel?.id, 120) || room.state.channels.some((item) => item.id === channel.id)) continue;
+      if (channel.type !== "text" && channel.type !== "voice") continue;
+      room.state.channels.push({
+        id: channel.id,
+        name: String(channel.name).slice(0, LIMITS.maxChannelNameLength),
+        type: channel.type,
+        unreadCount: 0,
+        members: 0,
+      });
+    }
+    for (const member of Array.isArray(snapshot.members) ? snapshot.members : []) {
+      if (!isString(member?.id, 100) || room.state.members.some((item) => item.id === member.id)) continue;
+      room.state.members.push({
+        id: member.id,
+        name: String(member.name ?? "Участник").slice(0, 40),
+        role: member.role === "owner" || member.role === "admin" ? member.role : "member",
+        joinedAt: String(member.joinedAt ?? now()),
+        online: false,
+        publicKey: member.publicKey,
+        endpoints: Array.isArray(member.endpoints) ? member.endpoints.slice(0, 8) : [],
+      });
+    }
+    if (Number(snapshot.epoch) > room.state.epoch) {
+      room.state.epoch = Number(snapshot.epoch);
+      if (!room.hostPeerId) {
+        room.state.hostId = String(snapshot.hostId);
+        room.state.hostName = String(snapshot.hostName);
+      }
+    }
+    return added;
+  }
+
+  private handle(room: RoomRuntime, client: ClientConnection, command: ClientCommand): void {
+    switch (command.type) {
+      case "message":
+        this.acceptMessage(room, client, command.message);
+        return;
+      case "create_channel": {
+        const name = String(command.name ?? "").normalize("NFC").trim();
+        if (!name || name.length > LIMITS.maxChannelNameLength) {
+          throw new HubError("INVALID", "Название канала должно содержать от 1 до 50 символов");
+        }
+        if (room.state.channels.length >= LIMITS.maxChannels) throw new HubError("INVALID", "Слишком много каналов");
+        const channel: WireChannel = {
+          id: `channel-${randomToken(9)}`,
+          name,
+          type: command.channelType === "voice" ? "voice" : "text",
+          unreadCount: 0,
+          members: 0,
+        };
+        room.state.channels.push(channel);
+        this.persist(room);
+        this.broadcastPresence(room);
+        return;
+      }
+      case "voice_join":
+      case "voice_leave": {
+        const channel = room.state.channels.find((item) => item.id === command.channelId && item.type === "voice");
+        if (!channel) throw new HubError("INVALID", "Голосовой канал не найден");
+        const participants = room.voice.get(channel.id) ?? new Map<string, string>();
+        if (command.type === "voice_join") {
+          for (const [peerId, name] of participants) {
+            if (peerId !== client.peerId) {
+              this.sendTo(client.socket, { type: "voice", channelId: channel.id, peerId, displayName: name, joined: true });
+            }
+          }
+          participants.set(client.peerId, client.displayName);
+          room.voice.set(channel.id, participants);
+        } else {
+          participants.delete(client.peerId);
+          if (participants.size === 0) room.voice.delete(channel.id);
+        }
+        this.broadcast(room, {
+          type: "voice",
+          channelId: channel.id,
+          peerId: client.peerId,
+          displayName: client.displayName,
+          joined: command.type === "voice_join",
+        });
+        this.broadcastPresence(room);
+        return;
+      }
+      case "signal": {
+        const target = room.clients.get(command.toPeerId);
+        if (target) this.sendTo(target.socket, { type: "signal", fromPeerId: client.peerId, data: command.data });
+        return;
+      }
+      case "leave":
+        this.depart(room.state.id, client.peerId, client.socket, command.redirect);
+        client.socket.close(1000, "left");
+        return;
+      default:
+        return;
+    }
+  }
+
+  private acceptMessage(room: RoomRuntime, client: ClientConnection, input: OutgoingMessage): void {
+    const existing = room.state.messages.find((message) => message.id === input?.id);
+    if (existing) {
+      this.sendTo(client.socket, { type: "message", message: existing });
+      return;
+    }
+    const channel = room.state.channels.find((item) => item.id === input?.channelId && item.type === "text");
+    if (!channel) throw new HubError("INVALID", "Текстовый канал не найден");
+    const nowMs = Date.now();
+    client.sentAt = client.sentAt.filter((at) => nowMs - at < LIMITS.rateWindowMs);
+    if (client.sentAt.length >= LIMITS.rateMaxMessages) {
+      throw new HubError("RATE_LIMIT", "Слишком много сообщений подряд — подождите пару секунд");
+    }
+    const member = room.state.members.find((item) => item.id === client.peerId);
+    const message: WireMessage = {
+      id: String(input.id),
+      channelId: channel.id,
+      authorId: client.peerId,
+      author: client.displayName,
+      authorPublicKey: member?.publicKey ?? "",
+      content: String(input.content),
+      timestamp: String(input.timestamp),
+      signature: String(input.signature),
+    };
+    if (!isValidMessage(room.state.id, message)) throw new HubError("INVALID", "Подпись сообщения не прошла проверку");
+    client.sentAt.push(nowMs);
+    room.state.messages.push(message);
+    room.state.messages.sort(compareMessages);
+    if (room.state.messages.length > LIMITS.maxStoredMessages) {
+      room.state.messages = room.state.messages.slice(-LIMITS.maxStoredMessages);
+    }
+    this.persist(room);
+    this.broadcast(room, { type: "message", message });
+  }
+
+  private depart(roomId: string, peerId: string, socket: WebSocket, redirect?: string): void {
+    const room = this.rooms.get(roomId);
+    const current = room?.clients.get(peerId);
+    if (!room || !current || current.socket !== socket) return;
+    room.clients.delete(peerId);
+    for (const [channelId, participants] of room.voice) {
+      participants.delete(peerId);
+      if (participants.size === 0) room.voice.delete(channelId);
+    }
+
+    if (!this.alwaysHost && room.hostPeerId === peerId) {
+      room.hostPeerId = null;
+      const hint = redirect && isString(redirect, 200) ? [redirect] : undefined;
+      for (const client of room.clients.values()) {
+        this.sendTo(client.socket, {
+          type: "error",
+          code: "NOT_COORDINATOR",
+          message: "Координатор комнаты сменился",
+          redirect: hint,
+        });
+        client.socket.close(4001, "coordinator left");
+      }
+      room.clients.clear();
+      room.voice.clear();
+    } else if (this.alwaysHost && room.state.hostId === peerId) {
+      this.electHost(room);
+    }
+    for (const member of room.state.members) member.online = room.clients.has(member.id);
+    this.persist(room);
+    this.broadcastPresence(room);
   }
 
   private electHost(room: RoomRuntime): void {
-    const candidate = [...room.clients.values()]
-      .sort((left, right) => left.peerId.localeCompare(right.peerId))[0];
-    if (candidate) {
-      room.hostId = candidate.peerId;
-      room.hostName = candidate.displayName;
-    } else {
-      room.hostId = room.ownerId;
-      room.hostName = room.members.find((member) => member.id === room.ownerId)?.name ?? "Владелец";
-    }
+    const next = electCoordinator([...room.clients.keys()]);
+    if (!next || next === room.state.hostId) return;
+    room.state.epoch += 1;
+    room.state.hostId = next;
+    room.state.hostName = room.clients.get(next)?.displayName ?? "Координатор";
   }
 
-  private state(room: RoomRuntime): RoomState {
-    const onlineIds = new Set(room.clients.keys());
+  private snapshot(room: RoomRuntime, withMessages: boolean): WireRoomState {
+    const members: WireMember[] = room.state.members.map((member) => ({ ...member, online: room.clients.has(member.id) }));
     return {
-      id: room.id,
-      name: room.name,
-      ownerId: room.ownerId,
-      hostId: room.hostId,
-      hostName: room.hostName,
-      channels: room.channels.map((channel) => ({
+      ...room.state,
+      members,
+      channels: room.state.channels.map((channel) => ({
         ...channel,
-        members: channel.type === "voice" ? channel.members : room.clients.size,
+        members: channel.type === "voice" ? (room.voice.get(channel.id)?.size ?? 0) : room.clients.size,
       })),
-      messages: room.messages.slice(-500),
-      members: room.members.map((member) => ({ ...member, online: onlineIds.has(member.id) })),
+      messages: withMessages ? room.state.messages : [],
       voiceParticipants: Object.fromEntries(
-        [...room.voiceParticipants.entries()].map(([channelId, participants]) => [
+        [...room.voice.entries()].map(([channelId, participants]) => [
           channelId,
           [...participants.entries()].map(([id, name]) => ({ id, name })),
         ]),
@@ -482,20 +522,23 @@ export class RoomHub {
     };
   }
 
-  private broadcast(roomId: string, event: ServerEvent): void {
-    const room = this.rooms.get(roomId);
-    if (!room) return;
+  private sendTo(socket: WebSocket, event: ServerEvent): void {
+    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event));
+  }
+
+  private broadcast(room: RoomRuntime, event: ServerEvent): void {
+    const payload = JSON.stringify(event);
     for (const client of room.clients.values()) {
-      if (client.socket.readyState === WebSocket.OPEN) client.socket.send(JSON.stringify(event));
+      if (client.socket.readyState === WebSocket.OPEN) client.socket.send(payload);
     }
   }
 
-  private broadcastPresence(roomId: string): void {
-    const room = this.rooms.get(roomId);
-    if (room) this.broadcast(roomId, { type: "presence", state: this.state(room) });
+  private broadcastPresence(room: RoomRuntime): void {
+    this.broadcast(room, { type: "presence", state: this.snapshot(room, false) });
   }
 
-  private async persist(): Promise<void> {
+  private persist(room: RoomRuntime): void {
+    if (this.closed) return;
     const statement = this.database.prepare(`
       INSERT INTO rooms (id, invite_token, state_json, updated_at)
       VALUES (?, ?, ?, ?)
@@ -506,14 +549,11 @@ export class RoomHub {
     `);
     this.database.exec("BEGIN");
     try {
-      for (const { clients: _clients, voiceParticipants: _voiceParticipants, ...room } of this.rooms.values()) {
-        statement.run(room.id, room.inviteToken, JSON.stringify(room), now());
-      }
+      statement.run(room.state.id, room.inviteToken, JSON.stringify(room.state), now());
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
-      logger.error({ err: error }, "Could not persist room store");
-      throw error;
+      logger.error({ err: error, roomId: room.state.id }, "Could not persist room");
     }
   }
 }

@@ -1,12 +1,24 @@
-export type ChannelType = "text" | "voice";
+import { generateRoomKey, loadOrCreateIdentity, randomToken, type StoredIdentity } from "@workspace/p2p-identity";
+import {
+  buildInvite,
+  createInitialRoomState,
+  normalizeOrigin,
+  parseInvite as parseProtocolInvite,
+  type ChannelType,
+  type WireMember,
+  type WireRoomState,
+} from "@workspace/p2p-protocol";
+import {
+  RoomSession,
+  type SessionSnapshot,
+  type SessionStatus,
+  type SessionView,
+} from "@workspace/p2p-room";
+import { ensureLocalNode, type LocalNodeInfo } from "@/lib/desktop-bridge";
 
-export type RoomChannel = {
-  id: string;
-  name: string;
-  type: ChannelType;
-  unreadCount: number;
-  members: number;
-};
+export type { ChannelType, WireRoomState as RoomState, WireMember as RoomMember };
+
+export type RoomChannel = WireRoomState["channels"][number];
 
 export type RoomMessage = {
   id: string;
@@ -17,226 +29,253 @@ export type RoomMessage = {
   channelId: string;
 };
 
-export type RoomMember = {
-  id: string;
-  name: string;
-  role: "owner" | "member";
-  joinedAt: string;
-  online: boolean;
+const BOOTSTRAP_KEY = "p2pchat-api-origin";
+const ROOM_META_KEY = "p2pchat-room-meta";
+const SESSION_SNAPSHOT_KEY = "p2pchat-session-snapshot";
+
+export type RoomMeta = {
+  roomId: string;
+  inviteToken: string;
+  roomKey: string;
+  invite: string;
+  bootstrapOrigins: string[];
 };
-
-export type RoomState = {
-  id: string;
-  name: string;
-  ownerId: string;
-  hostId: string;
-  hostName: string;
-  channels: RoomChannel[];
-  messages: RoomMessage[];
-  members: RoomMember[];
-  voiceParticipants: Record<string, Array<{ id: string; name: string }>>;
-};
-
-export type RoomEnvelope = {
-  room: RoomState;
-  invite?: string;
-  inviteToken?: string;
-};
-
-export type RoomSocketEvent =
-  | { type: "state"; state: RoomState }
-  | { type: "message"; message: RoomMessage }
-  | { type: "presence"; state: RoomState }
-  | { type: "voice"; channelId: string; peerId: string; displayName: string; joined: boolean }
-  | { type: "signal"; fromPeerId: string; data: unknown }
-  | { type: "error"; message: string }
-  | { type: "pong" };
-
-export type RoomSocketCommand =
-  | {
-      type: "join";
-      roomId: string;
-      inviteToken: string;
-      peerId: string;
-      displayName: string;
-    }
-  | { type: "message"; channelId: string; content: string; messageId?: string }
-  | { type: "create_channel"; name: string; channelType: ChannelType }
-  | { type: "voice_join"; channelId: string }
-  | { type: "voice_leave"; channelId: string }
-  | { type: "signal"; toPeerId: string; data: unknown }
-  | { type: "ping" };
-
-type SocketStatus = "connecting" | "connected" | "offline";
-
-const API_ORIGIN_KEY = "p2pchat-api-origin";
-const PEER_ID_KEY = "p2pchat-peer-id";
-
-function normalizeApiOrigin(origin: string): string {
-  return origin.trim().replace(/\/api\/?$/, "").replace(/\/$/, "");
-}
 
 export function isDesktopShell(): boolean {
   return "__TAURI_INTERNALS__" in window || window.location.hostname.endsWith("tauri.localhost");
 }
 
-export function getApiOrigin(): string {
-  const configured = window.localStorage.getItem(API_ORIGIN_KEY)?.trim();
-  if (configured) return normalizeApiOrigin(configured);
+export function getPeerId(): string {
+  return loadOrCreateIdentity("Участник").peerId;
+}
+
+export function getBootstrapOrigin(): string {
+  const configured = window.localStorage.getItem(BOOTSTRAP_KEY)?.trim();
+  if (configured) return normalizeOrigin(configured);
   if (!isDesktopShell() && (window.location.protocol === "http:" || window.location.protocol === "https:")) {
     return window.location.origin;
   }
   return "";
 }
 
-export function setApiOrigin(origin: string): void {
-  const normalized = normalizeApiOrigin(origin);
-  if (normalized) window.localStorage.setItem(API_ORIGIN_KEY, normalized);
-  else window.localStorage.removeItem(API_ORIGIN_KEY);
+export function setBootstrapOrigin(origin: string): void {
+  const normalized = normalizeOrigin(origin);
+  if (normalized) window.localStorage.setItem(BOOTSTRAP_KEY, normalized);
+  else window.localStorage.removeItem(BOOTSTRAP_KEY);
 }
 
-function apiBase(): string {
-  const origin = getApiOrigin();
-  if (origin) return `${origin}/api`;
-  return "";
+/** @deprecated use getBootstrapOrigin */
+export const getApiOrigin = getBootstrapOrigin;
+/** @deprecated use setBootstrapOrigin */
+export const setApiOrigin = setBootstrapOrigin;
+
+export function isLocalhostOrigin(value: string): boolean {
+  try {
+    const origins = parseProtocolInvite(value)?.origins ?? [value];
+    return origins.some((origin) => {
+      const host = new URL(origin).hostname;
+      return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+    });
+  } catch {
+    return /127\.0\.0\.1|localhost/i.test(value);
+  }
 }
 
-function apiRequest(path: string, init: RequestInit): Promise<Response> {
-  const base = apiBase();
-  if (!base) throw new Error("Для desktop-подключения укажите адрес API сервера");
-  return fetch(`${base}${path}`, {
-    ...init,
-    headers: { "content-type": "application/json", ...(init.headers ?? {}) },
-  });
+export function parseInvite(value: string): {
+  roomId: string;
+  inviteToken: string;
+  roomKey?: string;
+  origins: string[];
+  apiOrigin?: string;
+} | null {
+  const parsed = parseProtocolInvite(value);
+  if (!parsed) return null;
+  return {
+    roomId: parsed.roomId,
+    inviteToken: parsed.inviteToken,
+    roomKey: parsed.roomKey,
+    origins: parsed.origins,
+    apiOrigin: parsed.origins[0],
+  };
 }
 
-async function readResponse(response: Response): Promise<RoomEnvelope> {
-  const payload = (await response.json()) as RoomEnvelope & { error?: string };
-  if (!response.ok) throw new Error(payload.error ?? "Сервер не принял запрос");
-  return payload;
+export function saveRoomMeta(meta: RoomMeta): void {
+  window.localStorage.setItem(ROOM_META_KEY, JSON.stringify(meta));
 }
 
-export function getPeerId(): string {
-  const existing = window.localStorage.getItem(PEER_ID_KEY);
-  if (existing) return existing;
-  const value =
-    typeof crypto.randomUUID === "function"
-      ? crypto.randomUUID()
-      : `peer-${Math.random().toString(36).slice(2)}-${Date.now()}`;
-  window.localStorage.setItem(PEER_ID_KEY, value);
-  return value;
+export function loadRoomMeta(): RoomMeta | null {
+  try {
+    const raw = window.localStorage.getItem(ROOM_META_KEY);
+    return raw ? (JSON.parse(raw) as RoomMeta) : null;
+  } catch {
+    return null;
+  }
 }
 
-export function createRoom(input: {
+function saveSnapshot(snapshot: SessionSnapshot): void {
+  window.localStorage.setItem(SESSION_SNAPSHOT_KEY, JSON.stringify(snapshot));
+}
+
+export function loadSnapshot(): SessionSnapshot | null {
+  try {
+    const raw = window.localStorage.getItem(SESSION_SNAPSHOT_KEY);
+    return raw ? (JSON.parse(raw) as SessionSnapshot) : null;
+  } catch {
+    return null;
+  }
+}
+
+export type CreatedRoom = {
+  identity: StoredIdentity;
+  meta: RoomMeta;
+  state: WireRoomState;
+  localNode: LocalNodeInfo | null;
+};
+
+export async function createLocalRoom(input: {
   name: string;
-  peerId: string;
   displayName: string;
-}): Promise<RoomEnvelope> {
-  return apiRequest("/rooms", {
-    method: "POST",
-    body: JSON.stringify(input),
-  }).then(readResponse);
+  bootstrapOrigin?: string;
+}): Promise<CreatedRoom> {
+  const identity = loadOrCreateIdentity(input.displayName);
+  const localNode = await ensureLocalNode();
+  const bootstrap = normalizeOrigin(input.bootstrapOrigin ?? getBootstrapOrigin());
+  if (bootstrap) setBootstrapOrigin(bootstrap);
+  if (!localNode && !bootstrap) {
+    throw new Error(
+      isDesktopShell()
+        ? "Не удалось запустить локальный узел комнаты"
+        : "Укажите адрес bootstrap-узла или откройте приложение на компьютере с desktop-сборкой",
+    );
+  }
+
+  const roomId = randomToken(8);
+  const inviteToken = randomToken(24);
+  const roomKey = generateRoomKey();
+  const endpoints = localNode
+    ? [localNode.origin, ...localNode.lanOrigins].filter(
+        (origin, index, list) => list.indexOf(origin) === index,
+      )
+    : [];
+  const state = createInitialRoomState({
+    roomId,
+    name: input.name,
+    ownerId: identity.peerId,
+    ownerName: identity.displayName,
+    ownerPublicKey: identity.publicKey,
+    endpoints,
+  });
+  const inviteOrigins = [
+    ...(localNode?.lanOrigins ?? []),
+    ...(bootstrap && !isLocalhostOrigin(bootstrap) ? [bootstrap] : []),
+    ...(localNode && (localNode.lanOrigins.length === 0 || !bootstrap) ? [localNode.origin] : []),
+  ].filter((origin, index, list) => list.indexOf(origin) === index);
+  const invite = buildInvite({
+    roomId,
+    inviteToken,
+    roomKey,
+    origins: inviteOrigins.length > 0 ? inviteOrigins : bootstrap ? [bootstrap] : [localNode!.origin],
+  });
+  const meta: RoomMeta = {
+    roomId,
+    inviteToken,
+    roomKey,
+    invite,
+    bootstrapOrigins: bootstrap ? [bootstrap] : [],
+  };
+  saveRoomMeta(meta);
+  saveSnapshot({ state, outbox: [] });
+  return { identity, meta, state, localNode };
 }
 
-export function joinRoom(input: {
+export async function prepareJoin(input: {
   invite: string;
   displayName: string;
-}, apiOrigin?: string): Promise<RoomEnvelope> {
-  if (apiOrigin) setApiOrigin(apiOrigin);
-  return apiRequest("/rooms/join", {
-    method: "POST",
-    body: JSON.stringify(input),
-  }).then(readResponse);
+  bootstrapOrigin?: string;
+}): Promise<{ identity: StoredIdentity; meta: RoomMeta; localNode: LocalNodeInfo | null }> {
+  const parsed = parseInvite(input.invite);
+  if (!parsed) throw new Error("Некорректная ссылка приглашения");
+  if (!parsed.roomKey) throw new Error("В ссылке нет ключа шифрования — попросите новую пригласительную ссылку");
+
+  const identity = loadOrCreateIdentity(input.displayName);
+  const localNode = await ensureLocalNode();
+  const bootstrap = normalizeOrigin(input.bootstrapOrigin ?? "");
+  if (bootstrap) setBootstrapOrigin(bootstrap);
+  const origins = [
+    ...parsed.origins,
+    ...(bootstrap ? [bootstrap] : []),
+    ...(!isDesktopShell() && getBootstrapOrigin() ? [getBootstrapOrigin()] : []),
+  ].filter((origin, index, list) => list.indexOf(origin) === index);
+
+  if (origins.length === 0 && !localNode) {
+    throw new Error("В ссылке нет адреса узла — укажите bootstrap вручную");
+  }
+
+  const meta: RoomMeta = {
+    roomId: parsed.roomId,
+    inviteToken: parsed.inviteToken,
+    roomKey: parsed.roomKey,
+    invite: input.invite.trim(),
+    bootstrapOrigins: origins,
+  };
+  saveRoomMeta(meta);
+  return { identity, meta, localNode };
 }
 
-export function parseInvite(value: string): { roomId: string; inviteToken: string; apiOrigin?: string } | null {
-  const input = value.trim();
-  try {
-    const url = new URL(input.includes("://") ? input : `https://${input}`);
-    const roomId = url.searchParams.get("room");
-    const inviteToken = url.searchParams.get("token");
-    const apiOrigin = url.searchParams.get("api") ?? undefined;
-    if (roomId && inviteToken) return { roomId, inviteToken, apiOrigin };
-  } catch {
-    // Compact legacy links are handled below.
-  }
-  const match = input.match(/(?:join[/:])([^/?#]+)(?:[/:]([^/?#]+))?/i);
-  if (!match?.[1] || !match[2]) return null;
+export type OpenSessionHandles = {
+  session: RoomSession;
+  close: () => void;
+};
+
+export async function openRoomSession(input: {
+  onView: (view: SessionView) => void;
+  onError?: (message: string) => void;
+  onVoice?: (event: { channelId: string; peerId: string; displayName: string; joined: boolean }) => void;
+  onSignal?: (event: { fromPeerId: string; data: unknown }) => void;
+}): Promise<OpenSessionHandles | null> {
+  const meta = loadRoomMeta();
+  if (!meta) return null;
+  const identity = loadOrCreateIdentity("Участник");
+  const localNode = await ensureLocalNode();
+  const session = new RoomSession({
+    roomId: meta.roomId,
+    inviteToken: meta.inviteToken,
+    roomKey: meta.roomKey,
+    identity,
+    bootstrapOrigins: meta.bootstrapOrigins,
+    localNode: localNode
+      ? {
+          origin: localNode.origin,
+          endpoints: [localNode.origin, ...localNode.lanOrigins].filter(
+            (origin, index, list) => list.indexOf(origin) === index,
+          ),
+        }
+      : null,
+    initial: loadSnapshot(),
+    onView: input.onView,
+    onPersist: saveSnapshot,
+    onError: input.onError,
+    onVoice: input.onVoice,
+    onSignal: input.onSignal,
+  });
+  session.start();
   return {
-    roomId: decodeURIComponent(match[1]),
-    inviteToken: decodeURIComponent(match[2]),
+    session,
+    close: () => session.stop(),
   };
 }
 
-export function inviteWithApiOrigin(invite: string, apiOrigin: string): string {
-  if (!apiOrigin) return invite;
-  try {
-    const url = new URL(invite);
-    url.searchParams.set("api", normalizeApiOrigin(apiOrigin));
-    return url.toString();
-  } catch {
-    return invite;
+export function statusLabel(status: SessionStatus): string {
+  switch (status) {
+    case "connected":
+      return "Синхронизировано между участниками";
+    case "connecting":
+      return "Подключаемся к комнате…";
+    case "reconnecting":
+      return "Переподключаемся к комнате…";
+    default:
+      return "Нет соединения с комнатой";
   }
-}
-
-export function connectRoom(
-  input: {
-    roomId: string;
-    inviteToken: string;
-    peerId: string;
-    displayName: string;
-  },
-  onEvent: (event: RoomSocketEvent) => void,
-  onStatus: (status: SocketStatus) => void,
-): { send: (command: RoomSocketCommand) => void; close: () => void } {
-  const base = apiBase();
-  if (!base) {
-    onStatus("offline");
-    return { send: () => undefined, close: () => undefined };
-  }
-
-  const wsBase = base.replace(/^http/, "ws");
-  let socket: WebSocket | null = null;
-  let reconnectTimer: number | undefined;
-  let closed = false;
-
-  const open = () => {
-    if (closed) return;
-    onStatus("connecting");
-    socket = new WebSocket(`${wsBase}/ws`);
-    socket.onopen = () => {
-      onStatus("connected");
-      socket?.send(JSON.stringify({ type: "join", ...input }));
-    };
-    socket.onmessage = (event) => {
-      try {
-        onEvent(JSON.parse(event.data as string) as RoomSocketEvent);
-      } catch {
-        onEvent({ type: "error", message: "Получено некорректное событие сервера" });
-      }
-    };
-    socket.onerror = () => onStatus("offline");
-    socket.onclose = () => {
-      socket = null;
-      onStatus("offline");
-      if (!closed) reconnectTimer = window.setTimeout(open, 1800);
-    };
-  };
-
-  open();
-
-  return {
-    send: (command) => {
-      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(command));
-      else onEvent({ type: "error", message: "Нет соединения с комнатой" });
-    },
-    close: () => {
-      closed = true;
-      if (reconnectTimer) window.clearTimeout(reconnectTimer);
-      socket?.close();
-      socket = null;
-    },
-  };
 }
 
 type VoiceSignal =

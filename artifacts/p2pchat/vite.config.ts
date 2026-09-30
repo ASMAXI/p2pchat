@@ -59,6 +59,16 @@ export default defineConfig({
     allowedHosts: true,
     fs: {
       strict: true,
+      // Cargo locks build scripts under target/ while compiling; watching them
+      // crashes Vite on Windows with EBUSY and kills Tauri's beforeDevCommand.
+      deny: ['**/src-tauri/target/**'],
+    },
+    watch: {
+      ignored: [
+        '**/src-tauri/**',
+        '**/node_modules/**',
+        '**/.git/**',
+      ],
     },
   },
   preview: {

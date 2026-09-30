@@ -17,6 +17,15 @@
   "references": [
     {
       "path": "../../lib/api-client-react"
+    },
+    {
+      "path": "../../lib/p2p-identity"
+    },
+    {
+      "path": "../../lib/p2p-protocol"
+    },
+    {
+      "path": "../../lib/p2p-room"
     }
   ]
 }

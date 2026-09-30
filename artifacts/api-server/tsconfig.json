@@ -14,6 +14,15 @@
     },
     {
       "path": "../../lib/api-zod"
+    },
+    {
+      "path": "../../lib/p2p-identity"
+    },
+    {
+      "path": "../../lib/p2p-protocol"
+    },
+    {
+      "path": "../../lib/p2p-room"
     }
   ]
 }
