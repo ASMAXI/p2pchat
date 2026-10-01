@@ -13,30 +13,45 @@ export type TurnConfig = {
 
 export type IceSettings = {
   turn: TurnConfig | null;
+  /** Metered free-tier API key — REST credentials work; static openrelayproject often does not. */
+  meteredApiKey?: string | null;
+  meteredAppName?: string | null;
 };
 
-/** Free Open Relay defaults (best-effort). Override via Settings or VITE_METERED_API_KEY for Pro/stable. */
+export type IceSource = "custom-turn" | "metered-api" | "static-openrelay" | "cache";
+
+let lastIceSource: IceSource = "static-openrelay";
+
+/** Legacy static Open Relay — frequently dead; kept as last-resort fallback only. */
 export const DEFAULT_FREE_TURN: TurnConfig = {
   urls: "turn:openrelay.metered.ca:80",
   username: "openrelayproject",
   credential: "openrelayproject",
 };
 
-const DEFAULT_STUN: RTCIceServer = { urls: "stun:stun.l.google.com:19302" };
-const DEFAULT_STUN_METERED: RTCIceServer = { urls: "stun:stun.relay.metered.ca:80" };
+const DEFAULT_STUN: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun.relay.metered.ca:80" },
+];
 
 export function loadIceSettings(): IceSettings {
   try {
     const raw = window.localStorage.getItem(ICE_KEY);
     if (!raw) return { turn: null };
     const parsed = JSON.parse(raw) as IceSettings;
-    if (!parsed?.turn?.urls) return { turn: null };
+    const turn =
+      parsed?.turn?.urls
+        ? {
+            urls: String(parsed.turn.urls).trim(),
+            username: String(parsed.turn.username ?? "").trim(),
+            credential: String(parsed.turn.credential ?? "").trim(),
+          }
+        : null;
     return {
-      turn: {
-        urls: String(parsed.turn.urls).trim(),
-        username: String(parsed.turn.username ?? "").trim(),
-        credential: String(parsed.turn.credential ?? "").trim(),
-      },
+      turn,
+      meteredApiKey: parsed.meteredApiKey ? String(parsed.meteredApiKey).trim() : null,
+      meteredAppName: parsed.meteredAppName ? String(parsed.meteredAppName).trim() : null,
     };
   } catch {
     return { turn: null };
@@ -45,6 +60,7 @@ export function loadIceSettings(): IceSettings {
 
 export function saveIceSettings(settings: IceSettings): void {
   window.localStorage.setItem(ICE_KEY, JSON.stringify(settings));
+  clearIceCache();
 }
 
 /** Custom TURN from settings wins; otherwise built-in free TURN (path 1). */
@@ -56,6 +72,7 @@ export function effectiveTurn(settings: IceSettings = loadIceSettings()): TurnCo
 }
 
 export function isTurnConfigured(settings: IceSettings = loadIceSettings()): boolean {
+  if (resolveMeteredApiKey(settings)) return true;
   const turn = effectiveTurn(settings);
   return Boolean(turn.urls && turn.username && turn.credential);
 }
@@ -64,30 +81,59 @@ export function isCustomTurnConfigured(settings: IceSettings = loadIceSettings()
   return Boolean(settings.turn?.urls && settings.turn.username && settings.turn.credential);
 }
 
+export function getLastIceSource(): IceSource {
+  return lastIceSource;
+}
+
+function resolveMeteredApiKey(settings: IceSettings = loadIceSettings()): string | undefined {
+  const fromSettings = settings.meteredApiKey?.trim();
+  if (fromSettings) return fromSettings;
+  const fromEnv = (import.meta.env.VITE_METERED_API_KEY as string | undefined)?.trim();
+  return fromEnv || undefined;
+}
+
+function resolveMeteredAppName(settings: IceSettings = loadIceSettings()): string {
+  return (
+    settings.meteredAppName?.trim() ||
+    (import.meta.env.VITE_METERED_APP_NAME as string | undefined)?.trim() ||
+    "p2pchat"
+  );
+}
+
+function staticOpenRelayServers(turn: TurnConfig): RTCIceServer[] {
+  const auth = { username: turn.username, credential: turn.credential };
+  return [
+    ...DEFAULT_STUN,
+    { urls: turn.urls, ...auth },
+    { urls: "turn:openrelay.metered.ca:80?transport=tcp", ...auth },
+    { urls: "turn:openrelay.metered.ca:443", ...auth },
+    { urls: "turn:openrelay.metered.ca:443?transport=tcp", ...auth },
+    { urls: "turns:openrelay.metered.ca:443", ...auth },
+  ];
+}
+
 export function buildIceServers(settings: IceSettings = loadIceSettings()): RTCIceServer[] {
   const cached = readIceCache();
-  if (cached?.length) return cached;
+  if (cached?.length) {
+    lastIceSource = "cache";
+    return cached;
+  }
 
-  const turn = effectiveTurn(settings);
-  return [
-    DEFAULT_STUN,
-    DEFAULT_STUN_METERED,
-    {
-      urls: turn.urls,
-      username: turn.username,
-      credential: turn.credential,
-    },
-    {
-      urls: "turn:openrelay.metered.ca:443",
-      username: turn.username,
-      credential: turn.credential,
-    },
-    {
-      urls: "turn:openrelay.metered.ca:443?transport=tcp",
-      username: turn.username,
-      credential: turn.credential,
-    },
-  ];
+  if (isCustomTurnConfigured(settings)) {
+    lastIceSource = "custom-turn";
+    const turn = effectiveTurn(settings);
+    return [
+      ...DEFAULT_STUN,
+      {
+        urls: turn.urls.split(/[\s,]+/).filter(Boolean),
+        username: turn.username,
+        credential: turn.credential,
+      },
+    ];
+  }
+
+  lastIceSource = "static-openrelay";
+  return staticOpenRelayServers(DEFAULT_FREE_TURN);
 }
 
 type IceCache = { at: number; servers: RTCIceServer[] };
@@ -109,18 +155,30 @@ function writeIceCache(servers: RTCIceServer[]): void {
   window.localStorage.setItem(ICE_CACHE_KEY, JSON.stringify({ at: Date.now(), servers } satisfies IceCache));
 }
 
+export function clearIceCache(): void {
+  window.localStorage.removeItem(ICE_CACHE_KEY);
+}
+
 /**
- * Prefer Metered REST credentials when VITE_METERED_API_KEY is set (future Pro / your account).
- * Falls back to built-in free TURN.
+ * Prefer: custom TURN → Metered REST (settings or VITE_METERED_API_KEY) → static openrelay fallback.
+ * Static openrelayproject credentials are often non-functional; Metered API key is required for
+ * reliable voice across different NATs.
  */
 export async function warmIceServers(): Promise<RTCIceServer[]> {
-  if (isCustomTurnConfigured()) {
-    const servers = buildIceServers();
-    return servers;
+  const settings = loadIceSettings();
+  if (isCustomTurnConfigured(settings)) {
+    lastIceSource = "custom-turn";
+    return buildIceServers(settings);
   }
 
-  const apiKey = import.meta.env.VITE_METERED_API_KEY as string | undefined;
-  const appName = (import.meta.env.VITE_METERED_APP_NAME as string | undefined) || "p2pchat";
+  const cached = readIceCache();
+  if (cached?.length) {
+    lastIceSource = "cache";
+    return cached;
+  }
+
+  const apiKey = resolveMeteredApiKey(settings);
+  const appName = resolveMeteredAppName(settings);
   if (apiKey) {
     try {
       const response = await fetch(
@@ -130,6 +188,7 @@ export async function warmIceServers(): Promise<RTCIceServer[]> {
         const iceServers = (await response.json()) as RTCIceServer[];
         if (Array.isArray(iceServers) && iceServers.length > 0) {
           writeIceCache(iceServers);
+          lastIceSource = "metered-api";
           return iceServers;
         }
       }
@@ -138,8 +197,8 @@ export async function warmIceServers(): Promise<RTCIceServer[]> {
     }
   }
 
-  const servers = buildIceServers();
-  return servers;
+  lastIceSource = "static-openrelay";
+  return staticOpenRelayServers(DEFAULT_FREE_TURN);
 }
 
 export function getPublicUrl(): string {

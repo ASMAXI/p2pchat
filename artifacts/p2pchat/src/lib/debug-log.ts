@@ -126,6 +126,7 @@ export function formatDebugReport(extra?: Record<string, unknown>): string {
     publicUrl: window.localStorage.getItem("p2pchat-public-url"),
     bootstrap: window.localStorage.getItem("p2pchat-api-origin"),
     iceConfigured: Boolean(window.localStorage.getItem("p2pchat-ice-servers")),
+    iceCache: Boolean(window.localStorage.getItem("p2pchat-ice-cache")),
     connection: window.localStorage.getItem("p2pchat-connection-status"),
     ...extra,
   };

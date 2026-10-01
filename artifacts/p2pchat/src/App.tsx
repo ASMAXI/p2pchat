@@ -1004,6 +1004,8 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [turnUrls, setTurnUrls] = useState(ice.turn?.urls ?? '');
   const [turnUser, setTurnUser] = useState(ice.turn?.username ?? '');
   const [turnCred, setTurnCred] = useState(ice.turn?.credential ?? '');
+  const [meteredKey, setMeteredKey] = useState(ice.meteredApiKey ?? '');
+  const [meteredApp, setMeteredApp] = useState(ice.meteredAppName ?? '');
   const [tunnelBusy, setTunnelBusy] = useState(false);
   const [tunnelMsg, setTunnelMsg] = useState('');
   const [saved, setSaved] = useState('');
@@ -1082,7 +1084,10 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
       turn: turnUrls.trim()
         ? { urls: turnUrls.trim(), username: turnUser.trim(), credential: turnCred.trim() }
         : null,
+      meteredApiKey: meteredKey.trim() || null,
+      meteredAppName: meteredApp.trim() || null,
     });
+    void warmIceServers();
     void refreshCoordinatorInvite().then((next) => {
       if (next) {
         writeStore(SERVER_KEY, { ...readStore(SERVER_KEY, seedServer), invite: next.invite });
@@ -1135,7 +1140,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
 
         <form className="mt-6 space-y-5" onSubmit={save} data-testid="form-network-settings">
           <button type="button" className="ghost-btn" onClick={() => setShowAdvanced((v) => !v)} data-testid="button-toggle-advanced">
-            {showAdvanced ? 'Скрыть расширенные' : 'Расширенные (ручной URL / свой TURN)'}
+            {showAdvanced ? 'Скрыть расширенные' : 'Расширенные (TURN / Metered / URL)'}
           </button>
           {showAdvanced && (
             <>
@@ -1148,8 +1153,18 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
                 <input id="bootstrap-url" className="field-input" value={bootstrap} onChange={(e) => setBootstrap(e.target.value)} placeholder="опционально" data-testid="input-bootstrap-url" />
               </div>
               <div className="rounded-xl border border-[hsl(var(--border))] p-4">
-                <div className="text-sm font-bold">Свой TURN (будущий Pro / VPS)</div>
-                <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Пусто = встроенный free Open Relay. Заполните, когда появится свой coturn.</p>
+                <div className="text-sm font-bold">Голос через интернет (TURN)</div>
+                <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+                  В разных Wi‑Fi/сетях без рабочего TURN голос не поднимется (чат при этом работает). Бесплатно: аккаунт на metered.ca → API key ниже. Или свой coturn.
+                </p>
+                <label className="field-label mt-3" htmlFor="metered-key">Metered API key</label>
+                <input id="metered-key" className="field-input" value={meteredKey} onChange={(e) => setMeteredKey(e.target.value)} placeholder="из dashboard Metered" data-testid="input-metered-key" />
+                <label className="field-label mt-3" htmlFor="metered-app">Metered app name</label>
+                <input id="metered-app" className="field-input" value={meteredApp} onChange={(e) => setMeteredApp(e.target.value)} placeholder="имя приложения в Metered" data-testid="input-metered-app" />
+              </div>
+              <div className="rounded-xl border border-[hsl(var(--border))] p-4">
+                <div className="text-sm font-bold">Свой TURN (VPS / coturn)</div>
+                <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Если заполнено — имеет приоритет над Metered.</p>
                 <label className="field-label mt-3" htmlFor="turn-urls">TURN URL</label>
                 <input id="turn-urls" className="field-input" value={turnUrls} onChange={(e) => setTurnUrls(e.target.value)} placeholder="turn:your-vps:3478" data-testid="input-turn-urls" />
                 <label className="field-label mt-3" htmlFor="turn-user">Username</label>

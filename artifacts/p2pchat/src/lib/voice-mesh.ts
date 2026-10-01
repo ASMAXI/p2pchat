@@ -1,4 +1,11 @@
-import { buildIceServers, isTurnConfigured, loadIceSettings, warmIceServers } from "@/lib/network-settings";
+import {
+  buildIceServers,
+  getLastIceSource,
+  isCustomTurnConfigured,
+  isTurnConfigured,
+  loadIceSettings,
+  warmIceServers,
+} from "@/lib/network-settings";
 import { debugLog } from "@/lib/debug-log";
 
 type VoiceSignal =
@@ -23,6 +30,9 @@ type PeerRuntime = {
   pendingIce: RTCIceCandidateInit[];
   remoteReady: boolean;
   failTimer?: number;
+  restartAttempted: boolean;
+  sawRelay: boolean;
+  candidateTypes: Set<string>;
 };
 
 const DEFAULT_MIC: MicProcessing = {
@@ -30,6 +40,20 @@ const DEFAULT_MIC: MicProcessing = {
   noiseSuppression: true,
   autoGainControl: true,
 };
+
+function failHint(runtime: PeerRuntime): string {
+  const source = getLastIceSource();
+  if (!runtime.sawRelay && (source === "static-openrelay" || source === "cache")) {
+    return "TURN не выдал relay — в разных сетях нужен Metered API key или свой TURN в настройках";
+  }
+  if (!runtime.sawRelay) {
+    return "TURN не выдал relay-кандидат — проверьте TURN/Metered в настройках";
+  }
+  if (isCustomTurnConfigured() || source === "metered-api") {
+    return "Не удалось установить голосовой канал (NAT/firewall). Попробуйте снова зайти в канал";
+  }
+  return "Не удалось установить голосовой канал";
+}
 
 export class VoiceMesh {
   private readonly selfId: string;
@@ -149,11 +173,27 @@ export class VoiceMesh {
   async addPeer(peerId: string, initiator: boolean): Promise<void> {
     if (peerId === this.selfId || this.peers.has(peerId)) return;
     if (!this.outboundStream) await this.start();
-    await warmIceServers();
-    debugLog("voice", "addPeer", { peerId, initiator, turn: this.hasTurn() });
+    const iceServers = await warmIceServers();
+    debugLog("voice", "addPeer", {
+      peerId,
+      initiator,
+      turn: this.hasTurn(),
+      iceSource: getLastIceSource(),
+      iceServers: iceServers.length,
+    });
 
-    const connection = new RTCPeerConnection({ iceServers: buildIceServers() });
-    const runtime: PeerRuntime = { connection, pendingIce: [], remoteReady: false };
+    const connection = new RTCPeerConnection({
+      iceServers: iceServers.length > 0 ? iceServers : buildIceServers(),
+      iceCandidatePoolSize: 4,
+    });
+    const runtime: PeerRuntime = {
+      connection,
+      pendingIce: [],
+      remoteReady: false,
+      restartAttempted: false,
+      sawRelay: false,
+      candidateTypes: new Set(),
+    };
     this.peers.set(peerId, runtime);
     this.options.onPeerStatus?.(peerId, "connecting");
 
@@ -162,9 +202,22 @@ export class VoiceMesh {
     }
 
     connection.onicecandidate = (event) => {
-      if (event.candidate) {
-        this.sendSignal(peerId, { kind: "ice", candidate: event.candidate.toJSON() });
-      }
+      if (!event.candidate) return;
+      const type = event.candidate.type || "unknown";
+      runtime.candidateTypes.add(type);
+      if (type === "relay") runtime.sawRelay = true;
+      debugLog("voice", "local ice", { peerId, type, protocol: event.candidate.protocol });
+      this.sendSignal(peerId, { kind: "ice", candidate: event.candidate.toJSON() });
+    };
+
+    connection.onicegatheringstatechange = () => {
+      if (connection.iceGatheringState !== "complete") return;
+      debugLog("voice", "ice gathering complete", {
+        peerId,
+        types: [...runtime.candidateTypes],
+        sawRelay: runtime.sawRelay,
+        iceSource: getLastIceSource(),
+      });
     };
 
     connection.oniceconnectionstatechange = () => {
@@ -206,14 +259,7 @@ export class VoiceMesh {
         return;
       }
       if (state === "failed") {
-        this.options.onPeerStatus?.(
-          peerId,
-          "failed",
-          this.hasTurn()
-            ? "Не удалось установить голосовой канал"
-            : "Прямой путь недоступен — добавьте TURN в настройках",
-        );
-        this.removePeer(peerId);
+        void this.handleFailed(peerId, runtime, initiator);
         return;
       }
       if (state === "closed") {
@@ -226,14 +272,7 @@ export class VoiceMesh {
         if (runtime.failTimer) window.clearTimeout(runtime.failTimer);
         runtime.failTimer = window.setTimeout(() => {
           if (connection.connectionState === "disconnected" || connection.connectionState === "failed") {
-            this.options.onPeerStatus?.(
-              peerId,
-              "failed",
-              this.hasTurn()
-                ? "Голосовое соединение потеряно"
-                : "Нет прямого пути — нужен TURN для интернета",
-            );
-            this.removePeer(peerId);
+            void this.handleFailed(peerId, runtime, initiator);
           }
         }, 8000);
       }
@@ -244,6 +283,27 @@ export class VoiceMesh {
       await connection.setLocalDescription(offer);
       this.sendSignal(peerId, { kind: "offer", description: offer });
     }
+  }
+
+  private async handleFailed(peerId: string, runtime: PeerRuntime, initiator: boolean): Promise<void> {
+    if (!this.peers.has(peerId)) return;
+    if (!runtime.restartAttempted && initiator) {
+      runtime.restartAttempted = true;
+      debugLog("voice", "iceRestart", { peerId, sawRelay: runtime.sawRelay }, "warn");
+      this.options.onPeerStatus?.(peerId, "connecting", "Переподключаем голос…");
+      try {
+        const offer = await runtime.connection.createOffer({ iceRestart: true });
+        await runtime.connection.setLocalDescription(offer);
+        this.sendSignal(peerId, { kind: "offer", description: offer });
+        return;
+      } catch (error) {
+        debugLog("voice", "iceRestart failed", error, "warn");
+      }
+    }
+
+    const detail = failHint(runtime);
+    this.options.onPeerStatus?.(peerId, "failed", detail);
+    this.removePeer(peerId);
   }
 
   async handleSignal(fromPeerId: string, data: unknown): Promise<void> {

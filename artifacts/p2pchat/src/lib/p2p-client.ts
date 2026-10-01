@@ -30,6 +30,7 @@ export { VoiceMesh, type VoiceMeshOptions, type VoicePeerStatus, type MicProcess
 export {
   buildIceServers,
   DEFAULT_FREE_TURN,
+  getLastIceSource,
   getPublicUrl,
   isCustomTurnConfigured,
   isTurnConfigured,
@@ -38,6 +39,7 @@ export {
   setPublicUrl,
   warmIceServers,
   type IceSettings,
+  type IceSource,
   type TurnConfig,
 } from "@/lib/network-settings";
 export { restartPublicTunnel } from "@/lib/desktop-bridge";
