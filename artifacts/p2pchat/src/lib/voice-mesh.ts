@@ -8,6 +8,12 @@ type VoiceSignal =
 
 export type VoicePeerStatus = "connecting" | "connected" | "failed" | "closed";
 
+export type MicProcessing = {
+  echoCancellation: boolean;
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
+};
+
 export type VoiceMeshOptions = {
   onPeerStatus?: (peerId: string, status: VoicePeerStatus, detail?: string) => void;
 };
@@ -19,13 +25,27 @@ type PeerRuntime = {
   failTimer?: number;
 };
 
+const DEFAULT_MIC: MicProcessing = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+};
+
 export class VoiceMesh {
   private readonly selfId: string;
   private readonly sendSignal: (toPeerId: string, data: VoiceSignal) => void;
   private readonly options: VoiceMeshOptions;
-  private stream: MediaStream | null = null;
+  private rawStream: MediaStream | null = null;
+  private outboundStream: MediaStream | null = null;
+  private audioContext: AudioContext | null = null;
+  private micGain: GainNode | null = null;
   private peers = new Map<string, PeerRuntime>();
   private audioElements = new Map<string, HTMLAudioElement>();
+  private peerVolumes = new Map<string, number>();
+  private micVolume = 1;
+  private micProcessing: MicProcessing = { ...DEFAULT_MIC };
+  private muted = false;
+  private deafened = false;
 
   constructor(
     selfId: string,
@@ -41,20 +61,94 @@ export class VoiceMesh {
     return isTurnConfigured(loadIceSettings());
   }
 
+  getMicProcessing(): MicProcessing {
+    return { ...this.micProcessing };
+  }
+
   async start(): Promise<void> {
-    if (this.stream) return;
+    if (this.outboundStream) return;
+    await this.acquireMic();
+  }
+
+  private async acquireMic(): Promise<void> {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("Браузер не поддерживает доступ к микрофону");
     }
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    const nextRaw = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: this.micProcessing.echoCancellation,
+        noiseSuppression: this.micProcessing.noiseSuppression,
+        autoGainControl: this.micProcessing.autoGainControl,
+      },
     });
-    debugLog("voice", "microphone acquired");
+    for (const track of this.rawStream?.getTracks() ?? []) track.stop();
+    this.rawStream = nextRaw;
+
+    if (!this.audioContext) this.audioContext = new AudioContext();
+    if (this.audioContext.state === "suspended") await this.audioContext.resume();
+
+    const source = this.audioContext.createMediaStreamSource(nextRaw);
+    if (!this.micGain) this.micGain = this.audioContext.createGain();
+    this.micGain.gain.value = this.muted ? 0 : this.micVolume;
+    const dest = this.audioContext.createMediaStreamDestination();
+    source.connect(this.micGain);
+    this.micGain.connect(dest);
+    this.outboundStream = dest.stream;
+
+    for (const track of this.outboundStream.getAudioTracks()) {
+      track.enabled = !this.muted;
+    }
+
+    await this.replaceOutboundTracks();
+    debugLog("voice", "microphone acquired", this.micProcessing);
+  }
+
+  private async replaceOutboundTracks(): Promise<void> {
+    const track = this.outboundStream?.getAudioTracks()[0];
+    if (!track) return;
+    for (const runtime of this.peers.values()) {
+      const sender = runtime.connection.getSenders().find((item) => item.track?.kind === "audio");
+      if (sender) {
+        try {
+          await sender.replaceTrack(track);
+        } catch (error) {
+          debugLog("voice", "replaceTrack failed", error, "warn");
+        }
+      }
+    }
+  }
+
+  async setMicProcessing(partial: Partial<MicProcessing>): Promise<void> {
+    this.micProcessing = { ...this.micProcessing, ...partial };
+    if (!this.rawStream) return;
+    await this.acquireMic();
+  }
+
+  /** Local mic gain 0..1 (does not change what others set on their side). */
+  setMicVolume(volume: number): void {
+    this.micVolume = Math.min(1, Math.max(0, volume));
+    if (this.micGain) this.micGain.gain.value = this.muted ? 0 : this.micVolume;
+  }
+
+  getMicVolume(): number {
+    return this.micVolume;
+  }
+
+  /** Local-only playback volume for a remote peer (Discord-style). */
+  setPeerVolume(peerId: string, volume: number): void {
+    const next = Math.min(1, Math.max(0, volume));
+    this.peerVolumes.set(peerId, next);
+    const audio = this.audioElements.get(peerId);
+    if (audio) audio.volume = this.deafened ? 0 : next;
+  }
+
+  getPeerVolume(peerId: string): number {
+    return this.peerVolumes.get(peerId) ?? 1;
   }
 
   async addPeer(peerId: string, initiator: boolean): Promise<void> {
     if (peerId === this.selfId || this.peers.has(peerId)) return;
-    if (!this.stream) await this.start();
+    if (!this.outboundStream) await this.start();
     await warmIceServers();
     debugLog("voice", "addPeer", { peerId, initiator, turn: this.hasTurn() });
 
@@ -63,7 +157,9 @@ export class VoiceMesh {
     this.peers.set(peerId, runtime);
     this.options.onPeerStatus?.(peerId, "connecting");
 
-    for (const track of this.stream?.getTracks() ?? []) connection.addTrack(track, this.stream!);
+    for (const track of this.outboundStream?.getTracks() ?? []) {
+      connection.addTrack(track, this.outboundStream!);
+    }
 
     connection.onicecandidate = (event) => {
       if (event.candidate) {
@@ -93,6 +189,7 @@ export class VoiceMesh {
         this.audioElements.set(peerId, audio);
       }
       audio.srcObject = stream;
+      audio.volume = this.deafened ? 0 : this.getPeerVolume(peerId);
       void audio.play().catch((error) => {
         debugLog("voice", "audio.play blocked", error, "warn");
         this.options.onPeerStatus?.(peerId, "connecting", "Разрешите воспроизведение звука в системе");
@@ -195,11 +292,18 @@ export class VoiceMesh {
   }
 
   setMuted(muted: boolean): void {
-    for (const track of this.stream?.getAudioTracks() ?? []) track.enabled = !muted;
+    this.muted = muted;
+    if (this.micGain) this.micGain.gain.value = muted ? 0 : this.micVolume;
+    for (const track of this.outboundStream?.getAudioTracks() ?? []) track.enabled = !muted;
+    for (const track of this.rawStream?.getAudioTracks() ?? []) track.enabled = !muted;
   }
 
   setDeafened(deafened: boolean): void {
-    for (const audio of this.audioElements.values()) audio.muted = deafened;
+    this.deafened = deafened;
+    for (const [peerId, audio] of this.audioElements) {
+      audio.volume = deafened ? 0 : this.getPeerVolume(peerId);
+      audio.muted = false;
+    }
   }
 
   removePeer(peerId: string): void {
@@ -214,7 +318,11 @@ export class VoiceMesh {
 
   stop(): void {
     for (const peerId of [...this.peers.keys()]) this.removePeer(peerId);
-    for (const track of this.stream?.getTracks() ?? []) track.stop();
-    this.stream = null;
+    for (const track of this.rawStream?.getTracks() ?? []) track.stop();
+    this.rawStream = null;
+    this.outboundStream = null;
+    void this.audioContext?.close();
+    this.audioContext = null;
+    this.micGain = null;
   }
 }

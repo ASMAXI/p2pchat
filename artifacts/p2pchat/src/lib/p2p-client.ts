@@ -25,7 +25,7 @@ import {
   warmIceServers,
 } from "@/lib/network-settings";
 
-export { VoiceMesh, type VoiceMeshOptions, type VoicePeerStatus } from "@/lib/voice-mesh";
+export { VoiceMesh, type VoiceMeshOptions, type VoicePeerStatus, type MicProcessing } from "@/lib/voice-mesh";
 export {
   buildIceServers,
   DEFAULT_FREE_TURN,
@@ -40,6 +40,7 @@ export {
   type TurnConfig,
 } from "@/lib/network-settings";
 export { restartPublicTunnel } from "@/lib/desktop-bridge";
+export { checkForAppUpdate, type AppUpdateInfo } from "@/lib/app-update";
 
 export type { ChannelType, WireRoomState as RoomState, WireMember as RoomMember };
 
@@ -53,6 +54,25 @@ export type RoomMessage = {
   timestamp: string;
   channelId: string;
 };
+
+const PROFILE_NAME_KEY = "p2pchat-profile-name";
+
+/** Prefer saved profile name; empty string keeps existing identity name. */
+export function readProfileDisplayName(): string {
+  try {
+    const raw = window.localStorage.getItem(PROFILE_NAME_KEY);
+    if (!raw) return "";
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed === "string") return parsed.trim();
+    return raw.trim();
+  } catch {
+    return "";
+  }
+}
+
+export function writeProfileDisplayName(name: string): void {
+  window.localStorage.setItem(PROFILE_NAME_KEY, JSON.stringify(name.trim() || "Участник"));
+}
 
 const BOOTSTRAP_KEY = "p2pchat-api-origin";
 const ROOM_META_KEY = "p2pchat-room-meta";
@@ -71,7 +91,7 @@ export function isDesktopShell(): boolean {
 }
 
 export function getPeerId(): string {
-  return loadOrCreateIdentity("Участник").peerId;
+  return loadOrCreateIdentity(readProfileDisplayName() || "").peerId;
 }
 
 export function getBootstrapOrigin(): string {
@@ -162,7 +182,8 @@ export async function createLocalRoom(input: {
   displayName: string;
   bootstrapOrigin?: string;
 }): Promise<CreatedRoom> {
-  const identity = loadOrCreateIdentity(input.displayName);
+  const identity = loadOrCreateIdentity(input.displayName.trim() || readProfileDisplayName() || "Участник");
+  writeProfileDisplayName(identity.displayName);
   const localNode = await ensureLocalNode();
   if (localNode?.publicOrigin) applyAutoPublicUrl(localNode.publicOrigin);
   void warmIceServers();
@@ -244,7 +265,8 @@ export async function prepareJoin(input: {
   if (!parsed) throw new Error("Некорректная ссылка приглашения");
   if (!parsed.roomKey) throw new Error("В ссылке нет ключа шифрования — попросите новую пригласительную ссылку");
 
-  const identity = loadOrCreateIdentity(input.displayName);
+  const identity = loadOrCreateIdentity(input.displayName.trim() || readProfileDisplayName() || "Участник");
+  writeProfileDisplayName(identity.displayName);
   const localNode = await ensureLocalNode();
   if (localNode?.publicOrigin) applyAutoPublicUrl(localNode.publicOrigin);
   void warmIceServers();
@@ -310,7 +332,8 @@ export async function openRoomSession(input: {
 }): Promise<OpenSessionHandles | null> {
   const meta = loadRoomMeta();
   if (!meta) return null;
-  const identity = loadOrCreateIdentity("Участник");
+  const identity = loadOrCreateIdentity(readProfileDisplayName() || "");
+  if (identity.displayName) writeProfileDisplayName(identity.displayName);
   const localNode = await ensureLocalNode();
   if (localNode?.publicOrigin) applyAutoPublicUrl(localNode.publicOrigin);
   void warmIceServers();
