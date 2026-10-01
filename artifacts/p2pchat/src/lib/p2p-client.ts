@@ -15,6 +15,31 @@ import {
   type SessionView,
 } from "@workspace/p2p-room";
 import { ensureLocalNode, type LocalNodeInfo } from "@/lib/desktop-bridge";
+import { debugLog } from "@/lib/debug-log";
+import {
+  applyAutoPublicUrl,
+  collectNodeEndpoints,
+  getPublicUrl,
+  isPublicHttpOrigin,
+  orderInviteOrigins,
+  warmIceServers,
+} from "@/lib/network-settings";
+
+export { VoiceMesh, type VoiceMeshOptions, type VoicePeerStatus } from "@/lib/voice-mesh";
+export {
+  buildIceServers,
+  DEFAULT_FREE_TURN,
+  getPublicUrl,
+  isCustomTurnConfigured,
+  isTurnConfigured,
+  loadIceSettings,
+  saveIceSettings,
+  setPublicUrl,
+  warmIceServers,
+  type IceSettings,
+  type TurnConfig,
+} from "@/lib/network-settings";
+export { restartPublicTunnel } from "@/lib/desktop-bridge";
 
 export type { ChannelType, WireRoomState as RoomState, WireMember as RoomMember };
 
@@ -139,6 +164,8 @@ export async function createLocalRoom(input: {
 }): Promise<CreatedRoom> {
   const identity = loadOrCreateIdentity(input.displayName);
   const localNode = await ensureLocalNode();
+  if (localNode?.publicOrigin) applyAutoPublicUrl(localNode.publicOrigin);
+  void warmIceServers();
   const bootstrap = normalizeOrigin(input.bootstrapOrigin ?? getBootstrapOrigin());
   if (bootstrap) setBootstrapOrigin(bootstrap);
   if (!localNode && !bootstrap) {
@@ -152,11 +179,16 @@ export async function createLocalRoom(input: {
   const roomId = randomToken(8);
   const inviteToken = randomToken(24);
   const roomKey = generateRoomKey();
-  const endpoints = localNode
-    ? [localNode.origin, ...localNode.lanOrigins].filter(
-        (origin, index, list) => list.indexOf(origin) === index,
-      )
-    : [];
+  const publicUrl = getPublicUrl() || localNode?.publicOrigin || "";
+  const endpoints = collectNodeEndpoints(
+    localNode
+      ? {
+          origin: localNode.origin,
+          lanOrigins: localNode.lanOrigins,
+          publicOrigin: localNode.publicOrigin,
+        }
+      : null,
+  );
   const state = createInitialRoomState({
     roomId,
     name: input.name,
@@ -165,16 +197,24 @@ export async function createLocalRoom(input: {
     ownerPublicKey: identity.publicKey,
     endpoints,
   });
-  const inviteOrigins = [
+  const inviteOrigins = orderInviteOrigins([
+    ...(publicUrl ? [publicUrl] : []),
     ...(localNode?.lanOrigins ?? []),
-    ...(bootstrap && !isLocalhostOrigin(bootstrap) ? [bootstrap] : []),
-    ...(localNode && (localNode.lanOrigins.length === 0 || !bootstrap) ? [localNode.origin] : []),
-  ].filter((origin, index, list) => list.indexOf(origin) === index);
+    ...(bootstrap && isPublicHttpOrigin(bootstrap) ? [bootstrap] : []),
+    ...(localNode && !publicUrl && localNode.lanOrigins.length === 0 ? [localNode.origin] : []),
+  ]);
   const invite = buildInvite({
     roomId,
     inviteToken,
     roomKey,
-    origins: inviteOrigins.length > 0 ? inviteOrigins : bootstrap ? [bootstrap] : [localNode!.origin],
+    origins:
+      inviteOrigins.length > 0
+        ? inviteOrigins
+        : bootstrap
+          ? [bootstrap]
+          : localNode
+            ? [localNode.origin]
+            : [],
   });
   const meta: RoomMeta = {
     roomId,
@@ -185,6 +225,13 @@ export async function createLocalRoom(input: {
   };
   saveRoomMeta(meta);
   saveSnapshot({ state, outbox: [] });
+  debugLog("room", "created", {
+    roomId,
+    endpoints,
+    inviteOrigins: inviteOrigins.slice(0, 5),
+    publicUrl,
+    tunnelError: localNode?.tunnelError,
+  });
   return { identity, meta, state, localNode };
 }
 
@@ -199,6 +246,8 @@ export async function prepareJoin(input: {
 
   const identity = loadOrCreateIdentity(input.displayName);
   const localNode = await ensureLocalNode();
+  if (localNode?.publicOrigin) applyAutoPublicUrl(localNode.publicOrigin);
+  void warmIceServers();
   const bootstrap = normalizeOrigin(input.bootstrapOrigin ?? "");
   if (bootstrap) setBootstrapOrigin(bootstrap);
   const origins = [
@@ -219,7 +268,33 @@ export async function prepareJoin(input: {
     bootstrapOrigins: origins,
   };
   saveRoomMeta(meta);
+  debugLog("room", "prepareJoin", {
+    roomId: meta.roomId,
+    origins: origins.slice(0, 8),
+    hasLocalNode: Boolean(localNode),
+    publicOrigin: localNode?.publicOrigin,
+    tunnelError: localNode?.tunnelError,
+  });
   return { identity, meta, localNode };
+}
+
+export function rebuildInviteOrigins(meta: RoomMeta, extraOrigins: string[] = []): RoomMeta {
+  const publicUrl = getPublicUrl();
+  const origins = orderInviteOrigins([
+    ...(publicUrl ? [publicUrl] : []),
+    ...extraOrigins,
+    ...meta.bootstrapOrigins.filter((origin) => isPublicHttpOrigin(origin)),
+  ]);
+  if (origins.length === 0) return meta;
+  const invite = buildInvite({
+    roomId: meta.roomId,
+    inviteToken: meta.inviteToken,
+    roomKey: meta.roomKey,
+    origins,
+  });
+  const next = { ...meta, invite };
+  saveRoomMeta(next);
+  return next;
 }
 
 export type OpenSessionHandles = {
@@ -237,6 +312,18 @@ export async function openRoomSession(input: {
   if (!meta) return null;
   const identity = loadOrCreateIdentity("Участник");
   const localNode = await ensureLocalNode();
+  if (localNode?.publicOrigin) applyAutoPublicUrl(localNode.publicOrigin);
+  void warmIceServers();
+  const endpoints = collectNodeEndpoints(
+    localNode
+      ? {
+          origin: localNode.origin,
+          lanOrigins: localNode.lanOrigins,
+          publicOrigin: localNode.publicOrigin,
+        }
+      : null,
+  );
+  let lastStatus: string | null = null;
   const session = new RoomSession({
     roomId: meta.roomId,
     inviteToken: meta.inviteToken,
@@ -246,22 +333,53 @@ export async function openRoomSession(input: {
     localNode: localNode
       ? {
           origin: localNode.origin,
-          endpoints: [localNode.origin, ...localNode.lanOrigins].filter(
-            (origin, index, list) => list.indexOf(origin) === index,
-          ),
+          endpoints: endpoints.length > 0 ? endpoints : [localNode.origin, ...localNode.lanOrigins],
         }
       : null,
     initial: loadSnapshot(),
-    onView: input.onView,
+    onView: (view) => {
+      const key = `${view.status}:${view.isCoordinator}:${view.state?.hostId}:${view.state?.epoch}`;
+      if (key !== lastStatus) {
+        lastStatus = key;
+        debugLog("session", `status=${view.status}`, {
+          coordinator: view.isCoordinator,
+          hostId: view.state?.hostId,
+          online: view.state?.members.filter((m) => m.online).length,
+          epoch: view.state?.epoch,
+        });
+      }
+      input.onView(view);
+    },
     onPersist: saveSnapshot,
-    onError: input.onError,
-    onVoice: input.onVoice,
-    onSignal: input.onSignal,
+    onError: (message) => {
+      debugLog("session", message, undefined, "error");
+      input.onError?.(message);
+    },
+    onVoice: (event) => {
+      debugLog("voice", event.joined ? "peer joined channel" : "peer left channel", {
+        channelId: event.channelId,
+        peerId: event.peerId,
+        name: event.displayName,
+      });
+      input.onVoice?.(event);
+    },
+    onSignal: (event) => {
+      const kind =
+        event.data && typeof event.data === "object" && "kind" in event.data
+          ? String((event.data as { kind?: string }).kind)
+          : "unknown";
+      debugLog("signal", `from ${event.fromPeerId}`, { kind }, "debug");
+      input.onSignal?.(event);
+    },
   });
+  debugLog("session", "start", { roomId: meta.roomId, endpoints, bootstrap: meta.bootstrapOrigins });
   session.start();
   return {
     session,
-    close: () => session.stop(),
+    close: () => {
+      debugLog("session", "stop");
+      session.stop();
+    },
   };
 }
 
@@ -275,110 +393,5 @@ export function statusLabel(status: SessionStatus): string {
       return "Переподключаемся к комнате…";
     default:
       return "Нет соединения с комнатой";
-  }
-}
-
-type VoiceSignal =
-  | { kind: "offer"; description: RTCSessionDescriptionInit }
-  | { kind: "answer"; description: RTCSessionDescriptionInit }
-  | { kind: "ice"; candidate: RTCIceCandidateInit };
-
-export class VoiceMesh {
-  private readonly selfId: string;
-  private readonly sendSignal: (toPeerId: string, data: VoiceSignal) => void;
-  private stream: MediaStream | null = null;
-  private peers = new Map<string, RTCPeerConnection>();
-  private audioElements = new Map<string, HTMLAudioElement>();
-
-  constructor(selfId: string, sendSignal: (toPeerId: string, data: VoiceSignal) => void) {
-    this.selfId = selfId;
-    this.sendSignal = sendSignal;
-  }
-
-  async start(): Promise<void> {
-    if (this.stream) return;
-    if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error("Браузер не поддерживает доступ к микрофону");
-    }
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-  }
-
-  async addPeer(peerId: string, initiator: boolean): Promise<void> {
-    if (peerId === this.selfId || this.peers.has(peerId)) return;
-    if (!this.stream) await this.start();
-    const peer = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-    });
-    this.peers.set(peerId, peer);
-    for (const track of this.stream?.getTracks() ?? []) peer.addTrack(track, this.stream!);
-    peer.onicecandidate = (event) => {
-      if (event.candidate) {
-        this.sendSignal(peerId, { kind: "ice", candidate: event.candidate.toJSON() });
-      }
-    };
-    peer.ontrack = (event) => {
-      const [stream] = event.streams;
-      if (!stream) return;
-      let audio = this.audioElements.get(peerId);
-      if (!audio) {
-        audio = document.createElement("audio");
-        audio.autoplay = true;
-        audio.setAttribute("aria-hidden", "true");
-        audio.style.display = "none";
-        document.body.appendChild(audio);
-        this.audioElements.set(peerId, audio);
-      }
-      audio.srcObject = stream;
-    };
-    peer.onconnectionstatechange = () => {
-      if (["failed", "closed", "disconnected"].includes(peer.connectionState)) this.removePeer(peerId);
-    };
-    if (initiator) {
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
-      this.sendSignal(peerId, { kind: "offer", description: offer });
-    }
-  }
-
-  async handleSignal(fromPeerId: string, data: unknown): Promise<void> {
-    const signal = data as Partial<VoiceSignal>;
-    if (!signal.kind) return;
-    if (!this.peers.has(fromPeerId)) await this.addPeer(fromPeerId, false);
-    const peer = this.peers.get(fromPeerId);
-    if (!peer) return;
-    if (signal.kind === "offer" && signal.description) {
-      await peer.setRemoteDescription(signal.description);
-      const answer = await peer.createAnswer();
-      await peer.setLocalDescription(answer);
-      this.sendSignal(fromPeerId, { kind: "answer", description: answer });
-    } else if (signal.kind === "answer" && signal.description) {
-      await peer.setRemoteDescription(signal.description);
-    } else if (signal.kind === "ice" && signal.candidate) {
-      await peer.addIceCandidate(signal.candidate);
-    }
-  }
-
-  setMuted(muted: boolean): void {
-    for (const track of this.stream?.getAudioTracks() ?? []) track.enabled = !muted;
-  }
-
-  setDeafened(deafened: boolean): void {
-    for (const audio of this.audioElements.values()) audio.muted = deafened;
-  }
-
-  removePeer(peerId: string): void {
-    this.peers.get(peerId)?.close();
-    this.peers.delete(peerId);
-    const audio = this.audioElements.get(peerId);
-    audio?.remove();
-    this.audioElements.delete(peerId);
-  }
-
-  stop(): void {
-    for (const peerId of this.peers.keys()) this.removePeer(peerId);
-    for (const track of this.stream?.getTracks() ?? []) track.stop();
-    this.stream = null;
   }
 }

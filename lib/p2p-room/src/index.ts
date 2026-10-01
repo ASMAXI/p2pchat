@@ -1,6 +1,6 @@
 export { compareCoordinators, electCoordinator, isStaleEpoch, type CoordinatorClaim } from "./election";
 export { EventLog, type OrderedEvent } from "./event-log";
-export { buildConnectPlan, migrationCandidates, type ConnectTarget } from "./migration";
+export { buildConnectPlan, migrationCandidates, preferReachableEndpoints, type ConnectTarget } from "./migration";
 export {
   RoomSession,
   type ChatMessage,

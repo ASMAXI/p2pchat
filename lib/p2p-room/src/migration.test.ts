@@ -72,4 +72,36 @@ describe("migration", () => {
     });
     assert.deepEqual(plan, [{ origin: "http://invite", host: false }]);
   });
+
+  it("prefers public successor endpoints before LAN/loopback after host failure", () => {
+    const withPublic: WireRoomState = {
+      ...state,
+      members: [
+        { id: "a", name: "A", role: "owner", joinedAt: "", online: true, endpoints: ["http://a"] },
+        {
+          id: "b",
+          name: "B",
+          role: "member",
+          joinedAt: "",
+          online: true,
+          endpoints: ["http://127.0.0.1:9", "http://192.168.1.5:9", "https://b.ngrok-free.app"],
+        },
+        { id: "c", name: "C", role: "member", joinedAt: "", online: true, endpoints: ["http://c"] },
+      ],
+    };
+    const forC = buildConnectPlan({
+      state: withPublic,
+      selfId: "c",
+      localOrigin: "http://127.0.0.1:2",
+      bootstrapOrigins: [],
+      failedHostId: "a",
+      startup: false,
+    });
+    assert.equal(forC[0]?.peerId, "b");
+    assert.equal(forC[0]?.origin, "https://b.ngrok-free.app");
+    assert.deepEqual(
+      forC.filter((target) => target.peerId === "b").map((target) => target.origin),
+      ["https://b.ngrok-free.app", "http://192.168.1.5:9", "http://127.0.0.1:9"],
+    );
+  });
 });

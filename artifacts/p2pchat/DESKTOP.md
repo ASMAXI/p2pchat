@@ -1,22 +1,24 @@
 # P2PChat desktop build
 
-P2PChat uses a Tauri shell around the shared React UI. On Windows the shell embeds a
-local peer node (`src-tauri/src/local_hub.rs`) so creating a room does **not** require
-a separately typed API URL.
+Tauri shell with an embedded peer node (`local_hub.rs`) and an automatic
+Cloudflare Quick Tunnel (`tunnel.rs`) so friends do not need ngrok.
 
 ## Development
-
-From `artifacts/p2pchat`:
 
 ```bash
 pnpm desktop:dev
 ```
 
-Creating a room starts the local coordinator on a LAN-reachable port (preferred
-`47821`). The invite link includes LAN origins and the room encryption key.
+On first `start_local_sync_server` the app downloads `cloudflared` into app data,
+opens a Quick Tunnel to the local hub port, and publishes `https://*.trycloudflare.com`
+into `member.endpoints` / invite.
 
-Optional bootstrap field on the home screen is only for internet peers or when joining
-a room hosted elsewhere.
+## Voice
+
+Built-in free TURN (Open Relay) is used by default. Optional:
+
+- `VITE_METERED_API_KEY` + `VITE_METERED_APP_NAME` — fetch ICE from your Metered free account
+- Settings → advanced — paste your own coturn (future Pro / VPS)
 
 ## Windows installers
 
@@ -25,12 +27,8 @@ pnpm install
 pnpm desktop:build:windows
 ```
 
-GitHub Actions: `.github/workflows/build-windows.yml`.
-
 ## Architecture notes
 
-- Coordinator is a temporary role; room history is replicated to peers.
-- Messages are signed (Ed25519) and encrypted (AES-GCM) before leaving the client.
-- When the coordinator leaves, remaining desktop peers elect a successor and reconnect.
-- Optional Node bootstrap (`artifacts/api-server`) can stay online as `alwaysHost` for
-  web clients or cross-NAT discovery; it still does not see plaintext.
+- Coordinator migrates among desktop peers; public URL prefers trycloudflare / tunnels.
+- Chat signaling ≠ media. Media uses WebRTC + TURN, not the HTTP tunnel.
+- No permanent cloud host required for the core product.

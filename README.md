@@ -1,68 +1,56 @@
 # P2PChat
 
-Приватный групповой мессенджер без постоянного облачного сервера: каждый desktop-клиент может быть peer и временным координатором комнаты. При уходе координатора роль мигрирует к оставшимся участникам.
+Приватный групповой мессенджер без постоянного облачного сервера: каждый desktop может быть peer и временным координатором. Комната держится, пока онлайн хотя бы один desktop с reachable endpoint.
 
-## Что реализовано (релизный каркас по ТЗ)
-
-- Криптографическая identity (Ed25519), стабильный `peerId`
-- End-to-end шифрование содержимого сообщений (AES-256-GCM), узел видит только ciphertext
-- Invite со ссылкой: room / token / room key / endpoints
-- Репликация snapshot + signed events, dedup, offline outbox
-- Coordinator election / migration (epoch), split-brain resolution
-- Встроенный peer-узел в Tauri (`local_hub.rs`)
-- Опциональный bootstrap Node-сервер (`artifacts/api-server`) для интернета / web
-- Unit + критический E2E (crash координатора → takeover → возврат без дублей)
-
-Голос (WebRTC) — Phase 2 поверх стабильного text core; signaling уже через control plane.
-
-## Структура
+## Архитектура
 
 ```
-lib/p2p-identity   # ключи, подписи, AEAD
-lib/p2p-protocol   # wire types / invite / proof strings
-lib/p2p-room       # election, event log, migration, RoomSession
-artifacts/api-server   # bootstrap node (alwaysHost)
-artifacts/p2pchat      # UI + Tauri desktop
+Текст + signaling  →  control plane (локальный hub + авто Cloudflare Quick Tunnel)
+Голос              →  mesh WebRTC + встроенный free TURN (свой TURN — позже / Pro)
 ```
 
-## Запуск
+Друзьям **не нужны** ngrok-аккаунт и ручной Metered: desktop сам скачивает `cloudflared` и поднимает туннель; TURN по умолчанию — Open Relay.
+
+### Временные логи (тест)
+
+В приложении: **Диагностика** → блок «Временные логи» → **Копировать** или **Скачать .txt**.  
+Каждый участник после проверки присылает свой файл — там туннель, session, ICE/голос (без текста чата).
+
+## Запуск для друзей (desktop)
+
+1. Установить сборку Windows (Actions → installer).
+2. Создать комнату — подождать авто-туннель (первый раз скачает cloudflared).
+3. Скопировать invite другу.
+4. Голос: войти в голосовой канал (free TURN уже внутри).
+
+Если туннель не поднялся — Настройки → «Поднять / обновить туннель».
+
+## Разработка
 
 ```bash
 pnpm install
 pnpm run test
-pnpm run typecheck
+cd artifacts/p2pchat && pnpm desktop:dev
 ```
 
-### Desktop (рекомендуется)
+Опционально стабильный TURN через ваш Metered-аккаунт (free tier):
 
-```bash
-cd artifacts/p2pchat
-pnpm desktop:dev
+```env
+# artifacts/p2pchat/.env
+VITE_METERED_API_KEY=...
+VITE_METERED_APP_NAME=yourapp
 ```
 
-Создайте комнату — локальный узел поднимется сам. Invite для LAN-друзей содержит ваш LAN IP. Поле «Резервный bootstrap» нужно только для интернета / web.
+Свой VPS/coturn позже: Настройки → расширенные → свой TURN (перекрывает free).
 
-### Bootstrap-узел (опционально)
+## Last-peer
 
-```powershell
-cd artifacts/api-server
-pnpm run build
-$env:PORT="5000"; node --enable-source-maps .\dist\index.mjs
+Пока `online >= 1` и у координатора есть публичный endpoint (авто-туннель), сессия жива. Чтобы интернет-друзья пережили ваш выход, у преемника тоже должен быть desktop с авто-туннелем.
+
+## Структура
+
 ```
-
-В клиенте укажите `http://<host>:5000` как bootstrap.
-
-### Web UI
-
-```bash
-pnpm --filter @workspace/p2pchat run dev
+lib/p2p-*              # identity, protocol, room session
+artifacts/api-server   # опциональный bootstrap
+artifacts/p2pchat      # UI + Tauri (local_hub + cloudflared tunnel)
 ```
-
-Браузер не хостит узел сам — нужен desktop-peer или bootstrap.
-
-## Ограничения 1.0
-
-- 2–25 участников в комнате
-- Полная NAT/TURN hardening — следующий слой
-- Файлы и voice polish — Phase 2
-- Web без desktop не может стать координатором

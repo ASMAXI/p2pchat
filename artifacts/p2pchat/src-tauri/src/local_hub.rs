@@ -55,6 +55,7 @@ static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // kept for parity with older bridge payloads / tests
 pub struct LocalSyncServerInfo {
     pub origin: String,
     pub lan_origins: Vec<String>,

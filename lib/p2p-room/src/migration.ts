@@ -21,6 +21,39 @@ export type ConnectPlanInput = {
   startup: boolean;
 };
 
+function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const host = new URL(origin).hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
+function isLanOrigin(origin: string): boolean {
+  try {
+    const host = new URL(origin).hostname;
+    return (
+      host.startsWith("192.168.") ||
+      host.startsWith("10.") ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Public/tunnel URLs first, then LAN, then loopback — so internet peers reach the successor. */
+export function preferReachableEndpoints(endpoints: string[]): string[] {
+  const unique = endpoints.filter((origin, index, list) => origin && list.indexOf(origin) === index);
+  const score = (origin: string) => {
+    if (isLoopbackOrigin(origin)) return 2;
+    if (isLanOrigin(origin)) return 1;
+    return 0;
+  };
+  return [...unique].sort((left, right) => score(left) - score(right));
+}
+
 /**
  * Peers that may take over the coordinator role, in deterministic order. Every peer computes
  * the same list from the same replicated state, so they converge on the same successor.
@@ -36,7 +69,10 @@ export function migrationCandidates(
     .filter((member) =>
       member.id === selfId ? selfCanHost : member.online && (member.endpoints?.length ?? 0) > 0,
     )
-    .map((member) => ({ peerId: member.id, endpoints: member.endpoints ?? [] }))
+    .map((member) => ({
+      peerId: member.id,
+      endpoints: preferReachableEndpoints(member.endpoints ?? []),
+    }))
     .sort((left, right) => (left.peerId < right.peerId ? -1 : left.peerId > right.peerId ? 1 : 0));
 }
 
@@ -55,7 +91,7 @@ export function buildConnectPlan(input: ConnectPlanInput): ConnectTarget[] {
       if (canHost) add({ origin: localOrigin!, host: true, peerId });
       return;
     }
-    for (const origin of endpoints) add({ origin, host: false, peerId });
+    for (const origin of preferReachableEndpoints(endpoints)) add({ origin, host: false, peerId });
   };
 
   for (const origin of input.redirect ?? []) add({ origin, host: origin === localOrigin });
