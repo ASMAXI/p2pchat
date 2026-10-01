@@ -77,6 +77,8 @@ export type RoomSessionOptions = {
   bootstrapOrigins: string[];
   /** Our own node, when the runtime can host (desktop). */
   localNode?: { origin: string; endpoints: string[] } | null;
+  /** When false, never self-host (fresh invite join until we have a real replica). */
+  allowSelfHost?: boolean;
   initial?: SessionSnapshot | null;
   timing?: Partial<SessionTiming>;
   WebSocketImpl?: typeof WebSocket;
@@ -86,6 +88,16 @@ export type RoomSessionOptions = {
   onVoice?: (event: Extract<ServerEvent, { type: "voice" }>) => void;
   onSignal?: (event: Extract<ServerEvent, { type: "signal" }>) => void;
   onError?: (message: string) => void;
+  /** Fired for every connect attempt — used by desktop debug logs. */
+  onAttempt?: (event: {
+    origin: string;
+    host: boolean;
+    outcome: "unreachable" | "rejected" | "connected" | "ended";
+    code?: string;
+    message?: string;
+    ms: number;
+    healthz?: "ok" | "fail" | "skip";
+  }) => void;
 };
 
 type Outcome =
@@ -108,6 +120,19 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 function wsUrl(origin: string): string {
   return `${origin.replace(/^http/, "ws")}/api/ws`;
+}
+
+function isPublicOrigin(origin: string): boolean {
+  try {
+    return new URL(origin).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function connectTimeoutFor(origin: string, base: number): number {
+  // Quick Tunnel / public HTTPS often needs longer than LAN.
+  return isPublicOrigin(origin) ? Math.max(base, 10000) : base;
 }
 
 export class RoomSession {
@@ -229,21 +254,38 @@ export class RoomSession {
     let failedHostId: string | null = null;
     let redirect: string[] | undefined;
     let retryOrigin: string | undefined = this.lastOrigin;
+    let emptyPlanRounds = 0;
 
     while (!this.closed) {
       const plan = buildConnectPlan({
         state: this.state,
         selfId: this.selfId,
         localOrigin: this.options.localNode?.origin,
+        selfOrigins: this.options.localNode?.endpoints,
         bootstrapOrigins: this.options.bootstrapOrigins,
         failedHostId,
         retryOrigin,
         redirect,
         startup,
+        allowSelfHost: this.options.allowSelfHost,
       });
       redirect = undefined;
       retryOrigin = undefined;
       let ended: Extract<Outcome, { kind: "ended" }> | null = null;
+
+      if (plan.length === 0) {
+        emptyPlanRounds += 1;
+        this.lastError =
+          this.options.allowSelfHost === false
+            ? "Не удалось достучаться до хоста по ссылке. Попросите свежее приглашение или проверьте, что у хоста открыт Drift."
+            : "Нет доступных адресов для подключения";
+        this.options.onError?.(this.lastError);
+        this.setStatus("reconnecting");
+        await sleep(Math.min(8000, this.timing.retryDelayMs * emptyPlanRounds));
+        startup = false;
+        continue;
+      }
+      emptyPlanRounds = 0;
 
       for (let index = 0; index < plan.length && !this.closed; index += 1) {
         const target = plan[index]!;
@@ -300,18 +342,30 @@ export class RoomSession {
     };
   }
 
-  private attempt(target: ConnectTarget): Promise<Outcome> {
-    return new Promise<Outcome>((resolve) => {
-      if (this.closed || (target.host && !this.state)) {
-        resolve({ kind: "unreachable" });
-        return;
+  private async attempt(target: ConnectTarget): Promise<Outcome> {
+    if (this.closed || (target.host && !this.state)) {
+      return { kind: "unreachable" };
+    }
+    const started = Date.now();
+    let healthz: "ok" | "fail" | "skip" = "skip";
+    if (!target.host) {
+      healthz = await this.probeHealthz(target.origin);
+      if (healthz === "fail") {
+        const outcome = { kind: "unreachable" as const };
+        this.reportAttempt(target, outcome, started, healthz);
+        return outcome;
       }
+    }
+
+    return await new Promise<Outcome>((resolve) => {
       const WebSocketImpl = this.options.WebSocketImpl ?? WebSocket;
       let socket: WebSocket;
       try {
         socket = new WebSocketImpl(wsUrl(target.origin));
       } catch {
-        resolve({ kind: "unreachable" });
+        const outcome = { kind: "unreachable" as const };
+        this.reportAttempt(target, outcome, started, healthz);
+        resolve(outcome);
         return;
       }
       if (this.status !== "connected") this.setStatus(this.state ? "reconnecting" : "connecting");
@@ -338,12 +392,13 @@ export class RoomSession {
         } catch {
           // Already closed.
         }
+        this.reportAttempt(target, outcome, started, healthz);
         resolve(outcome);
       };
 
       const connectTimer = setTimeout(() => {
         if (!joined) finish({ kind: "unreachable" });
-      }, this.timing.connectTimeoutMs);
+      }, connectTimeoutFor(target.origin, this.timing.connectTimeoutMs));
 
       socket.onopen = () => {
         try {
@@ -378,6 +433,13 @@ export class RoomSession {
               this.send({ type: "ping", nonce: Date.now() });
             }, this.timing.heartbeatMs);
             this.onJoined(target, event.state);
+            this.options.onAttempt?.({
+              origin: target.origin,
+              host: target.host,
+              outcome: "connected",
+              ms: Date.now() - started,
+              healthz,
+            });
           }
           return;
         }
@@ -402,6 +464,46 @@ export class RoomSession {
         // `onclose` follows and settles the attempt.
       };
     });
+  }
+
+  private reportAttempt(
+    target: ConnectTarget,
+    outcome: Outcome,
+    started: number,
+    healthz: "ok" | "fail" | "skip",
+  ): void {
+    if (outcome.kind === "ended") {
+      // Successful join already reported "connected"; later disconnects are status logs.
+      return;
+    }
+    this.options.onAttempt?.({
+      origin: target.origin,
+      host: target.host,
+      outcome: outcome.kind,
+      code: outcome.kind === "rejected" ? outcome.code : undefined,
+      message: outcome.kind === "rejected" ? outcome.message : undefined,
+      ms: Date.now() - started,
+      healthz,
+    });
+    if (outcome.kind === "rejected") {
+      this.lastError = `${outcome.code}: ${outcome.message} @ ${target.origin}`;
+    } else if (outcome.kind === "unreachable") {
+      this.lastError = `unreachable ${target.origin}${healthz === "fail" ? " (healthz)" : ""}`;
+    }
+  }
+
+  private async probeHealthz(origin: string): Promise<"ok" | "fail" | "skip"> {
+    const fetchImpl = this.options.fetchImpl ?? (typeof fetch !== "undefined" ? fetch : undefined);
+    if (!fetchImpl) return "skip";
+    try {
+      const response = await fetchImpl(`${origin.replace(/\/$/, "")}/api/healthz`, {
+        method: "GET",
+        signal: AbortSignal.timeout(isPublicOrigin(origin) ? 8000 : 2000),
+      });
+      return response.ok ? "ok" : "fail";
+    } catch {
+      return "fail";
+    }
   }
 
   private onJoined(target: ConnectTarget, state: WireRoomState): void {

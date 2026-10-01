@@ -104,4 +104,35 @@ describe("migration", () => {
       ["https://b.ngrok-free.app", "http://192.168.1.5:9", "http://127.0.0.1:9"],
     );
   });
+
+  it("never joins its own LAN/public endpoints as a remote peer", () => {
+    const plan = buildConnectPlan({
+      state: null,
+      selfId: "a",
+      localOrigin: "http://127.0.0.1:47821",
+      selfOrigins: ["http://127.0.0.1:47821", "http://192.168.0.14:47821", "https://mine.trycloudflare.com"],
+      bootstrapOrigins: [
+        "http://192.168.0.14:47821",
+        "https://mine.trycloudflare.com",
+        "https://friend.trycloudflare.com",
+        "http://127.0.0.1:5000",
+      ],
+      startup: true,
+      allowSelfHost: false,
+    });
+    assert.deepEqual(plan, [{ origin: "https://friend.trycloudflare.com", host: false }]);
+  });
+
+  it("refuses self-host when allowSelfHost is false even with a replica", () => {
+    const plan = buildConnectPlan({
+      state,
+      selfId: "a",
+      localOrigin: "http://127.0.0.1:1",
+      bootstrapOrigins: ["http://invite"],
+      startup: true,
+      allowSelfHost: false,
+    });
+    assert.ok(plan.every((target) => !target.host));
+    assert.ok(plan.some((target) => target.origin === "http://invite"));
+  });
 });

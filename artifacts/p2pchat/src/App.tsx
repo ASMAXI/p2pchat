@@ -632,6 +632,7 @@ function Workspace() {
   const [voicePeers, setVoicePeers] = useState<Array<{ id: string; name: string }>>([]);
   const [members, setMembers] = useState<ApiRoomMember[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<SessionStatus>('offline');
+  const [connectionError, setConnectionError] = useState('');
   const [isCoordinator, setIsCoordinator] = useState(false);
   const [peerId] = useState(getPeerId);
   const [voiceHint, setVoiceHint] = useState('');
@@ -673,6 +674,8 @@ function Workspace() {
         setConnectionStatus(view.status);
         writeStore(CONNECTION_KEY, view.status);
         setIsCoordinator(view.isCoordinator);
+        if (view.lastError && view.status !== 'connected') setConnectionError(view.lastError);
+        if (view.status === 'connected') setConnectionError('');
         if (view.state) {
           const next = roomStateToClientState(view.state, peerId, server.invite);
           next.server.inviteToken = server.inviteToken;
@@ -844,7 +847,9 @@ function Workspace() {
     setLocation('/');
   };
   const visibleMembers = members;
-  const connectionHint = statusLabel(connectionStatus);
+  const connectionHint = connectionError && connectionStatus !== 'connected'
+    ? connectionError
+    : statusLabel(connectionStatus);
   const needsPublicUrlBanner = isCoordinator && isDesktopShell() && !getPublicUrl();
   const voiceStatusLabel =
     voicePeerStatus === 'connected'

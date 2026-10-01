@@ -99,14 +99,33 @@ export function formatDebugReport(extra?: Record<string, unknown>): string {
     href: typeof location !== "undefined" ? location.href : "",
     peerId: (() => {
       try {
-        return window.localStorage.getItem("p2pchat-identity")?.slice(0, 80) ?? null;
+        const raw = window.localStorage.getItem("p2pchat-identity");
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as { peerId?: string };
+        return parsed.peerId ?? raw.slice(0, 80);
+      } catch {
+        return null;
+      }
+    })(),
+    roomMeta: (() => {
+      try {
+        const raw = window.localStorage.getItem("p2pchat-room-meta");
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as { roomId?: string; bootstrapOrigins?: string[]; invite?: string };
+        return {
+          roomId: parsed.roomId,
+          bootstrap: parsed.bootstrapOrigins?.slice(0, 6),
+          inviteOrigins: parsed.invite
+            ? [...new URLSearchParams(parsed.invite.split("?")[1] ?? "").getAll("api")].slice(0, 6)
+            : [],
+        };
       } catch {
         return null;
       }
     })(),
     publicUrl: window.localStorage.getItem("p2pchat-public-url"),
     bootstrap: window.localStorage.getItem("p2pchat-api-origin"),
-    iceConfigured: window.localStorage.getItem("p2pchat-ice-servers"),
+    iceConfigured: Boolean(window.localStorage.getItem("p2pchat-ice-servers")),
     connection: window.localStorage.getItem("p2pchat-connection-status"),
     ...extra,
   };

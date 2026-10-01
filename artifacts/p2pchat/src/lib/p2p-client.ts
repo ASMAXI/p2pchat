@@ -350,11 +350,16 @@ export async function createLocalRoom(input: {
     inviteToken,
     roomKey,
     invite,
-    // Keep reachable invite endpoints here — friends and rejoin use them as bootstrap.
-    bootstrapOrigins: origins,
+    // Creator hosts locally immediately — invite origins are for friends, not our bootstrap.
+    bootstrapOrigins: [],
   };
   saveRoomMeta(meta);
   saveSnapshot({ state, outbox: [] });
+  try {
+    window.sessionStorage.removeItem("p2pchat-join-only");
+  } catch {
+    /* ignore */
+  }
   upsertSavedServer({
     roomId,
     name: input.name,
@@ -400,18 +405,27 @@ export async function prepareJoin(input: {
     throw new Error("В ссылке нет адреса узла — укажите bootstrap вручную");
   }
 
-  // Drop snapshot from another room so we never self-host stale state instead of joining.
-  const existingSnap = loadSnapshot();
-  if (!existingSnap?.state || existingSnap.state.id !== parsed.roomId) clearSnapshot();
+  // Invite join must find the live host. A leftover snapshot made us self-host
+  // our own hub instead of connecting to the friend (see debug logs).
+  clearSnapshot();
 
   const meta: RoomMeta = {
     roomId: parsed.roomId,
     inviteToken: parsed.inviteToken,
     roomKey: parsed.roomKey,
     invite: input.invite.trim(),
-    bootstrapOrigins: origins,
+    bootstrapOrigins: origins.filter((origin) => {
+      try {
+        const host = new URL(origin).hostname;
+        return host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]";
+      } catch {
+        return false;
+      }
+    }),
   };
   saveRoomMeta(meta);
+  // Mark next openRoomSession as join-only until a live host answers.
+  window.sessionStorage.setItem("p2pchat-join-only", meta.roomId);
   upsertSavedServer({
     roomId: meta.roomId,
     name: "Комната",
@@ -422,10 +436,11 @@ export async function prepareJoin(input: {
   });
   debugLog("room", "prepareJoin", {
     roomId: meta.roomId,
-    origins: origins.slice(0, 8),
+    origins: meta.bootstrapOrigins.slice(0, 8),
     hasLocalNode: Boolean(localNode),
     publicOrigin: localNode?.publicOrigin,
     tunnelError: localNode?.tunnelError,
+    joinOnly: true,
   });
   return { identity, meta, localNode };
 }
@@ -521,11 +536,17 @@ export async function openRoomSession(input: {
       : null,
   );
 
+  const joinOnlyFlag = window.sessionStorage.getItem("p2pchat-join-only");
+  const joinOnly = joinOnlyFlag === meta.roomId;
+  if (joinOnly) window.sessionStorage.removeItem("p2pchat-join-only");
+  // Fresh invite join: never self-host. Resume/migration may self-host only with a replica.
+  const allowSelfHost = !joinOnly && Boolean(snap?.state && snap.state.id === meta.roomId);
+
   // Coordinator: refresh invite when Quick Tunnel URL rotated so friends get a live link.
   let activeMeta = meta;
   const ownerOrHost =
     snap?.state?.ownerId === identity.peerId || snap?.state?.hostId === identity.peerId;
-  if (ownerOrHost) {
+  if (ownerOrHost && allowSelfHost) {
     const publicUrl = getPublicUrl() || localNode?.publicOrigin || "";
     const inviteOrigins = parseInvite(meta.invite)?.origins ?? meta.bootstrapOrigins;
     const needsRefresh =
@@ -538,21 +559,52 @@ export async function openRoomSession(input: {
     }
   }
 
+  // Bootstrap for connect = invite origins, minus our own addresses (never join ourselves).
+  const selfSet = new Set(endpoints.map(normalizeOrigin).concat(localNode ? [normalizeOrigin(localNode.origin)] : []));
+  const bootstrap = orderBootstrapOrigins(
+    (activeMeta.bootstrapOrigins.length > 0
+      ? activeMeta.bootstrapOrigins
+      : parseInvite(activeMeta.invite)?.origins ?? []
+    ).filter((origin) => !selfSet.has(normalizeOrigin(origin))),
+  );
+
   let lastStatus: string | null = null;
   let sawCoordinator = false;
+  debugLog("session", "open", {
+    roomId: activeMeta.roomId,
+    allowSelfHost,
+    joinOnly,
+    bootstrap,
+    selfEndpoints: endpoints.slice(0, 6),
+    hasSnapshot: Boolean(snap?.state && snap.state.id === activeMeta.roomId),
+  });
   const session = new RoomSession({
     roomId: activeMeta.roomId,
     inviteToken: activeMeta.inviteToken,
     roomKey: activeMeta.roomKey,
     identity,
-    bootstrapOrigins: orderBootstrapOrigins(activeMeta.bootstrapOrigins),
+    bootstrapOrigins: bootstrap,
+    allowSelfHost,
     localNode: localNode
       ? {
           origin: localNode.origin,
           endpoints: endpoints.length > 0 ? endpoints : [localNode.origin, ...localNode.lanOrigins],
         }
       : null,
-    initial: loadSnapshot()?.state?.id === activeMeta.roomId ? loadSnapshot() : null,
+    initial: allowSelfHost && snap?.state?.id === activeMeta.roomId ? snap : null,
+    onAttempt: (event) => {
+      debugLog(
+        "connect",
+        `${event.outcome} ${event.host ? "host" : "join"} ${event.origin}`,
+        {
+          ms: event.ms,
+          healthz: event.healthz,
+          code: event.code,
+          message: event.message,
+        },
+        event.outcome === "connected" ? "info" : event.outcome === "rejected" ? "warn" : "warn",
+      );
+    },
     onView: (view) => {
       const key = `${view.status}:${view.isCoordinator}:${view.state?.hostId}:${view.state?.epoch}`;
       if (key !== lastStatus) {
@@ -562,6 +614,8 @@ export async function openRoomSession(input: {
           hostId: view.state?.hostId,
           online: view.state?.members.filter((m) => m.online).length,
           epoch: view.state?.epoch,
+          origin: view.origin,
+          lastError: view.lastError,
         });
       }
       if (view.isCoordinator && view.status === "connected" && !sawCoordinator) {
@@ -609,11 +663,7 @@ export async function openRoomSession(input: {
       input.onSignal?.(event);
     },
   });
-  debugLog("session", "start", {
-    roomId: activeMeta.roomId,
-    endpoints,
-    bootstrap: orderBootstrapOrigins(activeMeta.bootstrapOrigins),
-  });
+  debugLog("session", "start", { roomId: activeMeta.roomId });
   session.start();
   return {
     session,

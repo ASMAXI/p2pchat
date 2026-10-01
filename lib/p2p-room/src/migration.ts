@@ -11,6 +11,8 @@ export type ConnectPlanInput = {
   state: WireRoomState | null;
   selfId: string;
   localOrigin?: string;
+  /** Origins that belong to this device — never used as remote join targets. */
+  selfOrigins?: string[];
   bootstrapOrigins: string[];
   /** Coordinator that just became unreachable; excluded from the candidate list. */
   failedHostId?: string | null;
@@ -19,6 +21,8 @@ export type ConnectPlanInput = {
   redirect?: string[];
   /** First connection after launch: prefer joining an existing coordinator over self-hosting. */
   startup: boolean;
+  /** When false, never take over as coordinator (fresh invite join). */
+  allowSelfHost?: boolean;
 };
 
 function isLoopbackOrigin(origin: string): boolean {
@@ -41,6 +45,10 @@ function isLanOrigin(origin: string): boolean {
   } catch {
     return false;
   }
+}
+
+function normalizeForCompare(origin: string): string {
+  return origin.trim().replace(/\/$/, "");
 }
 
 /** Public/tunnel URLs first, then LAN, then loopback — so internet peers reach the successor. */
@@ -78,10 +86,19 @@ export function migrationCandidates(
 
 export function buildConnectPlan(input: ConnectPlanInput): ConnectTarget[] {
   const { state, selfId, localOrigin } = input;
-  const canHost = Boolean(localOrigin && state);
+  const allowSelfHost = input.allowSelfHost !== false;
+  const canHost = Boolean(allowSelfHost && localOrigin && state);
+  const selfOrigins = new Set(
+    [localOrigin, ...(input.selfOrigins ?? [])]
+      .filter(Boolean)
+      .map((origin) => normalizeForCompare(origin!)),
+  );
   const targets: ConnectTarget[] = [];
   const add = (target: ConnectTarget) => {
     if (!target.origin) return;
+    const normalized = normalizeForCompare(target.origin);
+    // Never "join" ourselves as a remote peer — that creates a false local takeover path.
+    if (!target.host && selfOrigins.has(normalized)) return;
     if (!target.host && target.origin === localOrigin) return;
     if (targets.some((item) => item.origin === target.origin && item.host === target.host)) return;
     targets.push(target);
@@ -111,7 +128,15 @@ export function buildConnectPlan(input: ConnectPlanInput): ConnectTarget[] {
     }
   }
 
-  for (const origin of input.bootstrapOrigins) add({ origin, host: false });
+  for (const origin of input.bootstrapOrigins) {
+    // Loopback in an invite is almost never useful for friends; skip unless hosting locally.
+    if (isLoopbackOrigin(origin) && !targetIsLocalHostIntent(origin, localOrigin)) continue;
+    add({ origin, host: false });
+  }
   if (canHost) add({ origin: localOrigin!, host: true, peerId: selfId });
   return targets;
+}
+
+function targetIsLocalHostIntent(origin: string, localOrigin?: string): boolean {
+  return Boolean(localOrigin && normalizeForCompare(origin) === normalizeForCompare(localOrigin));
 }
