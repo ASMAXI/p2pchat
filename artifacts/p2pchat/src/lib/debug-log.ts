@@ -112,7 +112,7 @@ export function formatDebugReport(extra?: Record<string, unknown>): string {
   };
 
   const lines = [
-    "=== P2PChat debug report (temporary) ===",
+    "=== Drift debug report (temporary) ===",
     JSON.stringify(header, null, 2),
     "=== events ===",
     ...entries.map((entry) => {

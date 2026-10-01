@@ -8,10 +8,11 @@ export type AppUpdateInfo = {
   body: string;
 };
 
-const GITHUB_REPO = "ASMAXI/p2pchat";
+export const GITHUB_REPO = "ASMAXI/p2pchat";
 
+/** Pulls `x.y.z` out of tags like `v0.3.0`, `drift-v0.3.0`, `p2pchat-v0.2.0`. */
 function normalizeVersion(value: string): string {
-  return value.trim().replace(/^v/i, "");
+  return value.match(/\d+\.\d+\.\d+/)?.[0] ?? value.trim().replace(/^v/i, "");
 }
 
 function compareSemver(a: string, b: string): number {
@@ -27,7 +28,7 @@ function compareSemver(a: string, b: string): number {
   return 0;
 }
 
-async function currentAppVersion(): Promise<string> {
+export async function currentAppVersion(): Promise<string> {
   try {
     if ("__TAURI_INTERNALS__" in window) {
       const { getVersion } = await import("@tauri-apps/api/app");
@@ -36,7 +37,7 @@ async function currentAppVersion(): Promise<string> {
   } catch {
     // fall through
   }
-  return "0.1.0";
+  return "0.3.0";
 }
 
 export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
@@ -44,6 +45,9 @@ export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
   const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
     headers: { Accept: "application/vnd.github+json" },
   });
+  if (response.status === 404) {
+    throw new Error("На GitHub пока нет опубликованного релиза");
+  }
   if (!response.ok) {
     throw new Error(`GitHub Releases: HTTP ${response.status}`);
   }
@@ -57,7 +61,7 @@ export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
   const latestVersion = normalizeVersion(release.tag_name || release.name || currentVersion);
   const assets = release.assets ?? [];
   const installer =
-    assets.find((asset) => /\.exe$/i.test(asset.name) && /setup|nsis|p2pchat/i.test(asset.name)) ||
+    assets.find((asset) => /setup\.exe$/i.test(asset.name)) ||
     assets.find((asset) => /\.exe$/i.test(asset.name)) ||
     assets.find((asset) => /\.msi$/i.test(asset.name));
   const upToDate = compareSemver(currentVersion, latestVersion) >= 0;
@@ -70,4 +74,10 @@ export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
     name: release.name || latestVersion,
     body: (release.body || "").slice(0, 2000),
   };
+}
+
+/** Desktop: downloads the installer, runs it in passive mode and closes the app. */
+export async function installAppUpdate(downloadUrl: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("install_update", { url: downloadUrl });
 }

@@ -206,6 +206,36 @@ export function orderInviteOrigins(origins: string[]): string[] {
   return [...new Set([...publicOnes, ...tunnels, ...lan, ...rest])];
 }
 
+/**
+ * Join/bootstrap order: try LAN before ephemeral trycloudflare URLs.
+ * Stale Quick Tunnel hostnames fail slowly; same-Wi‑Fi peers should hit LAN first.
+ */
+export function orderBootstrapOrigins(origins: string[]): string[] {
+  const unique = origins
+    .map(normalizeOrigin)
+    .filter(Boolean)
+    .filter((origin, index, list) => list.indexOf(origin) === index);
+  const loopback: string[] = [];
+  const lan: string[] = [];
+  const publicOnes: string[] = [];
+  for (const origin of unique) {
+    try {
+      const host = new URL(origin).hostname;
+      if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") loopback.push(origin);
+      else if (
+        host.startsWith("192.168.") ||
+        host.startsWith("10.") ||
+        /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+      ) {
+        lan.push(origin);
+      } else publicOnes.push(origin);
+    } catch {
+      publicOnes.push(origin);
+    }
+  }
+  return [...lan, ...publicOnes, ...loopback];
+}
+
 export function collectNodeEndpoints(localNode: {
   origin: string;
   lanOrigins: string[];

@@ -21,6 +21,7 @@ import {
   collectNodeEndpoints,
   getPublicUrl,
   isPublicHttpOrigin,
+  orderBootstrapOrigins,
   orderInviteOrigins,
   warmIceServers,
 } from "@/lib/network-settings";
@@ -40,7 +41,7 @@ export {
   type TurnConfig,
 } from "@/lib/network-settings";
 export { restartPublicTunnel } from "@/lib/desktop-bridge";
-export { checkForAppUpdate, type AppUpdateInfo } from "@/lib/app-update";
+export { checkForAppUpdate, currentAppVersion, installAppUpdate, type AppUpdateInfo } from "@/lib/app-update";
 
 export type { ChannelType, WireRoomState as RoomState, WireMember as RoomMember };
 
@@ -77,6 +78,7 @@ export function writeProfileDisplayName(name: string): void {
 const BOOTSTRAP_KEY = "p2pchat-api-origin";
 const ROOM_META_KEY = "p2pchat-room-meta";
 const SESSION_SNAPSHOT_KEY = "p2pchat-session-snapshot";
+const SAVED_SERVERS_KEY = "p2pchat-saved-servers";
 
 export type RoomMeta = {
   roomId: string;
@@ -85,6 +87,111 @@ export type RoomMeta = {
   invite: string;
   bootstrapOrigins: string[];
 };
+
+export type SavedServer = {
+  roomId: string;
+  name: string;
+  invite: string;
+  inviteToken: string;
+  roomKey: string;
+  role: string;
+  hostName?: string;
+  lastJoinedAt: number;
+};
+
+function clearSnapshot(): void {
+  window.localStorage.removeItem(SESSION_SNAPSHOT_KEY);
+}
+
+export function loadSavedServers(): SavedServer[] {
+  try {
+    const raw = window.localStorage.getItem(SAVED_SERVERS_KEY);
+    if (!raw) return migrateLegacyServer();
+    const parsed = JSON.parse(raw) as SavedServer[];
+    if (!Array.isArray(parsed)) return migrateLegacyServer();
+    const list = parsed
+      .filter((item) => item?.roomId && item?.invite && item?.inviteToken && item?.roomKey)
+      .sort((left, right) => right.lastJoinedAt - left.lastJoinedAt);
+    return list.length > 0 ? list : migrateLegacyServer();
+  } catch {
+    return migrateLegacyServer();
+  }
+}
+
+function migrateLegacyServer(): SavedServer[] {
+  try {
+    const raw = window.localStorage.getItem("p2pchat-server");
+    const meta = loadRoomMeta();
+    if (!raw || !meta?.invite) return [];
+    const server = JSON.parse(raw) as {
+      roomId?: string;
+      name?: string;
+      role?: string;
+      hostName?: string;
+    };
+    if (!server.roomId || server.roomId !== meta.roomId) return [];
+    const saved: SavedServer = {
+      roomId: meta.roomId,
+      name: server.name || "Комната",
+      invite: meta.invite,
+      inviteToken: meta.inviteToken,
+      roomKey: meta.roomKey,
+      role: server.role || "Участник",
+      hostName: server.hostName,
+      lastJoinedAt: Date.now(),
+    };
+    window.localStorage.setItem(SAVED_SERVERS_KEY, JSON.stringify([saved]));
+    return [saved];
+  } catch {
+    return [];
+  }
+}
+
+export function upsertSavedServer(input: Omit<SavedServer, "lastJoinedAt"> & { lastJoinedAt?: number }): SavedServer[] {
+  const next: SavedServer = {
+    ...input,
+    lastJoinedAt: input.lastJoinedAt ?? Date.now(),
+  };
+  const list = loadSavedServers().filter((item) => item.roomId !== next.roomId);
+  list.unshift(next);
+  window.localStorage.setItem(SAVED_SERVERS_KEY, JSON.stringify(list.slice(0, 24)));
+  return list;
+}
+
+export function removeSavedServer(roomId: string): SavedServer[] {
+  const list = loadSavedServers().filter((item) => item.roomId !== roomId);
+  window.localStorage.setItem(SAVED_SERVERS_KEY, JSON.stringify(list));
+  return list;
+}
+
+/** Activate a previously joined room without a fresh invite paste. */
+export function activateSavedServer(server: SavedServer): RoomMeta {
+  const parsed = parseInvite(server.invite);
+  const origins = orderBootstrapOrigins(
+    parsed?.origins?.length
+      ? parsed.origins
+      : loadRoomMeta()?.roomId === server.roomId
+        ? loadRoomMeta()?.bootstrapOrigins ?? []
+        : [],
+  );
+  const meta: RoomMeta = {
+    roomId: server.roomId,
+    inviteToken: server.inviteToken,
+    roomKey: server.roomKey,
+    invite: server.invite,
+    bootstrapOrigins: origins,
+  };
+  const current = loadSnapshot();
+  if (!current?.state || current.state.id !== server.roomId) clearSnapshot();
+  saveRoomMeta(meta);
+  upsertSavedServer(server);
+  return meta;
+}
+
+export function leaveCurrentRoom(): void {
+  clearSnapshot();
+  window.localStorage.removeItem(ROOM_META_KEY);
+}
 
 export function isDesktopShell(): boolean {
   return "__TAURI_INTERNALS__" in window || window.location.hostname.endsWith("tauri.localhost");
@@ -224,32 +331,43 @@ export async function createLocalRoom(input: {
     ...(bootstrap && isPublicHttpOrigin(bootstrap) ? [bootstrap] : []),
     ...(localNode && !publicUrl && localNode.lanOrigins.length === 0 ? [localNode.origin] : []),
   ]);
+  const origins =
+    inviteOrigins.length > 0
+      ? inviteOrigins
+      : bootstrap
+        ? [bootstrap]
+        : localNode
+          ? [localNode.origin]
+          : [];
   const invite = buildInvite({
     roomId,
     inviteToken,
     roomKey,
-    origins:
-      inviteOrigins.length > 0
-        ? inviteOrigins
-        : bootstrap
-          ? [bootstrap]
-          : localNode
-            ? [localNode.origin]
-            : [],
+    origins,
   });
   const meta: RoomMeta = {
     roomId,
     inviteToken,
     roomKey,
     invite,
-    bootstrapOrigins: bootstrap ? [bootstrap] : [],
+    // Keep reachable invite endpoints here — friends and rejoin use them as bootstrap.
+    bootstrapOrigins: origins,
   };
   saveRoomMeta(meta);
   saveSnapshot({ state, outbox: [] });
+  upsertSavedServer({
+    roomId,
+    name: input.name,
+    invite,
+    inviteToken,
+    roomKey,
+    role: "Владелец",
+    hostName: identity.displayName,
+  });
   debugLog("room", "created", {
     roomId,
     endpoints,
-    inviteOrigins: inviteOrigins.slice(0, 5),
+    inviteOrigins: origins.slice(0, 5),
     publicUrl,
     tunnelError: localNode?.tunnelError,
   });
@@ -268,19 +386,23 @@ export async function prepareJoin(input: {
   const identity = loadOrCreateIdentity(input.displayName.trim() || readProfileDisplayName() || "Участник");
   writeProfileDisplayName(identity.displayName);
   const localNode = await ensureLocalNode();
-  if (localNode?.publicOrigin) applyAutoPublicUrl(localNode.publicOrigin);
+  // Do NOT apply joiner's own tunnel as the room public URL — that would rewrite invites to the wrong peer.
   void warmIceServers();
   const bootstrap = normalizeOrigin(input.bootstrapOrigin ?? "");
   if (bootstrap) setBootstrapOrigin(bootstrap);
-  const origins = [
+  const origins = orderBootstrapOrigins([
     ...parsed.origins,
     ...(bootstrap ? [bootstrap] : []),
     ...(!isDesktopShell() && getBootstrapOrigin() ? [getBootstrapOrigin()] : []),
-  ].filter((origin, index, list) => list.indexOf(origin) === index);
+  ]);
 
   if (origins.length === 0 && !localNode) {
     throw new Error("В ссылке нет адреса узла — укажите bootstrap вручную");
   }
+
+  // Drop snapshot from another room so we never self-host stale state instead of joining.
+  const existingSnap = loadSnapshot();
+  if (!existingSnap?.state || existingSnap.state.id !== parsed.roomId) clearSnapshot();
 
   const meta: RoomMeta = {
     roomId: parsed.roomId,
@@ -290,6 +412,14 @@ export async function prepareJoin(input: {
     bootstrapOrigins: origins,
   };
   saveRoomMeta(meta);
+  upsertSavedServer({
+    roomId: meta.roomId,
+    name: "Комната",
+    invite: meta.invite,
+    inviteToken: meta.inviteToken,
+    roomKey: meta.roomKey,
+    role: "Участник",
+  });
   debugLog("room", "prepareJoin", {
     roomId: meta.roomId,
     origins: origins.slice(0, 8),
@@ -302,21 +432,60 @@ export async function prepareJoin(input: {
 
 export function rebuildInviteOrigins(meta: RoomMeta, extraOrigins: string[] = []): RoomMeta {
   const publicUrl = getPublicUrl();
+  const fromInvite = parseInvite(meta.invite)?.origins ?? [];
   const origins = orderInviteOrigins([
     ...(publicUrl ? [publicUrl] : []),
     ...extraOrigins,
-    ...meta.bootstrapOrigins.filter((origin) => isPublicHttpOrigin(origin)),
-  ]);
-  if (origins.length === 0) return meta;
+    ...fromInvite,
+    ...meta.bootstrapOrigins,
+  ]).filter((origin) => isPublicHttpOrigin(origin) || /^https?:\/\//i.test(origin));
+  // Prefer non-loopback for invites; keep LAN + public.
+  const usable = origins.filter((origin) => {
+    try {
+      const host = new URL(origin).hostname;
+      return host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]";
+    } catch {
+      return false;
+    }
+  });
+  if (usable.length === 0) return meta;
   const invite = buildInvite({
     roomId: meta.roomId,
     inviteToken: meta.inviteToken,
     roomKey: meta.roomKey,
-    origins,
+    origins: usable,
   });
-  const next = { ...meta, invite };
+  const next = { ...meta, invite, bootstrapOrigins: usable };
   saveRoomMeta(next);
+  const saved = loadSavedServers().find((item) => item.roomId === meta.roomId);
+  upsertSavedServer({
+    roomId: meta.roomId,
+    name: saved?.name ?? "Комната",
+    invite,
+    inviteToken: meta.inviteToken,
+    roomKey: meta.roomKey,
+    role: saved?.role ?? "Владелец",
+    hostName: saved?.hostName,
+  });
   return next;
+}
+
+/** Refresh invite with current public/LAN endpoints (coordinator after tunnel change). */
+export async function refreshCoordinatorInvite(meta?: RoomMeta | null): Promise<RoomMeta | null> {
+  const current = meta ?? loadRoomMeta();
+  if (!current) return null;
+  const localNode = await ensureLocalNode();
+  if (localNode?.publicOrigin) applyAutoPublicUrl(localNode.publicOrigin);
+  const endpoints = collectNodeEndpoints(
+    localNode
+      ? {
+          origin: localNode.origin,
+          lanOrigins: localNode.lanOrigins,
+          publicOrigin: localNode.publicOrigin,
+        }
+      : null,
+  );
+  return rebuildInviteOrigins(current, endpoints);
 }
 
 export type OpenSessionHandles = {
@@ -329,6 +498,7 @@ export async function openRoomSession(input: {
   onError?: (message: string) => void;
   onVoice?: (event: { channelId: string; peerId: string; displayName: string; joined: boolean }) => void;
   onSignal?: (event: { fromPeerId: string; data: unknown }) => void;
+  onInvite?: (meta: RoomMeta) => void;
 }): Promise<OpenSessionHandles | null> {
   const meta = loadRoomMeta();
   if (!meta) return null;
@@ -337,6 +507,10 @@ export async function openRoomSession(input: {
   const localNode = await ensureLocalNode();
   if (localNode?.publicOrigin) applyAutoPublicUrl(localNode.publicOrigin);
   void warmIceServers();
+
+  const snap = loadSnapshot();
+  if (snap?.state && snap.state.id !== meta.roomId) clearSnapshot();
+
   const endpoints = collectNodeEndpoints(
     localNode
       ? {
@@ -346,20 +520,39 @@ export async function openRoomSession(input: {
         }
       : null,
   );
+
+  // Coordinator: refresh invite when Quick Tunnel URL rotated so friends get a live link.
+  let activeMeta = meta;
+  const ownerOrHost =
+    snap?.state?.ownerId === identity.peerId || snap?.state?.hostId === identity.peerId;
+  if (ownerOrHost) {
+    const publicUrl = getPublicUrl() || localNode?.publicOrigin || "";
+    const inviteOrigins = parseInvite(meta.invite)?.origins ?? meta.bootstrapOrigins;
+    const needsRefresh =
+      (publicUrl && !inviteOrigins.includes(normalizeOrigin(publicUrl))) ||
+      Boolean(localNode?.lanOrigins?.some((origin) => !inviteOrigins.includes(normalizeOrigin(origin))));
+    if (needsRefresh) {
+      activeMeta = rebuildInviteOrigins(meta, endpoints);
+      input.onInvite?.(activeMeta);
+      debugLog("room", "invite refreshed", { publicUrl, origins: activeMeta.bootstrapOrigins.slice(0, 5) });
+    }
+  }
+
   let lastStatus: string | null = null;
+  let sawCoordinator = false;
   const session = new RoomSession({
-    roomId: meta.roomId,
-    inviteToken: meta.inviteToken,
-    roomKey: meta.roomKey,
+    roomId: activeMeta.roomId,
+    inviteToken: activeMeta.inviteToken,
+    roomKey: activeMeta.roomKey,
     identity,
-    bootstrapOrigins: meta.bootstrapOrigins,
+    bootstrapOrigins: orderBootstrapOrigins(activeMeta.bootstrapOrigins),
     localNode: localNode
       ? {
           origin: localNode.origin,
           endpoints: endpoints.length > 0 ? endpoints : [localNode.origin, ...localNode.lanOrigins],
         }
       : null,
-    initial: loadSnapshot(),
+    initial: loadSnapshot()?.state?.id === activeMeta.roomId ? loadSnapshot() : null,
     onView: (view) => {
       const key = `${view.status}:${view.isCoordinator}:${view.state?.hostId}:${view.state?.epoch}`;
       if (key !== lastStatus) {
@@ -369,6 +562,27 @@ export async function openRoomSession(input: {
           hostId: view.state?.hostId,
           online: view.state?.members.filter((m) => m.online).length,
           epoch: view.state?.epoch,
+        });
+      }
+      if (view.isCoordinator && view.status === "connected" && !sawCoordinator) {
+        sawCoordinator = true;
+        void refreshCoordinatorInvite(activeMeta).then((next) => {
+          if (!next) return;
+          const changed = next.invite !== activeMeta.invite;
+          activeMeta = next;
+          if (changed) input.onInvite?.(next);
+          debugLog("room", "coordinator invite synced", { origins: next.bootstrapOrigins.slice(0, 5), changed });
+        });
+      }
+      if (view.state) {
+        upsertSavedServer({
+          roomId: view.state.id,
+          name: view.state.name,
+          invite: activeMeta.invite,
+          inviteToken: activeMeta.inviteToken,
+          roomKey: activeMeta.roomKey,
+          role: view.state.ownerId === identity.peerId ? "Владелец" : "Участник",
+          hostName: view.state.hostName,
         });
       }
       input.onView(view);
@@ -389,13 +603,17 @@ export async function openRoomSession(input: {
     onSignal: (event) => {
       const kind =
         event.data && typeof event.data === "object" && "kind" in event.data
-          ? String((event.data as { kind?: string }).kind)
+          ? String((event.data as { kind?: unknown }).kind)
           : "unknown";
       debugLog("signal", `from ${event.fromPeerId}`, { kind }, "debug");
       input.onSignal?.(event);
     },
   });
-  debugLog("session", "start", { roomId: meta.roomId, endpoints, bootstrap: meta.bootstrapOrigins });
+  debugLog("session", "start", {
+    roomId: activeMeta.roomId,
+    endpoints,
+    bootstrap: orderBootstrapOrigins(activeMeta.bootstrapOrigins),
+  });
   session.start();
   return {
     session,

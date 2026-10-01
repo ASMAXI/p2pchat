@@ -459,7 +459,7 @@ fn reconcile(room: &mut Room, snapshot: &PersistedRoom) -> Vec<WireMessage> {
 
 fn join(hub: &mut Hub, command: &Value, tx: &Tx, socket_id: u64) -> Result<(String, String), HubError> {
     if command.get("protocol").and_then(Value::as_u64) != Some(PROTOCOL_VERSION) {
-        return Err(HubError::new("PROTOCOL", "Версия приложения несовместима с комнатой — обновите P2PChat"));
+        return Err(HubError::new("PROTOCOL", "Версия приложения несовместима с комнатой — обновите Drift"));
     }
     let room_id = str_field(command, "roomId", 80)?;
     let peer_id = str_field(command, "peerId", 100)?;

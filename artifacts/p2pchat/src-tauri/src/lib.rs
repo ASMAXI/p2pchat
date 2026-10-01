@@ -1,5 +1,6 @@
 mod local_hub;
 mod tunnel;
+mod updater;
 
 use local_hub::LocalHubHandle;
 use tauri::{
@@ -117,15 +118,16 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             start_local_sync_server,
-            restart_public_tunnel
+            restart_public_tunnel,
+            updater::install_update
         ])
         .setup(|app| {
-            let show = MenuItem::with_id(app, "show", "Открыть P2PChat", true, None::<&str>)?;
+            let show = MenuItem::with_id(app, "show", "Открыть Drift", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().cloned().expect("missing window icon"))
-                .tooltip("P2PChat")
+                .tooltip("Drift")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -162,5 +164,5 @@ pub fn run() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("error while running P2PChat");
+        .expect("error while running Drift");
 }
