@@ -50,7 +50,7 @@
     "@tanstack/react-query": "catalog:",
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/cli": "2.11.5",
-    "@tauri-apps/plugin-opener": "^2.7.0",
+    "@tauri-apps/plugin-opener": "2.5.4",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
