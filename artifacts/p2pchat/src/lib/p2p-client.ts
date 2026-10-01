@@ -447,12 +447,10 @@ export async function prepareJoin(input: {
 
 export function rebuildInviteOrigins(meta: RoomMeta, extraOrigins: string[] = []): RoomMeta {
   const publicUrl = getPublicUrl();
-  const fromInvite = parseInvite(meta.invite)?.origins ?? [];
+  // Only current public + provided endpoints — never keep historical trycloudflare URLs.
   const origins = orderInviteOrigins([
     ...(publicUrl ? [publicUrl] : []),
     ...extraOrigins,
-    ...fromInvite,
-    ...meta.bootstrapOrigins,
   ]).filter((origin) => isPublicHttpOrigin(origin) || /^https?:\/\//i.test(origin));
   // Prefer non-loopback for invites; keep LAN + public.
   const usable = origins.filter((origin) => {

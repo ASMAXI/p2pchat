@@ -54,12 +54,11 @@ import {
   isTurnConfigured,
   leaveCurrentRoom,
   loadIceSettings,
-  loadRoomMeta,
   loadSavedServers,
   openRoomSession,
   parseInvite,
   prepareJoin,
-  rebuildInviteOrigins,
+  refreshCoordinatorInvite,
   removeSavedServer,
   restartPublicTunnel,
   saveIceSettings,
@@ -1030,9 +1029,8 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
       if (info?.publicOrigin) {
         setPublicUrlDraft(info.publicOrigin);
         setPublicUrl(info.publicOrigin);
-        const meta = loadRoomMeta();
-        if (meta) {
-          const next = rebuildInviteOrigins(meta);
+        const next = await refreshCoordinatorInvite();
+        if (next) {
           writeStore(SERVER_KEY, { ...readStore(SERVER_KEY, seedServer), invite: next.invite });
         }
         setTunnelMsg(`Туннель: ${info.publicOrigin}. Скопируйте новое приглашение.`);
@@ -1085,11 +1083,11 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
         ? { urls: turnUrls.trim(), username: turnUser.trim(), credential: turnCred.trim() }
         : null,
     });
-    const meta = loadRoomMeta();
-    if (meta) {
-      const next = rebuildInviteOrigins(meta);
-      writeStore(SERVER_KEY, { ...readStore(SERVER_KEY, seedServer), invite: next.invite });
-    }
+    void refreshCoordinatorInvite().then((next) => {
+      if (next) {
+        writeStore(SERVER_KEY, { ...readStore(SERVER_KEY, seedServer), invite: next.invite });
+      }
+    });
     setSaved('Сохранено. Если вы хост — скопируйте новое приглашение друзьям.');
   };
 

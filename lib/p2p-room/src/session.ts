@@ -315,8 +315,13 @@ export class RoomSession {
         redirect = ended.redirect;
         retryOrigin = ended.kicked || ended.redirect ? undefined : this.lastOrigin;
         this.setStatus("reconnecting");
-        await sleep(this.timing.reconnectDelayMs);
+        await sleep(ended.redirect ? Math.max(this.timing.reconnectDelayMs, 1500) : this.timing.reconnectDelayMs);
         continue;
+      }
+      if (this.options.allowSelfHost === false) {
+        this.lastError =
+          "Не удалось достучаться до хоста. Попросите свежее приглашение — адрес Cloudflare мог устареть.";
+        this.options.onError?.(this.lastError);
       }
       this.setStatus("reconnecting");
       await sleep(this.timing.retryDelayMs);
@@ -350,7 +355,9 @@ export class RoomSession {
     let healthz: "ok" | "fail" | "skip" = "skip";
     if (!target.host) {
       healthz = await this.probeHealthz(target.origin);
-      if (healthz === "fail") {
+      // LAN: healthz fail → skip WS (fast). Public/tunnel: soft — still try WS
+      // (fetch/CORS/tunnel quirks can fail healthz while the socket works).
+      if (healthz === "fail" && !isPublicOrigin(target.origin)) {
         const outcome = { kind: "unreachable" as const };
         this.reportAttempt(target, outcome, started, healthz);
         return outcome;
@@ -644,9 +651,11 @@ export class RoomSession {
     this.probing = true;
     try {
       const fetchImpl = this.options.fetchImpl ?? fetch;
-      const origins = new Set<string>(this.options.bootstrapOrigins);
+      // Only probe live member endpoints — never invite/bootstrap history
+      // (stale LAN/tunnels caused step-down reconnect storms).
+      const origins = new Set<string>();
       for (const member of this.state.members) {
-        if (member.id === this.selfId) continue;
+        if (member.id === this.selfId || !member.online) continue;
         for (const endpoint of member.endpoints ?? []) origins.add(endpoint);
       }
       origins.delete(this.options.localNode?.origin ?? "");
