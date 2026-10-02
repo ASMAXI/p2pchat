@@ -1,6 +1,6 @@
 {
   "name": "@workspace/p2pchat",
-  "version": "0.8.0",
+  "version": "0.8.9",
   "private": true,
   "type": "module",
   "scripts": {
@@ -50,6 +50,7 @@
     "@tanstack/react-query": "catalog:",
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/cli": "2.11.5",
+    "@tauri-apps/plugin-notification": "^2.5.1",
     "@tauri-apps/plugin-opener": "2.5.4",
     "@types/node": "catalog:",
     "@types/react": "catalog:",

@@ -21,15 +21,11 @@ export function avatarInitials(name: string): string {
 }
 
 /** Prefix for image payloads in encrypted chat plaintext. */
-export const IMAGE_MESSAGE_PREFIX = "[[drift-img:]]";
-
-export function isImageMessage(text: string | null | undefined): boolean {
-  return Boolean(text?.startsWith(IMAGE_MESSAGE_PREFIX));
-}
-
-export function imagePayload(text: string): string {
-  return text.slice(IMAGE_MESSAGE_PREFIX.length);
-}
+export {
+  IMAGE_MESSAGE_PREFIX,
+  isImageMessage,
+  imagePayload,
+} from "@/lib/chat-payload";
 
 /** Compress/resize a File to a JPEG data-URL under ~180KB for chat. */
 export async function fileToChatImageDataUrl(file: File): Promise<string> {

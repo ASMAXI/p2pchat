@@ -12,6 +12,8 @@
     "allow-restart-public-tunnel",
     "allow-install-update",
     "allow-get-autostart-enabled",
-    "allow-set-autostart-enabled"
+    "allow-set-autostart-enabled",
+    "allow-set-tray-speaking",
+    "notification:default"
   ]
 }

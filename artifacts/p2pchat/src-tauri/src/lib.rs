@@ -1,5 +1,6 @@
 mod autostart;
 mod local_hub;
+mod tray_activity;
 mod tunnel;
 mod updater;
 
@@ -112,6 +113,7 @@ async fn restart_public_tunnel(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(LocalNodeState {
             handle: tokio::sync::Mutex::new(None),
             tunnel: tokio::sync::Mutex::new(None),
@@ -122,13 +124,14 @@ pub fn run() {
             restart_public_tunnel,
             updater::install_update,
             autostart::get_autostart_enabled,
-            autostart::set_autostart_enabled
+            autostart::set_autostart_enabled,
+            tray_activity::set_tray_speaking
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Открыть Drift", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
-            let _tray = TrayIconBuilder::new()
+            let _tray = TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().cloned().expect("missing window icon"))
                 .tooltip("Drift")
                 .menu(&menu)
@@ -158,6 +161,7 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            tray_activity::spawn_tray_flash(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {

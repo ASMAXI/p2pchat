@@ -1,3 +1,4 @@
+import { createNoiseGateNode, ensureNoiseWorklet } from "@/lib/noise-gate";
 import { loadAudioInputId, loadAudioOutputId } from "@/lib/audio-settings";
 import {
   buildIceServers,
@@ -22,6 +23,8 @@ export type MicProcessing = {
   echoCancellation: boolean;
   noiseSuppression: boolean;
   autoGainControl: boolean;
+  /** Stronger DSP noise gate (AudioWorklet) on top of browser NS. */
+  enhancedNoise: boolean;
 };
 
 export type VoiceMeshOptions = {
@@ -55,6 +58,7 @@ const DEFAULT_MIC: MicProcessing = {
   echoCancellation: true,
   noiseSuppression: true,
   autoGainControl: true,
+  enhancedNoise: true,
 };
 
 /** Discord-like user-volume boost: 0..2 (200%). */
@@ -83,6 +87,7 @@ export class VoiceMesh {
   private audioContext: AudioContext | null = null;
   private micGain: GainNode | null = null;
   private micSource: MediaStreamAudioSourceNode | null = null;
+  private noiseGate: AudioWorkletNode | null = null;
   private selfAnalyser: AnalyserNode | null = null;
   private selfSpeakTimer: number | null = null;
   private selfSpeaking = false;
@@ -195,6 +200,8 @@ export class VoiceMesh {
     if (ctx.state === "suspended") await ctx.resume();
 
     this.micSource?.disconnect();
+    this.noiseGate?.disconnect();
+    this.noiseGate = null;
     this.selfAnalyser?.disconnect();
 
     const source = ctx.createMediaStreamSource(nextRaw);
@@ -205,7 +212,20 @@ export class VoiceMesh {
     const selfAnalyser = ctx.createAnalyser();
     selfAnalyser.fftSize = 512;
     selfAnalyser.smoothingTimeConstant = 0.5;
-    source.connect(this.micGain);
+
+    let chainTail: AudioNode = source;
+    if (this.micProcessing.enhancedNoise) {
+      const ok = await ensureNoiseWorklet(ctx);
+      if (ok) {
+        const gate = createNoiseGateNode(ctx);
+        if (gate) {
+          this.noiseGate = gate;
+          source.connect(gate);
+          chainTail = gate;
+        }
+      }
+    }
+    chainTail.connect(this.micGain);
     this.micGain.connect(dest);
     this.micGain.connect(selfAnalyser);
     this.selfAnalyser = selfAnalyser;
@@ -742,6 +762,8 @@ export class VoiceMesh {
     this.selfSpeakTimer = null;
     this.micSource?.disconnect();
     this.micSource = null;
+    this.noiseGate?.disconnect();
+    this.noiseGate = null;
     this.selfAnalyser?.disconnect();
     this.selfAnalyser = null;
     for (const track of this.rawStream?.getTracks() ?? []) track.stop();

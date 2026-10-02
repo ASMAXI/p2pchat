@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-set-tray-speaking"
+description = "Update tray speaking indicator"
+commands.allow = ["set_tray_speaking"]

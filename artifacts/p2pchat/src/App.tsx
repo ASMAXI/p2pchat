@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { useEffect, useRef, useState, useMemo, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import { Route, Switch, Link, useLocation, Router as WouterRouter } from 'wouter';
 import {
   Activity,
@@ -89,11 +89,22 @@ import {
 import {
   avatarColors,
   avatarInitials,
-  IMAGE_MESSAGE_PREFIX,
-  isImageMessage,
-  imagePayload,
   fileToChatImageDataUrl,
 } from '@/lib/avatar';
+import {
+  encodeRichMessage,
+  encodeReact,
+  encodeEdit,
+  encodeDelete,
+  encodePin,
+  foldChatMessages,
+  extractMentions,
+  fileToChatAttachment,
+  parseWireText,
+  IMAGE_MESSAGE_PREFIX,
+} from '@/lib/chat-payload';
+import { notifyDesktop } from '@/lib/desktop-notify';
+import { cacheRoomMessages, loadCachedRoomMessages, mergeMessagesWithCache } from '@/lib/message-cache';
 import { getAutostartEnabled, setAutostartEnabled } from '@/lib/autostart';
 import { APP_THEMES, loadTheme, saveTheme, useAppTheme, type AppThemeId } from '@/lib/theme';
 import { rfRankFor } from '@/lib/patriot-ranks';
@@ -131,11 +142,14 @@ type Channel = { id: string; name: string; type: ChannelType; unreadCount: numbe
 type Message = {
   id: string;
   author: string;
+  authorId?: string;
   content: string;
   timestamp: string;
+  timestampIso?: string;
   avatar: string;
   isCurrentUser: boolean;
   channelId?: string;
+  delivery?: 'queued' | 'sent' | 'synced';
 };
 type VoiceRoom = {
   id: string;
@@ -552,6 +566,9 @@ function ChannelPane({
   echoCancellation,
   onToggleNoise,
   onToggleEcho,
+  enhancedNoise,
+  onToggleEnhancedNoise,
+  onLeaveVoice,
   onPeerContextMenu,
   onChannelResizeMouseDown,
 }: {
@@ -581,6 +598,9 @@ function ChannelPane({
   echoCancellation?: boolean;
   onToggleNoise?: () => void;
   onToggleEcho?: () => void;
+  enhancedNoise?: boolean;
+  onToggleEnhancedNoise?: () => void;
+  onLeaveVoice?: () => void;
   onPeerContextMenu?: (event: ReactMouseEvent, peerId: string) => void;
   onChannelResizeMouseDown?: (event: ReactMouseEvent) => void;
 }) {
@@ -683,6 +703,9 @@ function ChannelPane({
             {onToggleEcho && (
               <button className={`ghost-btn !h-8 !px-2 text-[10px] ${echoCancellation ? '' : 'opacity-50'}`} onClick={onToggleEcho} data-testid="button-toggle-echo">Эхо {echoCancellation ? 'вкл' : 'выкл'}</button>
             )}
+            {onToggleEnhancedNoise && (
+              <button className={`ghost-btn !h-8 !px-2 text-[10px] ${enhancedNoise ? '' : 'opacity-50'}`} onClick={onToggleEnhancedNoise} data-testid="button-toggle-enhanced-noise">Шумодав+ {enhancedNoise ? 'вкл' : 'выкл'}</button>
+            )}
           </div>
           {onMicVolume && micVolume !== undefined && (
             <label className="block text-[10px] text-[hsl(var(--muted-foreground))]">Громкость микрофона
@@ -691,75 +714,14 @@ function ChannelPane({
           )}
         </div>
       )}
+      {activeVoiceChannelId && onLeaveVoice && (
+        <button className="mb-1 flex w-full items-center gap-2 rounded-lg px-2 py-2 text-xs font-semibold text-[hsl(var(--primary))] transition hover:bg-[hsl(var(--primary)/.12)]" onClick={onLeaveVoice} data-testid="button-leave-voice-channel"><VolumeX size={15} /> Покинуть голосовой канал</button>
+      )}
       <button className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-xs font-semibold text-[hsl(var(--muted-foreground))] transition hover:bg-[hsl(var(--muted))] hover:text-[hsl(var(--foreground))]" onClick={onInvite} data-testid="button-invite-members"><UserPlus size={15} /> Пригласить друзей</button>
       <button className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-xs font-semibold text-[hsl(var(--accent))] transition hover:bg-[hsl(var(--accent)/.12)]" onClick={onLeaveServer} data-testid="button-leave-server"><X size={15} /> Покинуть сервер</button>
       <CreatorCredit className="block px-2 pt-1 text-[8px] text-[hsl(var(--muted-foreground)/.7)]" />
     </div>
   </aside>;
-}
-
-function VoiceCard({
-  room,
-  active,
-  onJoin,
-  onLeave,
-  muted,
-  deafened,
-  voiceHint,
-  voicePeers,
-  selfPeerId,
-  selfDisplayName,
-  speakingPeers,
-  peerVoiceStates,
-  onPeerContextMenu,
-}: {
-  room: StoredVoice;
-  active: boolean;
-  onJoin: () => void;
-  onLeave: () => void;
-  muted: boolean;
-  deafened: boolean;
-  voiceHint?: string;
-  voicePeers: Array<{ id: string; name: string }>;
-  selfPeerId: string;
-  selfDisplayName: string;
-  speakingPeers: Record<string, boolean>;
-  peerVoiceStates: Record<string, { muted: boolean; deafened: boolean }>;
-  onPeerContextMenu?: (event: ReactMouseEvent, peerId: string) => void;
-}) {
-  return <div className={`mx-4 mb-3 rounded-xl border p-3 transition ${active ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/.1)]' : 'border-[hsl(var(--border))] bg-[hsl(var(--card))]'}`}>
-    <div className="flex items-center gap-2"><span className={`grid h-7 w-7 place-items-center rounded-lg ${active ? 'bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))]' : 'bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]'}`}><Volume2 size={14} /></span><div className="min-w-0 flex-1"><div className="truncate text-xs font-bold">{room.name}</div><div className="mt-0.5 font-mono text-[9px] uppercase text-[hsl(var(--muted-foreground))]">{active ? (voiceHint || 'Вы внутри') : `${room.participantCount} ${room.participantCount === 1 ? 'участник' : 'участника'}`}</div></div>{active ? <button className="icon-btn" onClick={onLeave} aria-label="Покинуть голосовую комнату" data-testid={`button-leave-voice-${room.id}`}><X size={15} /></button> : <button className="icon-btn" onClick={onJoin} aria-label="Войти в голосовую комнату" data-testid={`button-join-voice-${room.id}`}><ArrowRight size={15} /></button>}</div>
-    {room.participants.length > 0 && (
-      <div className="mt-3 space-y-1.5">
-        {room.participants.map((person) => {
-          const peer = voicePeers.find((item) => item.name === person);
-          const isSelf = person === selfDisplayName;
-          const voiceState = isSelf ? { muted, deafened } : peer ? peerVoiceStates[peer.id] : undefined;
-          const peerKey = isSelf ? selfPeerId : peer?.id;
-          const speaking = peerKey ? Boolean(speakingPeers[peerKey]) : false;
-          const rowPeerId = isSelf ? undefined : peer?.id;
-          return (
-            <div
-              key={person}
-              className="flex items-center gap-2 text-[11px]"
-              onContextMenu={active && rowPeerId && onPeerContextMenu ? (event) => { event.preventDefault(); onPeerContextMenu(event, rowPeerId); } : undefined}
-            >
-              <div
-                className={`member-avatar ${speaking ? 'ring-2 ring-[hsl(var(--primary))] ring-offset-1 ring-offset-[hsl(var(--card))]' : ''}`}
-                title={person}
-                style={avatarColors(person)}
-              >
-                {avatarInitials(person)}
-              </div>
-              <span className="min-w-0 flex-1 truncate font-semibold"><PatriotName name={person} seed={peerKey ?? person} />{isSelf ? ' (вы)' : ''}</span>
-              {voiceState?.muted && <MicOff size={12} className="shrink-0 text-[hsl(var(--muted-foreground))]" />}
-              {voiceState?.deafened && <Headphones size={12} className="shrink-0 text-[hsl(var(--muted-foreground))]" />}
-            </div>
-          );
-        })}
-      </div>
-    )}
-  </div>;
 }
 
 type PeerVolumeMenuState = { peerId: string; x: number; y: number };
@@ -808,9 +770,269 @@ function PeerVolumeContextMenu({
   );
 }
 
-function MessageList({ messages }: { messages: Message[] }) {
-  if (!messages.length) return <div className="flex h-full flex-col items-center justify-center px-6 text-center"><div className="grid h-16 w-16 place-items-center rounded-2xl bg-[hsl(var(--primary)/.18)] text-[hsl(var(--secondary))]"><Sparkles size={25} /></div><h3 className="font-display mt-5 text-xl font-bold">Здесь пока тихо</h3><p className="mt-2 max-w-xs text-sm leading-6 text-[hsl(var(--muted-foreground))]">Начните разговор — первое сообщение задаст настроение комнате.</p></div>;
-  return <div className="space-y-1"><div className="mb-7 flex items-center gap-3 text-[11px] text-[hsl(var(--muted-foreground))]"><div className="diag-line" /><span>Сегодня</span><div className="diag-line" /></div>{messages.map((message, index) => <article className="message-item" key={message.id} style={{ animationDelay: `${index * 45}ms` }} data-testid={`message-${message.id}`}><div className="message-avatar" style={avatarColors(message.author)}>{message.avatar}</div><div className="min-w-0"><div className="flex items-baseline gap-2"><strong className="text-[13px]"><PatriotName name={message.author} /></strong><time className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">{message.timestamp}</time></div>{isImageMessage(message.content) ? <img src={imagePayload(message.content)} alt="Изображение в чате" className="mt-2 max-h-80 max-w-full rounded-xl border border-[hsl(var(--border))]" data-testid={`message-image-${message.id}`} /> : <p className="mt-1 text-[14px] leading-6 text-[hsl(var(--foreground)/.82)]">{message.content}</p>}</div></article>)}</div>;
+const REACTION_EMOJIS = ['👍', '😂', '🔥', '❤️'] as const;
+
+function messagePreview(content: string): string {
+  const parsed = parseWireText(content);
+  if (parsed.kind === 'image') return 'Изображение';
+  if (parsed.kind === 'text') {
+    if (parsed.file) return `Файл: ${parsed.file.name}`;
+    return parsed.body.slice(0, 120) || 'Сообщение';
+  }
+  return content.slice(0, 120);
+}
+
+function MessageList({
+  messages,
+  onReply,
+  onReact,
+  onEdit,
+  onDelete,
+  onPin,
+}: {
+  messages: Message[];
+  onReply: (id: string) => void;
+  onReact: (targetId: string, emoji: string) => void;
+  onEdit: (targetId: string, body: string) => void;
+  onDelete: (targetId: string) => void;
+  onPin: (targetId: string, pinned: boolean) => void;
+}) {
+  const folded = useMemo(
+    () =>
+      foldChatMessages(
+        messages.map((message) => ({
+          id: message.id,
+          channelId: message.channelId,
+          author: message.author,
+          authorId: message.authorId,
+          avatar: message.avatar,
+          content: message.content,
+          timestamp: message.timestamp,
+          isCurrentUser: message.isCurrentUser,
+          delivery: message.delivery,
+        })),
+      ),
+    [messages],
+  );
+  const byId = useMemo(() => new Map(folded.map((item) => [item.id, item])), [folded]);
+  const pinned = folded.filter((item) => item.pinned && !item.deleted);
+
+  if (!folded.length) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+        <div className="grid h-16 w-16 place-items-center rounded-2xl bg-[hsl(var(--primary)/.18)] text-[hsl(var(--secondary))]"><Sparkles size={25} /></div>
+        <h3 className="font-display mt-5 text-xl font-bold">Здесь пока тихо</h3>
+        <p className="mt-2 max-w-xs text-sm leading-6 text-[hsl(var(--muted-foreground))]">Начните разговор — первое сообщение задаст настроение комнате.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      {pinned.length > 0 && (
+        <div className="mb-4 space-y-2 rounded-xl border border-[hsl(var(--primary)/.35)] bg-[hsl(var(--primary)/.08)] p-3" data-testid="banner-pinned-messages">
+          <div className="font-mono text-[9px] font-bold uppercase tracking-[.14em] text-[hsl(var(--primary))]">Закреплено</div>
+          {pinned.map((item) => (
+            <div key={`pin-${item.id}`} className="text-xs leading-5">
+              <strong><PatriotName name={item.author} /></strong>: {item.deleted ? item.content : item.imageUrl ? 'Изображение' : item.content.slice(0, 160)}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="mb-7 flex items-center gap-3 text-[11px] text-[hsl(var(--muted-foreground))]"><div className="diag-line" /><span>Сегодня</span><div className="diag-line" /></div>
+      {folded.map((message, index) => {
+        const reply = message.replyTo ? byId.get(message.replyTo) : undefined;
+        return (
+          <article className="message-item group" key={message.id} style={{ animationDelay: `${index * 45}ms` }} data-testid={`message-${message.id}`}>
+            <div className="message-avatar" style={avatarColors(message.author)}>{message.avatar}</div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline gap-2">
+                <strong className="text-[13px]"><PatriotName name={message.author} /></strong>
+                <time className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">{message.timestamp}</time>
+                {message.edited && <span className="font-mono text-[8px] text-[hsl(var(--muted-foreground))]">изм.</span>}
+                {message.pinned && <span className="font-mono text-[8px] text-[hsl(var(--primary))]">📌</span>}
+              </div>
+              {reply && !reply.deleted && (
+                <div className="mt-1 border-l-2 border-[hsl(var(--border))] pl-2 text-[11px] text-[hsl(var(--muted-foreground))]" data-testid={`message-reply-${message.id}`}>
+                  <span className="font-semibold text-[hsl(var(--foreground)/.7)]"><PatriotName name={reply.author} /></span>
+                  <span className="ml-1">{reply.imageUrl ? 'Изображение' : reply.content.slice(0, 100)}</span>
+                </div>
+              )}
+              {message.imageUrl ? (
+                <img src={message.imageUrl} alt="Изображение в чате" className="mt-2 max-h-80 max-w-full rounded-xl border border-[hsl(var(--border))]" data-testid={`message-image-${message.id}`} />
+              ) : message.file ? (
+                <a href={message.file.dataUrl} download={message.file.name} className="mt-2 inline-flex items-center gap-2 rounded-lg border border-[hsl(var(--border))] px-3 py-2 text-xs font-semibold hover:bg-[hsl(var(--muted)/.5)]" data-testid={`message-file-${message.id}`}>
+                  <Download size={14} /> {message.file.name}
+                </a>
+              ) : (
+                <p className={`mt-1 text-[14px] leading-6 ${message.deleted ? 'italic text-[hsl(var(--muted-foreground))]' : 'text-[hsl(var(--foreground)/.82)]'}`}>{message.content}</p>
+              )}
+              {message.reactions && Object.keys(message.reactions).length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1" data-testid={`message-reactions-${message.id}`}>
+                  {Object.entries(message.reactions).map(([emoji, authors]) => (
+                    <button key={emoji} type="button" className="rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.4)] px-2 py-0.5 text-[11px]" onClick={() => onReact(message.id, emoji)} title={authors.join(', ')}>
+                      {emoji} {authors.length}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {!message.deleted && (
+                <div className="mt-1 flex flex-wrap gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100" data-testid={`message-actions-${message.id}`}>
+                  <button type="button" className="ghost-btn !h-7 !px-2 text-[10px]" onClick={() => onReply(message.id)} data-testid={`button-reply-${message.id}`}>Ответить</button>
+                  {REACTION_EMOJIS.map((emoji) => (
+                    <button key={emoji} type="button" className="ghost-btn !h-7 !w-7 !p-0 text-sm" onClick={() => onReact(message.id, emoji)} aria-label={`Реакция ${emoji}`}>{emoji}</button>
+                  ))}
+                  {message.isCurrentUser && (
+                    <button type="button" className="ghost-btn !h-7 !px-2 text-[10px]" onClick={() => { const next = window.prompt('Новый текст сообщения', message.content); if (next != null && next.trim()) onEdit(message.id, next.trim()); }} data-testid={`button-edit-${message.id}`}>Изменить</button>
+                  )}
+                  {message.isCurrentUser && (
+                    <button type="button" className="ghost-btn !h-7 !px-2 text-[10px] text-[hsl(var(--accent))]" onClick={() => { if (window.confirm('Удалить сообщение?')) onDelete(message.id); }} data-testid={`button-delete-${message.id}`}>Удалить</button>
+                  )}
+                  <button type="button" className="ghost-btn !h-7 !px-2 text-[10px]" onClick={() => onPin(message.id, !message.pinned)} data-testid={`button-pin-${message.id}`}>{message.pinned ? 'Открепить' : 'Закрепить'}</button>
+                </div>
+              )}
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function ScreenShareStage({
+  label,
+  sharingScreen,
+  onStopShare,
+  videoRef,
+  videoMuted,
+}: {
+  label: string;
+  sharingScreen: boolean;
+  onStopShare: () => void;
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  videoMuted: boolean;
+}) {
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [viewMode, setViewMode] = useState<'window' | 'fullscreen'>('window');
+
+  const enterFullscreen = async () => {
+    setViewMode('fullscreen');
+    const el = stageRef.current;
+    if (!el) return;
+    try {
+      if (document.fullscreenElement !== el && el.requestFullscreen) {
+        await el.requestFullscreen();
+      }
+    } catch {
+      /* CSS overlay fallback */
+    }
+  };
+
+  const exitFullscreen = async () => {
+    setViewMode('window');
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  useEffect(() => {
+    const onFsChange = () => {
+      if (!document.fullscreenElement && viewMode === 'fullscreen') setViewMode('window');
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, [viewMode]);
+
+  const isFullscreen = viewMode === 'fullscreen';
+
+  return (
+    <div
+      ref={stageRef}
+      className={
+        isFullscreen
+          ? 'screen-share-stage fixed inset-0 z-[100] flex flex-col bg-black'
+          : 'screen-share-stage mx-4 mt-3 shrink-0 overflow-hidden rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/.08)]'
+      }
+      data-testid="screen-share-stage"
+    >
+      <div className="flex items-center justify-between gap-2 border-b border-[hsl(var(--border))] px-3 py-2">
+        <span className="flex items-center gap-2 text-xs font-semibold"><Monitor size={14} className="text-[hsl(var(--primary))]" /> {label}</span>
+        <div className="flex items-center gap-1">
+          <button type="button" className={`ghost-btn !h-8 !px-2 text-[10px] ${!isFullscreen ? 'border-[hsl(var(--primary))]' : ''}`} onClick={() => void exitFullscreen()} data-testid="button-screen-share-window-mode">В окне</button>
+          <button type="button" className={`ghost-btn !h-8 !px-2 text-[10px] ${isFullscreen ? 'border-[hsl(var(--primary))]' : ''}`} onClick={() => void enterFullscreen()} data-testid="button-screen-share-fullscreen-mode">На весь экран</button>
+          {sharingScreen && (
+            <button type="button" className="ghost-btn !h-8 !px-2 text-[10px]" onClick={onStopShare} data-testid="button-screen-share-stop-inline">Остановить</button>
+          )}
+          {isFullscreen && (
+            <button type="button" className="icon-btn" onClick={() => void exitFullscreen()} aria-label="Закрыть полноэкранный режим" data-testid="button-screen-share-close-fullscreen"><X size={16} /></button>
+          )}
+        </div>
+      </div>
+      <video
+        ref={videoRef}
+        className={`screen-share-video w-full bg-black object-contain ${isFullscreen ? 'min-h-0 flex-1' : 'max-h-[42vh]'}`}
+        autoPlay
+        playsInline
+        muted={videoMuted}
+        data-testid="screen-share-video"
+      />
+    </div>
+  );
+}
+
+function ChatComposer({
+  draft,
+  onDraftChange,
+  onKeyDown,
+  onSend,
+  onPickFile,
+  fileInputRef,
+  placeholder,
+  replyToLabel,
+  onClearReply,
+  outboxCount,
+  footerHint,
+  fileInputTestId,
+  attachTestId,
+}: {
+  draft: string;
+  onDraftChange: (value: string) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  onSend: () => void;
+  onPickFile: (file: File | undefined) => void;
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
+  placeholder: string;
+  replyToLabel?: string | null;
+  onClearReply?: () => void;
+  outboxCount: number;
+  footerHint: string;
+  fileInputTestId: string;
+  attachTestId: string;
+}) {
+  return (
+    <div className="composer">
+      {outboxCount > 0 && (
+        <div className="mb-2 rounded-lg border border-[hsl(var(--accent)/.35)] bg-[hsl(var(--accent)/.08)] px-3 py-2 text-xs" data-testid="banner-outbox">
+          В очереди: {outboxCount} {outboxCount === 1 ? 'сообщение' : outboxCount < 5 ? 'сообщения' : 'сообщений'} — уйдут при связи
+        </div>
+      )}
+      {replyToLabel && onClearReply && (
+        <div className="mb-2 flex items-center gap-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.35)] px-2 py-1.5 text-xs" data-testid="chip-reply-to">
+          <span className="min-w-0 flex-1 truncate">Ответ: {replyToLabel}</span>
+          <button type="button" className="icon-btn !h-7 !w-7" onClick={onClearReply} aria-label="Отменить ответ" data-testid="button-clear-reply"><X size={14} /></button>
+        </div>
+      )}
+      <input ref={fileInputRef} type="file" accept="image/*,application/pdf,application/zip,.pdf,.zip" className="hidden" onChange={(e) => { void onPickFile(e.target.files?.[0]); }} data-testid={fileInputTestId} />
+      <div className="composer-inner">
+        <button type="button" className="icon-btn shrink-0" onClick={() => fileInputRef.current?.click()} aria-label="Прикрепить файл" data-testid={attachTestId}><ImageIcon size={18} /></button>
+        <textarea value={draft} onChange={(event) => onDraftChange(event.target.value)} onKeyDown={onKeyDown} placeholder={placeholder} aria-label="Новое сообщение" data-testid="input-message" rows={1} />
+        <button className="primary-btn !h-9 !w-9 !p-0" onClick={onSend} aria-label="Отправить сообщение" data-testid="button-send-message"><Send size={15} /></button>
+      </div>
+      <div className="mt-2 flex items-center gap-1.5 px-1 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]"><LockKeyhole size={10} /> {footerHint} <span className="ml-auto">enter — отправить</span></div>
+    </div>
+  );
 }
 
 function Workspace() {
@@ -831,6 +1053,8 @@ function Workspace() {
   const [micVolume, setMicVolume] = useState(1);
   const [noiseSuppression, setNoiseSuppression] = useState(true);
   const [echoCancellation, setEchoCancellation] = useState(true);
+  const [enhancedNoise, setEnhancedNoise] = useState(true);
+  const [replyToId, setReplyToId] = useState<string | null>(null);
   const [peerVolumes, setPeerVolumes] = useState<Record<string, number>>({});
   const [speakingPeers, setSpeakingPeers] = useState<Record<string, boolean>>({});
   const [peerVoiceStates, setPeerVoiceStates] = useState<Record<string, { muted: boolean; deafened: boolean }>>({});
@@ -866,6 +1090,14 @@ function Workspace() {
   const displayName = readStore(PROFILE_NAME_KEY, 'Вы');
   const selectedChannel = channels.find((channel) => channel.id === selectedId) ?? channels[0];
   const channelMessages = messages.filter((message) => message.channelId === selectedId || (!message.channelId && selectedId === 'general'));
+  const outboxCount = channelMessages.filter((message) => message.delivery === 'queued' || message.delivery === 'sent').length;
+  const memberNames = useMemo(() => members.map((member) => member.name), [members]);
+  const replyToPreview = replyToId
+    ? (() => {
+        const raw = messages.find((message) => message.id === replyToId);
+        return raw ? `${raw.author}: ${messagePreview(raw.content)}` : null;
+      })()
+    : null;
   const selectedVoice = voiceRooms.find((room) => room.id === selectedId);
 
   useEffect(() => { writeStore(SERVER_KEY, server); }, [server]);
@@ -968,21 +1200,69 @@ function Workspace() {
             setVoicePeers(view.state.voiceParticipants[voiceChannelRef.current] ?? []);
           }
         }
-        const mappedMessages = view.messages.map((message) => ({
+        const liveMessages: Message[] = view.messages.map((message) => ({
           id: message.id,
           author: message.author,
+          authorId: message.authorId,
           avatar: avatarInitials(message.author),
           content: message.text ?? '🔒 не удалось расшифровать',
           timestamp: new Date(message.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+          timestampIso: message.timestamp,
           isCurrentUser: message.authorId === peerId,
           channelId: message.channelId,
+          delivery: message.delivery,
         }));
+        const roomId = server.roomId ?? '';
+        const cachedMessages: Message[] = loadCachedRoomMessages(roomId).map((entry) => ({
+          id: entry.id,
+          author: entry.author,
+          authorId: entry.authorId,
+          avatar: avatarInitials(entry.author),
+          content: entry.text ?? '',
+          timestamp: new Date(entry.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+          timestampIso: entry.timestamp,
+          isCurrentUser: entry.authorId === peerId,
+          channelId: entry.channelId,
+        }));
+        const mappedMessages = mergeMessagesWithCache(liveMessages, cachedMessages);
+        if (roomId) {
+          cacheRoomMessages(
+            roomId,
+            liveMessages.map((item) => ({
+              id: item.id,
+              channelId: item.channelId ?? '',
+              authorId: item.authorId ?? '',
+              author: item.author,
+              text: item.content.startsWith('🔒') ? null : item.content,
+              timestamp: item.timestampIso ?? item.timestamp,
+            })),
+          );
+        }
+        const namesForMentions = [
+          ...new Set([displayName, ...(view.state?.members ?? []).map((member) => member.name)]),
+        ];
         if (knownMessageIdsRef.current === null) {
           knownMessageIdsRef.current = new Set(mappedMessages.map((message) => message.id));
         } else if (!deafenedRef.current) {
           for (const message of mappedMessages) {
             if (knownMessageIdsRef.current.has(message.id) || message.isCurrentUser) continue;
-            playUiSound(isImageMessage(message.content) ? 'chat-image' : 'chat-text');
+            const parsed = parseWireText(message.content);
+            if (parsed.kind === 'react' || parsed.kind === 'edit' || parsed.kind === 'delete' || parsed.kind === 'pin' || parsed.kind === 'unknown') {
+              continue;
+            }
+            const preview = messagePreview(message.content);
+            void notifyDesktop('message', message.author, preview);
+            if (parsed.kind === 'text') {
+              const mentioned = extractMentions(parsed.body, namesForMentions);
+              if (mentioned.some((name) => name.toLowerCase() === displayName.toLowerCase())) {
+                playUiSound('mention');
+                void notifyDesktop('mention', message.author, preview);
+              } else {
+                playUiSound(parsed.file ? 'chat-text' : parsed.body ? 'chat-text' : 'chat-image');
+              }
+            } else if (parsed.kind === 'image') {
+              playUiSound('chat-image');
+            }
           }
           knownMessageIdsRef.current = new Set(mappedMessages.map((message) => message.id));
         } else {
@@ -998,6 +1278,7 @@ function Workspace() {
         if (event.joined) {
           if (event.peerId !== peerId && !deafenedRef.current) {
             playUiSound('voice-join');
+            void notifyDesktop('voice-join', event.displayName, 'Подключился к голосовому каналу');
           }
           void voiceMeshRef.current?.addPeer(event.peerId, peerId < event.peerId).catch((error) => {
             setToast(error instanceof Error ? error.message : 'Не удалось подключить голосовой канал');
@@ -1036,17 +1317,17 @@ function Workspace() {
   }, [server.roomId, server.inviteToken, peerId]);
 
   const sendMessage = () => {
-    const content = draft.trim();
-    if (!content) return;
-    if (!sessionRef.current) {
-      setToast('Переподключаемся к комнате…');
-      return;
-    }
-    if (!sessionRef.current.sendChat(selectedId, content)) {
-      setToast('Сообщение слишком длинное или нет ключа комнаты');
-      return;
-    }
+    const body = draft.trim();
+    if (!body) return;
+    const mentions = extractMentions(body, memberNames);
+    const payload = encodeRichMessage({
+      body,
+      replyTo: replyToId ?? undefined,
+      mentions: mentions.length ? mentions : undefined,
+    });
+    if (!sendChatPayload(payload)) return;
     setDraft('');
+    setReplyToId(null);
   };
   const sendChatPayload = (content: string) => {
     if (!sessionRef.current) {
@@ -1059,16 +1340,58 @@ function Workspace() {
     }
     return true;
   };
-  const onVoiceImagePick = async (file: File | undefined) => {
+  const onChatFilePick = async (file: File | undefined) => {
     if (!file) return;
     try {
-      const dataUrl = await fileToChatImageDataUrl(file);
-      if (sendChatPayload(`${IMAGE_MESSAGE_PREFIX}${dataUrl}`)) setToast('Изображение отправлено');
+      const isImage = file.type.startsWith('image/');
+      if (isImage) {
+        const dataUrl = await fileToChatImageDataUrl(file);
+        if (sendChatPayload(`${IMAGE_MESSAGE_PREFIX}${dataUrl}`)) {
+          setToast('Изображение отправлено');
+          setReplyToId(null);
+        }
+        return;
+      }
+      const attachment = await fileToChatAttachment(file);
+      const body = draft.trim();
+      const mentions = extractMentions(body, memberNames);
+      const payload = encodeRichMessage({
+        body: body || attachment.name,
+        replyTo: replyToId ?? undefined,
+        mentions: mentions.length ? mentions : undefined,
+        file: attachment,
+      });
+      if (sendChatPayload(payload)) {
+        setDraft('');
+        setReplyToId(null);
+        setToast('Файл отправлен');
+      }
     } catch (error) {
-      setToast(error instanceof Error ? error.message : 'Не удалось обработать изображение');
+      setToast(error instanceof Error ? error.message : 'Не удалось обработать файл');
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
+  };
+  const onMessageReply = (id: string) => setReplyToId(id);
+  const onMessageReact = (targetId: string, emoji: string) => {
+    sendChatPayload(encodeReact(targetId, emoji));
+  };
+  const onMessageEdit = (targetId: string, body: string) => {
+    sendChatPayload(encodeEdit(targetId, body));
+  };
+  const onMessageDelete = (targetId: string) => {
+    sendChatPayload(encodeDelete(targetId));
+  };
+  const onMessagePin = (targetId: string, pinned: boolean) => {
+    sendChatPayload(encodePin(targetId, pinned));
+  };
+  const messageListProps = {
+    messages: channelMessages,
+    onReply: onMessageReply,
+    onReact: onMessageReact,
+    onEdit: onMessageEdit,
+    onDelete: onMessageDelete,
+    onPin: onMessagePin,
   };
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } };
   const addChannel = (channelName: string, type: ChannelType) => {
@@ -1145,6 +1468,7 @@ function Workspace() {
         voiceMeshRef.current?.setMicVolume(micVolume);
         voiceMeshRef.current?.setMuted(muted);
         voiceMeshRef.current?.setDeafened(deafened);
+        void voiceMeshRef.current?.setMicProcessing({ noiseSuppression, echoCancellation, enhancedNoise });
         sessionRef.current?.setVoiceChannel(room.id);
       } catch (error) {
         setToast(error instanceof Error ? error.message : 'Не удалось получить доступ к микрофону');
@@ -1202,6 +1526,14 @@ function Workspace() {
       });
     }
   }, [screenShareStream]);
+
+  useEffect(() => {
+    if (!isDesktopShell()) return;
+    const remoteSpeaking = Object.entries(speakingPeers).some(([id, speaking]) => speaking && id !== peerId);
+    void import('@tauri-apps/api/core').then(({ invoke }) => {
+      void invoke('set_tray_speaking', { speaking: remoteSpeaking });
+    });
+  }, [speakingPeers, peerId]);
 
   const screenShareLabel = (() => {
     if (!screenSharePeerId || !screenShareStream) return '';
@@ -1272,6 +1604,9 @@ function Workspace() {
       echoCancellation={echoCancellation}
       onToggleNoise={() => { const next = !noiseSuppression; setNoiseSuppression(next); void voiceMeshRef.current?.setMicProcessing({ noiseSuppression: next }); }}
       onToggleEcho={() => { const next = !echoCancellation; setEchoCancellation(next); void voiceMeshRef.current?.setMicProcessing({ echoCancellation: next }); }}
+      enhancedNoise={enhancedNoise}
+      onToggleEnhancedNoise={() => { const next = !enhancedNoise; setEnhancedNoise(next); void voiceMeshRef.current?.setMicProcessing({ enhancedNoise: next }); }}
+      onLeaveVoice={activeVoice ? leaveVoice : undefined}
       onPeerContextMenu={openPeerVolumeMenu}
       onChannelResizeMouseDown={(event) => { event.preventDefault(); layoutDragRef.current = 'channel'; }}
     />
@@ -1356,42 +1691,54 @@ function Workspace() {
             </div>
           </div>
           {activeVoice === selectedVoice.id && screenShareStream && (
-            <div className="screen-share-stage mx-4 mt-3 shrink-0 overflow-hidden rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/.08)]" data-testid="screen-share-stage">
-              <div className="flex items-center justify-between gap-2 border-b border-[hsl(var(--border))] px-3 py-2">
-                <span className="flex items-center gap-2 text-xs font-semibold"><Monitor size={14} className="text-[hsl(var(--primary))]" /> {screenShareLabel}</span>
-                {sharingScreen && (
-                  <button type="button" className="ghost-btn !h-8 !px-2 text-[10px]" onClick={() => void toggleScreenShare()} data-testid="button-screen-share-stop-inline">
-                    Остановить
-                  </button>
-                )}
-              </div>
-              <video
-                ref={screenVideoRef}
-                className="screen-share-video max-h-[42vh] w-full bg-black object-contain"
-                autoPlay
-                playsInline
-                muted={screenSharePeerId === peerId}
-                data-testid="screen-share-video"
-              />
-            </div>
+            <ScreenShareStage
+              label={screenShareLabel}
+              sharingScreen={sharingScreen}
+              onStopShare={() => void toggleScreenShare()}
+              videoRef={screenVideoRef}
+              videoMuted={screenSharePeerId === peerId}
+            />
           )}
           {activeVoice === selectedVoice.id && (
             <div className="voice-room-layout">
-              <div className="message-scroll scrollbar-thin min-h-0 flex-1"><MessageList messages={channelMessages} /></div>
-              <div className="composer">
-                <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onVoiceImagePick(e.target.files?.[0])} data-testid="input-voice-image-file" />
-                <div className="composer-inner">
-                  <button type="button" className="icon-btn shrink-0" onClick={() => fileInputRef.current?.click()} aria-label="Прикрепить изображение" data-testid="button-voice-image-attach"><ImageIcon size={18} /></button>
-                  <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onComposerKeyDown} placeholder={`Написать в #${selectedVoice.name}...`} aria-label="Новое сообщение в голосовом канале" data-testid="input-message" rows={1} />
-                  <button className="primary-btn !h-9 !w-9 !p-0" onClick={sendMessage} aria-label="Отправить сообщение" data-testid="button-send-message"><Send size={15} /></button>
-                </div>
-                <div className="mt-2 flex items-center gap-1.5 px-1 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]"><LockKeyhole size={10} /> end-to-end · голос + чат канала <span className="ml-auto">enter — отправить</span></div>
-              </div>
+              <div className="message-scroll scrollbar-thin min-h-0 flex-1"><MessageList {...messageListProps} /></div>
+              <ChatComposer
+                draft={draft}
+                onDraftChange={setDraft}
+                onKeyDown={onComposerKeyDown}
+                onSend={sendMessage}
+                onPickFile={onChatFilePick}
+                fileInputRef={fileInputRef}
+                placeholder={`Написать в #${selectedVoice.name}...`}
+                replyToLabel={replyToPreview}
+                onClearReply={() => setReplyToId(null)}
+                outboxCount={outboxCount}
+                footerHint="end-to-end · голос + чат канала"
+                fileInputTestId="input-voice-image-file"
+                attachTestId="button-voice-image-attach"
+              />
             </div>
           )}
         </div>
       ) : (
-        <div className="chat-area"><div className="message-scroll scrollbar-thin"><MessageList messages={channelMessages} /></div><div className="composer"><input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onVoiceImagePick(e.target.files?.[0])} data-testid="input-chat-image-file" /><div className="composer-inner"><button className="icon-btn shrink-0" onClick={() => fileInputRef.current?.click()} aria-label="Прикрепить изображение" data-testid="button-add-attachment"><ImageIcon size={18} /></button><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onComposerKeyDown} placeholder={`Написать в #${selectedChannel?.name ?? 'общий'}...`} aria-label="Новое сообщение" data-testid="input-message" rows={1} /><button className="primary-btn !h-9 !w-9 !p-0" onClick={sendMessage} aria-label="Отправить сообщение" data-testid="button-send-message"><Send size={15} /></button></div><div className="mt-2 flex items-center gap-1.5 px-1 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]"><LockKeyhole size={10} /> end-to-end · {isCoordinator ? 'вы координатор' : connectionHint} <span className="ml-auto">enter — отправить</span></div></div></div>
+        <div className="chat-area">
+          <div className="message-scroll scrollbar-thin"><MessageList {...messageListProps} /></div>
+          <ChatComposer
+            draft={draft}
+            onDraftChange={setDraft}
+            onKeyDown={onComposerKeyDown}
+            onSend={sendMessage}
+            onPickFile={onChatFilePick}
+            fileInputRef={fileInputRef}
+            placeholder={`Написать в #${selectedChannel?.name ?? 'общий'}...`}
+            replyToLabel={replyToPreview}
+            onClearReply={() => setReplyToId(null)}
+            outboxCount={outboxCount}
+            footerHint={`end-to-end · ${isCoordinator ? 'вы координатор' : connectionHint}`}
+            fileInputTestId="input-chat-image-file"
+            attachTestId="button-add-attachment"
+          />
+        </div>
       )}
     </main>
     <aside className="member-pane scrollbar-thin relative">
@@ -1405,7 +1752,6 @@ function Workspace() {
       />
       <div className="mb-7"><div className="flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Комната</span><span className="h-2 w-2 rounded-full bg-[hsl(var(--primary))]" /></div><div className="mt-4 flex items-center gap-2"><div className="grid h-8 w-8 place-items-center rounded-lg text-xs font-extrabold" style={avatarColors(server.name)}>{avatarInitials(server.name)}</div><div><div className="text-xs font-bold">{server.name}</div><div className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">координатор: {server.hostName}</div></div></div></div>
       <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.length === 0 ? <p className="text-xs text-[hsl(var(--muted-foreground))]">{connectionStatus === 'connected' ? 'Пока только вы' : 'Ждём подключения…'}</p> : visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={avatarColors(member.name)}>{avatarInitials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="min-w-0 truncate text-xs font-semibold"><PatriotName name={member.name} seed={member.id} /></span>{member.name === server.hostName && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">координатор</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
-      <div><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Голосовые</span><button className="icon-btn" style={{ width: 22, height: 22 }} onClick={() => setShowChannelDialog(true)} aria-label="Создать голосовую комнату" data-testid="button-member-add-voice"><Plus size={14} /></button></div>{voiceRooms.map((room) => <VoiceCard key={room.id} room={room} active={activeVoice === room.id} onJoin={() => void joinVoice(room)} onLeave={leaveVoice} muted={muted} deafened={deafened} voiceHint={activeVoice === room.id ? voiceStatusLabel : undefined} voicePeers={voicePeers} selfPeerId={peerId} selfDisplayName={displayName} speakingPeers={speakingPeers} peerVoiceStates={peerVoiceStates} onPeerContextMenu={openPeerVolumeMenu} />)}</div>
     </aside>
     {showChannelDialog && <CreateChannelDialog onClose={() => setShowChannelDialog(false)} onCreate={addChannel} />}
     {showInviteDialog && <InviteDialog server={server} onClose={() => setShowInviteDialog(false)} onNotify={notify} />}

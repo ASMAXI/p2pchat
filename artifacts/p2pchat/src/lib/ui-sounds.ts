@@ -3,7 +3,7 @@
  * Distinct per scenario so they stay recognizable at low volume.
  */
 
-export type UiSoundId = "member-join" | "voice-join" | "chat-text" | "chat-image";
+export type UiSoundId = "member-join" | "voice-join" | "chat-text" | "chat-image" | "mention";
 
 const ENABLED_KEY = "p2pchat-ui-sounds";
 
@@ -99,6 +99,12 @@ export function playUiSound(id: UiSoundId): void {
       // Fuller double pop
       tone(ctx, { freq: 740, start: t, duration: 0.07, type: "triangle", gain: 0.055 });
       tone(ctx, { freq: 980, start: t + 0.08, duration: 0.09, type: "sine", gain: 0.05 });
+      break;
+    case "mention":
+      // Attention chime
+      tone(ctx, { freq: 784, start: t, duration: 0.1, type: "triangle", gain: 0.09 });
+      tone(ctx, { freq: 1046, start: t + 0.12, duration: 0.14, type: "sine", gain: 0.08 });
+      tone(ctx, { freq: 1318, start: t + 0.26, duration: 0.16, type: "triangle", gain: 0.06 });
       break;
     default:
       break;
