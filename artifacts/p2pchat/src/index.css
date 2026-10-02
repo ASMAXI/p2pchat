@@ -541,34 +541,42 @@ html.voice-overlay-mode body,
 html.voice-overlay-mode #root {
   height: 100%;
   min-height: 100%;
+  margin: 0;
   background: transparent !important;
+  overflow: hidden !important;
 }
 .voice-overlay-root {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background: transparent;
+  background: transparent !important;
 }
 .voice-overlay-panel {
   position: absolute;
-  top: 12px;
-  left: 12px;
-  min-width: 180px;
-  max-width: min(280px, 42vw);
+  top: 10px;
+  left: 10px;
+  min-width: 168px;
+  max-width: 240px;
   padding: 10px 12px;
   border-radius: 12px;
-  border: 1px solid hsl(var(--primary) / .22);
-  box-shadow: 0 8px 28px hsl(0 0% 0% / .35);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   font-family: var(--app-font-sans, system-ui, sans-serif);
-  color: hsl(210 20% 96%);
+  color: rgba(245, 247, 250, 0.96);
+  pointer-events: auto;
+  -webkit-app-region: drag;
 }
 .voice-overlay-channel {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  opacity: 0.85;
+  opacity: 0.8;
   margin-bottom: 8px;
+}
+.voice-overlay-empty {
+  font-size: 12px;
+  opacity: 0.65;
 }
 .voice-overlay-peers {
   list-style: none;
@@ -576,30 +584,48 @@ html.voice-overlay-mode #root {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 .voice-overlay-peer {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  min-height: 22px;
   font-size: 13px;
   font-weight: 600;
-  padding: 4px 6px;
-  border-radius: 8px;
-  transition: box-shadow 0.15s, background 0.15s;
+  opacity: 0.78;
+  transition: opacity .15s, transform .15s;
 }
 .voice-overlay-peer.speaking {
-  background: hsl(var(--primary) / .18);
-  box-shadow: 0 0 0 1px hsl(var(--primary) / .45), 0 0 12px hsl(var(--primary) / .35);
+  opacity: 1;
+  transform: translateX(1px);
+}
+.voice-overlay-peer.muted {
+  opacity: 0.45;
+}
+.voice-overlay-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.25);
+  flex-shrink: 0;
+}
+.voice-overlay-dot.on {
+  background: #3dde7b;
+  box-shadow: 0 0 0 3px rgba(61, 222, 123, 0.25), 0 0 12px rgba(61, 222, 123, 0.55);
+  animation: voice-speak-pulse 1s ease-in-out infinite;
+}
+@keyframes voice-speak-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.25); }
 }
 .voice-overlay-peer-name {
   min-width: 0;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .voice-overlay-peer-badge {
-  margin-left: auto;
   font-size: 11px;
-  opacity: 0.8;
 }

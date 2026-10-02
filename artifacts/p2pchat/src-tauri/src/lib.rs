@@ -135,7 +135,8 @@ pub fn run() {
             ptt::set_ptt_vk,
             overlay::show_voice_overlay,
             overlay::hide_voice_overlay,
-            overlay::close_voice_overlay
+            overlay::close_voice_overlay,
+            overlay::focus_voice_overlay
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Открыть Drift", true, None::<&str>)?;

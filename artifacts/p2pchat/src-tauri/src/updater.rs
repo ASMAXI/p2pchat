@@ -1,10 +1,8 @@
 //! Self-update: download with progress, wait for install after exit, relaunch.
 //!
-//! Windows notes:
-//! - Spawn the helper with CREATE_NO_WINDOW (no blank cmd flash).
-//! - Wait until our exe unlocks, then `start /wait` the installer.
-//! - NSIS `/D=` forces the same install dir as the running binary (avoids
-//!   updating a different folder and relaunching the old 0.x.y build).
+//! Uses a hidden PowerShell helper (no ping/find CMD windows).
+//! Waits for our PID to exit, runs the installer silently into the same
+//! folder, then relaunches Drift.exe / p2pchat.exe.
 
 use std::{
     fs::File,
@@ -22,8 +20,6 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-#[cfg(windows)]
-const DETACHED_PROCESS: u32 = 0x0000_0008;
 
 const ALLOWED_PREFIXES: &[&str] = &[
     "https://github.com/ASMAXI/",
@@ -87,7 +83,6 @@ fn download(url: &str, dest: &PathBuf, app: &AppHandle) -> Result<(), String> {
         loaded += read as u64;
         emit_progress(app, loaded, total, "download");
     }
-    // Guard against truncated HTML error pages saved as .exe
     if loaded < 500_000 {
         let _ = std::fs::remove_file(dest);
         return Err(format!(
@@ -97,107 +92,137 @@ fn download(url: &str, dest: &PathBuf, app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn quote_cmd(path: &Path) -> String {
-    format!("\"{}\"", path.to_string_lossy().replace('"', ""))
+fn ps_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
-/// NSIS `/D=` must be last and unquoted (even with spaces).
-fn nsis_install_dir(app_exe: &Path) -> Option<String> {
-    app_exe.parent().map(|dir| dir.to_string_lossy().replace('"', ""))
+fn install_powershell_snippet(is_msi: bool) -> &'static str {
+    if is_msi {
+        r#"
+$msiArgs = "/i `"$installer`" /qn /norestart REINSTALL=ALL REINSTALLMODE=vomus"
+if ($installDir) { $msiArgs = "$msiArgs TARGETDIR=`"$installDir`"" }
+$p = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru -WindowStyle Hidden
+"#
+    } else {
+        r#"
+$nsisArgs = "/S"
+if ($installDir) { $nsisArgs = "/S /D=$installDir" }
+$p = Start-Process -FilePath $installer -ArgumentList $nsisArgs -Wait -PassThru -WindowStyle Hidden
+"#
+    }
 }
 
-fn exe_image_name(app_exe: &Path) -> String {
-    app_exe
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("Drift.exe")
-        .to_string()
-}
-
-/// After this process exits: run installer into the same folder, then relaunch.
+/// After this process exits: silent install into the same folder, then relaunch.
 fn spawn_deferred_install(installer: &Path, app_exe: &Path) -> Result<(), String> {
     let dir = std::env::temp_dir().join("drift-update");
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
-    let script = dir.join("apply-update.cmd");
+    let script = dir.join("apply-update.ps1");
     let log = dir.join("apply-update.log");
+    let pid = std::process::id();
+    let install_dir = app_exe
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
     let is_msi = installer
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("msi"));
-    let image = exe_image_name(app_exe);
-
-    let install_line = if is_msi {
-        // Quiet reinstall; TARGETDIR helps when previous install path is known.
-        match nsis_install_dir(app_exe) {
-            Some(target) => format!(
-                "msiexec /i {} /qn /norestart REINSTALL=ALL REINSTALLMODE=vomus TARGETDIR={}",
-                quote_cmd(installer),
-                quote_cmd(Path::new(&target))
-            ),
-            None => format!(
-                "msiexec /i {} /qn /norestart REINSTALL=ALL REINSTALLMODE=vomus",
-                quote_cmd(installer)
-            ),
-        }
-    } else {
-        // Tauri NSIS silent upgrade into the folder of the running exe.
-        match nsis_install_dir(app_exe) {
-            Some(target) => format!("{} /S /D={}", quote_cmd(installer), target),
-            None => format!("{} /S", quote_cmd(installer)),
-        }
-    };
+    let install_snippet = install_powershell_snippet(is_msi);
 
     let contents = format!(
-        "@echo off\r\n\
-         setlocal EnableExtensions\r\n\
-         set \"LOG={log}\"\r\n\
-         echo Drift update helper started > \"%LOG%\"\r\n\
-         echo installer={installer}>> \"%LOG%\"\r\n\
-         echo app={app}>> \"%LOG%\"\r\n\
-         rem Give the app time to exit and unlock files\r\n\
-         ping 127.0.0.1 -n 5 >nul\r\n\
-         set /a _tries=0\r\n\
-         :wait_exit\r\n\
-         set /a _tries+=1\r\n\
-         tasklist /FI \"IMAGENAME eq {image}\" 2>nul | find /I \"{image}\" >nul\r\n\
-         if not errorlevel 1 (\r\n\
-           if %_tries% LSS 30 (\r\n\
-             ping 127.0.0.1 -n 2 >nul\r\n\
-             goto wait_exit\r\n\
-           )\r\n\
-         )\r\n\
-         echo running installer>> \"%LOG%\"\r\n\
-         {install_line}\r\n\
-         set \"ERR=%ERRORLEVEL%\"\r\n\
-         echo first_install_exit=%ERR%>> \"%LOG%\"\r\n\
-         if not \"%ERR%\"==\"0\" (\r\n\
-           ping 127.0.0.1 -n 3 >nul\r\n\
-           {install_line}\r\n\
-           set \"ERR=%ERRORLEVEL%\"\r\n\
-           echo retry_install_exit=%ERR%>> \"%LOG%\"\r\n\
-         )\r\n\
-         ping 127.0.0.1 -n 3 >nul\r\n\
-         if exist {app_q} (\r\n\
-           echo relaunching>> \"%LOG%\"\r\n\
-           start \"\" {app_q}\r\n\
-         ) else (\r\n\
-           echo missing_exe_after_install>> \"%LOG%\"\r\n\
-         )\r\n\
-         del \"%~f0\"\r\n",
-        log = log.display(),
-        installer = installer.display(),
-        app = app_exe.display(),
-        image = image,
-        install_line = install_line,
-        app_q = quote_cmd(app_exe),
+        r#"
+$ErrorActionPreference = "Continue"
+$log = {log}
+$appExe = {app}
+$installDir = {dir}
+$installer = {installer}
+$pidToWait = {pid}
+"Drift update helper $(Get-Date -Format o)" | Out-File -FilePath $log -Encoding utf8
+"pid=$pidToWait installer=$installer app=$appExe dir=$installDir" | Add-Content $log
+
+try {{
+  Wait-Process -Id $pidToWait -Timeout 180 -ErrorAction SilentlyContinue
+}} catch {{}}
+Start-Sleep -Seconds 2
+
+for ($i = 0; $i -lt 60; $i++) {{
+  try {{
+    if (Test-Path $appExe) {{
+      $fs = [System.IO.File]::Open($appExe, "Open", "ReadWrite", "None")
+      $fs.Close()
+      break
+    }} else {{
+      break
+    }}
+  }} catch {{
+    Start-Sleep -Milliseconds 500
+  }}
+}}
+"file unlocked (or missing), running installer" | Add-Content $log
+
+$p = $null
+{install_snippet}
+$code = if ($p) {{ $p.ExitCode }} else {{ -1 }}
+"installer_exit=$code" | Add-Content $log
+
+if ($code -ne 0) {{
+  Start-Sleep -Seconds 2
+  $p = $null
+  {install_snippet}
+  $code = if ($p) {{ $p.ExitCode }} else {{ -1 }}
+  "installer_retry_exit=$code" | Add-Content $log
+}}
+
+Start-Sleep -Seconds 2
+
+$candidates = @(
+  $appExe,
+  (Join-Path $installDir "Drift.exe"),
+  (Join-Path $installDir "p2pchat.exe"),
+  (Join-Path $env:LOCALAPPDATA "Drift\Drift.exe"),
+  (Join-Path $env:LOCALAPPDATA "p2pchat\p2pchat.exe")
+) | Select-Object -Unique
+
+$launched = $false
+foreach ($c in $candidates) {{
+  if ($c -and (Test-Path $c)) {{
+    try {{
+      Start-Process -FilePath $c
+      "relaunch $c" | Add-Content $log
+      $launched = $true
+      break
+    }} catch {{
+      "relaunch_fail $c $_" | Add-Content $log
+    }}
+  }}
+}}
+if (-not $launched) {{ "no_exe_to_relaunch" | Add-Content $log }}
+
+Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+"#,
+        log = ps_single_quote(&log.to_string_lossy()),
+        app = ps_single_quote(&app_exe.to_string_lossy()),
+        dir = ps_single_quote(&install_dir),
+        installer = ps_single_quote(&installer.to_string_lossy()),
+        pid = pid,
+        install_snippet = install_snippet,
     );
+
     std::fs::write(&script, contents).map_err(|err| err.to_string())?;
 
-    // Run the .cmd itself with no console — do NOT nest `start` (that flashes CMD).
-    let mut cmd = Command::new("cmd.exe");
-    cmd.args(["/C", &script.to_string_lossy()]);
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args([
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-WindowStyle",
+        "Hidden",
+        "-File",
+        &script.to_string_lossy(),
+    ]);
     #[cfg(windows)]
     {
-        cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+        // Hidden only — DETACHED_PROCESS often creates visible consoles for child tools.
+        cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd.spawn()
         .map_err(|err| format!("Не удалось запланировать установку: {err}"))?;
@@ -209,13 +234,11 @@ fn launch_and_exit(app: &AppHandle, dest: &PathBuf) -> Result<(), String> {
     emit_progress(app, 0, None, "install");
     spawn_deferred_install(dest, &exe)?;
     emit_progress(app, 1, Some(1), "done");
-    // Let the detached helper start before we unlock our binary.
-    std::thread::sleep(Duration::from_millis(600));
+    std::thread::sleep(Duration::from_millis(700));
     app.exit(0);
     Ok(())
 }
 
-/// Downloads the installer with progress events, schedules install after exit.
 #[tauri::command]
 pub async fn install_update(app: AppHandle, url: String) -> Result<(), String> {
     if !ALLOWED_PREFIXES.iter().any(|prefix| url.starts_with(prefix)) {

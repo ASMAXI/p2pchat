@@ -351,6 +351,12 @@
           "markdownDescription": "Close mini voice overlay window"
         },
         {
+          "description": "Re-assert always-on-top for voice overlay",
+          "type": "string",
+          "const": "allow-focus-voice-overlay",
+          "markdownDescription": "Re-assert always-on-top for voice overlay"
+        },
+        {
           "description": "Read Windows autostart state",
           "type": "string",
           "const": "allow-get-autostart-enabled",

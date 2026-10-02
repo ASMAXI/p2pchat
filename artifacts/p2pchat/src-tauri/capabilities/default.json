@@ -27,6 +27,7 @@
     "allow-show-voice-overlay",
     "allow-hide-voice-overlay",
     "allow-close-voice-overlay",
+    "allow-focus-voice-overlay",
     "notification:default"
   ]
 }

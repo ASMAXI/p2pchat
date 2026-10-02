@@ -1543,9 +1543,23 @@ function Workspace() {
     if (!isDesktopShell()) return;
     const show = Boolean(activeVoice && voiceOverlayEnabled);
     void import('@tauri-apps/api/core').then(({ invoke }) => {
-      if (show) void invoke('show_voice_overlay').catch(() => {});
-      else void invoke('hide_voice_overlay').catch(() => {});
+      if (show) {
+        void invoke('show_voice_overlay').catch(() => {});
+        void invoke('focus_voice_overlay').catch(() => {});
+      } else {
+        void invoke('hide_voice_overlay').catch(() => {});
+      }
     });
+  }, [activeVoice, voiceOverlayEnabled]);
+
+  useEffect(() => {
+    if (!isDesktopShell() || !activeVoice || !voiceOverlayEnabled) return;
+    const timer = window.setInterval(() => {
+      void import('@tauri-apps/api/core').then(({ invoke }) => {
+        void invoke('focus_voice_overlay').catch(() => {});
+      });
+    }, 4000);
+    return () => window.clearInterval(timer);
   }, [activeVoice, voiceOverlayEnabled]);
 
   useEffect(() => {
@@ -2763,6 +2777,11 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
                 const next = event.target.checked;
                 setVoiceOverlayEnabled(next);
                 saveVoiceOverlayEnabled(next);
+                if (isDesktopShell()) {
+                  void import('@tauri-apps/api/core').then(({ invoke }) => {
+                    if (!next) void invoke('hide_voice_overlay').catch(() => {});
+                  });
+                }
                 window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
               }}
               data-testid="checkbox-voice-overlay"
@@ -2770,7 +2789,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
             <span>
               <span className="block text-xs font-bold">Мини-войс оверлей</span>
               <span className="mt-0.5 block text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
-                Компактная панель поверх игр и полноэкранных приложений (только desktop).
+                Поверх игр (оконный / borderless): кто в текущем голосовом канале и кто говорит. Появляется после входа в голос.
               </span>
             </span>
           </label>
@@ -2789,7 +2808,27 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
                   const next = Number(event.target.value) / 100;
                   setVoiceOverlayOpacity(next);
                   saveVoiceOverlayOpacity(next);
+                  try {
+                    const raw = window.localStorage.getItem(VOICE_OVERLAY_PAYLOAD_KEY);
+                    if (raw) {
+                      const parsed = JSON.parse(raw) as VoiceOverlayPayload;
+                      parsed.opacity = next;
+                      window.localStorage.setItem(VOICE_OVERLAY_PAYLOAD_KEY, JSON.stringify(parsed));
+                      void import('@tauri-apps/api/event').then(({ emit }) => {
+                        void emit('voice-overlay-state', parsed);
+                      });
+                    } else {
+                      const stub: VoiceOverlayPayload = { channelName: 'Голос', opacity: next, peers: [] };
+                      window.localStorage.setItem(VOICE_OVERLAY_PAYLOAD_KEY, JSON.stringify(stub));
+                      void import('@tauri-apps/api/event').then(({ emit }) => {
+                        void emit('voice-overlay-state', stub);
+                      });
+                    }
+                  } catch {
+                    // ignore
+                  }
                   window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
+                  window.dispatchEvent(new CustomEvent('p2pchat-voice-overlay-push'));
                 }}
                 className="w-full"
                 data-testid="range-overlay-opacity"
@@ -2962,6 +3001,12 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
 
 function voiceOverlayRouteActive(): boolean {
   if (typeof window === 'undefined') return false;
+  try {
+    if (new URLSearchParams(window.location.search).get('voiceOverlay') === '1') return true;
+  } catch {
+    // ignore
+  }
+  if ((window.location.hash || '').includes('voice-overlay')) return true;
   const path = window.location.pathname.replace(/\/$/, '') || '/';
   return path.endsWith('/voice-overlay');
 }

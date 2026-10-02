@@ -12,3 +12,8 @@ commands.allow = ["hide_voice_overlay"]
 identifier = "allow-close-voice-overlay"
 description = "Close mini voice overlay window"
 commands.allow = ["close_voice_overlay"]
+
+[[permission]]
+identifier = "allow-focus-voice-overlay"
+description = "Re-assert always-on-top for voice overlay"
+commands.allow = ["focus_voice_overlay"]
