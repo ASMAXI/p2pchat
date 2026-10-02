@@ -1,4 +1,10 @@
 //! Self-update: download with progress, wait for install after exit, relaunch.
+//!
+//! Windows notes:
+//! - Spawn the helper with CREATE_NO_WINDOW (no blank cmd flash).
+//! - Wait until our exe unlocks, then `start /wait` the installer.
+//! - NSIS `/D=` forces the same install dir as the running binary (avoids
+//!   updating a different folder and relaunching the old 0.x.y build).
 
 use std::{
     fs::File,
@@ -10,6 +16,14 @@ use std::{
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const DETACHED_PROCESS: u32 = 0x0000_0008;
 
 const ALLOWED_PREFIXES: &[&str] = &[
     "https://github.com/ASMAXI/",
@@ -87,44 +101,105 @@ fn quote_cmd(path: &Path) -> String {
     format!("\"{}\"", path.to_string_lossy().replace('"', ""))
 }
 
-/// After this process exits: run installer, then start Drift again from the same path.
+/// NSIS `/D=` must be last and unquoted (even with spaces).
+fn nsis_install_dir(app_exe: &Path) -> Option<String> {
+    app_exe.parent().map(|dir| dir.to_string_lossy().replace('"', ""))
+}
+
+fn exe_image_name(app_exe: &Path) -> String {
+    app_exe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Drift.exe")
+        .to_string()
+}
+
+/// After this process exits: run installer into the same folder, then relaunch.
 fn spawn_deferred_install(installer: &Path, app_exe: &Path) -> Result<(), String> {
     let dir = std::env::temp_dir().join("drift-update");
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     let script = dir.join("apply-update.cmd");
+    let log = dir.join("apply-update.log");
     let is_msi = installer
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("msi"));
+    let image = exe_image_name(app_exe);
 
     let install_line = if is_msi {
-        format!(
-            "msiexec /i {} /qn /norestart REINSTALL=ALL REINSTALLMODE=vomus",
-            quote_cmd(installer)
-        )
+        // Quiet reinstall; TARGETDIR helps when previous install path is known.
+        match nsis_install_dir(app_exe) {
+            Some(target) => format!(
+                "msiexec /i {} /qn /norestart REINSTALL=ALL REINSTALLMODE=vomus TARGETDIR={}",
+                quote_cmd(installer),
+                quote_cmd(Path::new(&target))
+            ),
+            None => format!(
+                "msiexec /i {} /qn /norestart REINSTALL=ALL REINSTALLMODE=vomus",
+                quote_cmd(installer)
+            ),
+        }
     } else {
-        // Tauri NSIS: silent in-place upgrade (no /R — we relaunch ourselves).
-        format!("{} /S", quote_cmd(installer))
+        // Tauri NSIS silent upgrade into the folder of the running exe.
+        match nsis_install_dir(app_exe) {
+            Some(target) => format!("{} /S /D={}", quote_cmd(installer), target),
+            None => format!("{} /S", quote_cmd(installer)),
+        }
     };
 
     let contents = format!(
         "@echo off\r\n\
-         rem Wait until Drift.exe unlocks its files\r\n\
-         ping 127.0.0.1 -n 4 >nul\r\n\
-         {install_line}\r\n\
-         if errorlevel 1 (\r\n\
-           ping 127.0.0.1 -n 2 >nul\r\n\
-           {install_line}\r\n\
+         setlocal EnableExtensions\r\n\
+         set \"LOG={log}\"\r\n\
+         echo Drift update helper started > \"%LOG%\"\r\n\
+         echo installer={installer}>> \"%LOG%\"\r\n\
+         echo app={app}>> \"%LOG%\"\r\n\
+         rem Give the app time to exit and unlock files\r\n\
+         ping 127.0.0.1 -n 5 >nul\r\n\
+         set /a _tries=0\r\n\
+         :wait_exit\r\n\
+         set /a _tries+=1\r\n\
+         tasklist /FI \"IMAGENAME eq {image}\" 2>nul | find /I \"{image}\" >nul\r\n\
+         if not errorlevel 1 (\r\n\
+           if %_tries% LSS 30 (\r\n\
+             ping 127.0.0.1 -n 2 >nul\r\n\
+             goto wait_exit\r\n\
+           )\r\n\
          )\r\n\
-         ping 127.0.0.1 -n 2 >nul\r\n\
-         start \"\" {}\r\n\
+         echo running installer>> \"%LOG%\"\r\n\
+         {install_line}\r\n\
+         set \"ERR=%ERRORLEVEL%\"\r\n\
+         echo first_install_exit=%ERR%>> \"%LOG%\"\r\n\
+         if not \"%ERR%\"==\"0\" (\r\n\
+           ping 127.0.0.1 -n 3 >nul\r\n\
+           {install_line}\r\n\
+           set \"ERR=%ERRORLEVEL%\"\r\n\
+           echo retry_install_exit=%ERR%>> \"%LOG%\"\r\n\
+         )\r\n\
+         ping 127.0.0.1 -n 3 >nul\r\n\
+         if exist {app_q} (\r\n\
+           echo relaunching>> \"%LOG%\"\r\n\
+           start \"\" {app_q}\r\n\
+         ) else (\r\n\
+           echo missing_exe_after_install>> \"%LOG%\"\r\n\
+         )\r\n\
          del \"%~f0\"\r\n",
-        quote_cmd(app_exe)
+        log = log.display(),
+        installer = installer.display(),
+        app = app_exe.display(),
+        image = image,
+        install_line = install_line,
+        app_q = quote_cmd(app_exe),
     );
     std::fs::write(&script, contents).map_err(|err| err.to_string())?;
 
-    Command::new("cmd.exe")
-        .args(["/C", "start", "", "/MIN", &script.to_string_lossy()])
-        .spawn()
+    // Run the .cmd itself with no console — do NOT nest `start` (that flashes CMD).
+    let mut cmd = Command::new("cmd.exe");
+    cmd.args(["/C", &script.to_string_lossy()]);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+    }
+    cmd.spawn()
         .map_err(|err| format!("Не удалось запланировать установку: {err}"))?;
     Ok(())
 }
@@ -134,8 +209,8 @@ fn launch_and_exit(app: &AppHandle, dest: &PathBuf) -> Result<(), String> {
     emit_progress(app, 0, None, "install");
     spawn_deferred_install(dest, &exe)?;
     emit_progress(app, 1, Some(1), "done");
-    // Give the helper a moment to start, then unlock our binary.
-    std::thread::sleep(Duration::from_millis(400));
+    // Let the detached helper start before we unlock our binary.
+    std::thread::sleep(Duration::from_millis(600));
     app.exit(0);
     Ok(())
 }

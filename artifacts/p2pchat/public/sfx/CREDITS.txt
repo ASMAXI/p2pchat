@@ -1,0 +1,24 @@
+# Drift soundboard samples
+# Prefer CC0 Freesound; some shorts from Mixkit License (free commercial use).
+
+fart.mp3 — Freesound Breviceps 445998 (CC0)
+cry.mp3 — Freesound 213148
+quack.mp3 — Freesound Sess8it 532287 (CC0)
+trombone.mp3 — Freesound TaranP 362205 (CC0)
+boom.mp3 — Freesound InspectorJ 411088
+gachi.mp3 — Freesound 316590
+airhorn.mp3 — Freesound pfranzen 528807 (CC0)
+laugh.mp3 — Freesound 327734
+crickets.mp3 — Freesound guitarguy1985 69439 (CC0)
+bruh.mp3 — Freesound 242503
+
+vineboom.mp3 — Mixkit #2042 (Mixkit License)
+error.mp3 — Freesound fins 140267
+applause.mp3 — Freesound InspectorJ 396500
+boo.mp3 — Mixkit #2364 (Mixkit License)
+scratch.mp3 — Freesound InspectorJ 397355
+buzzer.mp3 — Mixkit #950 (Mixkit License)
+tada.mp3 — Freesound plasterbrain 397728
+pipe.mp3 — Mixkit #2908 (Mixkit License)
+sneeze.mp3 — Freesound InspectorJ 220170
+whistle.mp3 — Freesound InspectorJ 320181

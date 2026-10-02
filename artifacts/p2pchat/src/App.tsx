@@ -1301,7 +1301,7 @@ function ChatComposer({
       )}
       <input ref={fileInputRef} type="file" accept="image/*,application/pdf,application/zip,.pdf,.zip" className="hidden" onChange={(e) => { void onPickFile(e.target.files?.[0]); }} data-testid={fileInputTestId} />
       {sfxOpen && onPlayFunSound && (
-        <div className="mb-2 grid grid-cols-5 gap-1.5 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card)/.95)] p-2" data-testid="soundboard-panel">
+        <div className="soundboard-panel mb-2 grid grid-cols-5 gap-1.5" data-testid="soundboard-panel">
           {FUN_SOUNDS.map((sound) => (
             <button
               key={sound.id}

@@ -354,16 +354,16 @@ html[data-theme="gachi"] .nav-icon.active {
   background-position: center;
   background-size: cover;
   background-repeat: no-repeat;
-  opacity: 0.16;
-  filter: saturate(0.85) contrast(0.92);
+  opacity: 0.5;
+  filter: saturate(0.95) contrast(0.95);
 }
 .theme-chat-bg--patriot::before {
   background-image: url("/themes/patriot-chat.jpg");
-  opacity: 0.18;
+  opacity: 0.5;
 }
 .theme-chat-bg--gachi::before {
   background-image: url("/themes/gachi-chat.jpg");
-  opacity: 0.15;
+  opacity: 0.5;
 }
 .theme-chat-bg > * {
   position: relative;
@@ -372,12 +372,13 @@ html[data-theme="gachi"] .nav-icon.active {
 .theme-chat-bg .message-item {
   border-radius: 14px;
   padding: 10px 12px;
-  background: hsl(var(--card) / .88);
-  backdrop-filter: blur(6px);
+  background: hsl(var(--card) / .94);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 1px 0 hsl(var(--border) / .55);
   max-width: 780px;
 }
 .theme-chat-bg .message-scroll {
-  background: linear-gradient(180deg, hsl(var(--background) / .55), hsl(var(--background) / .72));
+  background: linear-gradient(180deg, hsl(var(--background) / .35), hsl(var(--background) / .5));
 }
 .soundboard-panel {
   display: grid;
@@ -388,6 +389,8 @@ html[data-theme="gachi"] .nav-icon.active {
   border-radius: 12px;
   border: 1px solid hsl(var(--border));
   background: hsl(var(--card) / .95);
+  max-height: 220px;
+  overflow-y: auto;
 }
 .soundboard-panel button {
   display: flex;
