@@ -46,6 +46,7 @@ import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import { VoiceOverlayPage } from '@/components/voice-overlay-page';
+import { PatriotJoinPopup, shouldShowPatriotPopup } from '@/components/patriot-join-popup';
 import {
   activateSavedServer,
   createLocalRoom,
@@ -1423,6 +1424,10 @@ function Workspace() {
   const userMutedRef = useRef(false);
   const [voiceOverlayEnabled, setVoiceOverlayEnabled] = useState(() => loadVoiceOverlayEnabled());
   const [voiceOverlayOpacity, setVoiceOverlayOpacity] = useState(() => loadVoiceOverlayOpacity());
+  const [patriotPopupToken, setPatriotPopupToken] = useState(0);
+  const triggerPatriotPopup = () => {
+    if (shouldShowPatriotPopup()) setPatriotPopupToken((n) => n + 1);
+  };
   voiceTalkModeRef.current = voiceTalkMode;
   pttKeyCodeRef.current = pttKeyCode;
   userMutedRef.current = muted;
@@ -1704,6 +1709,7 @@ function Workspace() {
               if (member.id === peerId) continue;
               if (!knownMemberIdsRef.current.has(member.id) && member.online) {
                 playUiSound('member-join');
+                triggerPatriotPopup();
               }
             }
             knownMemberIdsRef.current = new Set(nextMembers.map((member) => member.id));
@@ -1825,10 +1831,12 @@ function Workspace() {
             playUiSound('voice-join');
             void notifyDesktop('voice-join', event.displayName, 'Подключился к голосовому каналу');
           }
+          if (event.peerId !== peerId) triggerPatriotPopup();
           void voiceMeshRef.current?.addPeer(event.peerId, peerId < event.peerId).catch((error) => {
             setToast(error instanceof Error ? error.message : 'Не удалось подключить голосовой канал');
           });
         } else {
+          if (event.peerId !== peerId) triggerPatriotPopup();
           voiceMeshRef.current?.removePeer(event.peerId);
         }
       },
@@ -2028,9 +2036,11 @@ function Workspace() {
     setActiveVoice(room.id);
     setVoiceRooms((current) => current.map((item) => item.id === room.id ? { ...item, participantCount: item.participantCount + 1, state: 'live', participants: item.participants.includes(displayName) ? item.participants : [...item.participants, displayName] } : item));
     setToast(`Вы в комнате «${room.name}»`);
+    triggerPatriotPopup();
   };
   const leaveVoice = () => {
     if (!activeVoice) return;
+    triggerPatriotPopup();
     sessionRef.current?.setVoiceChannel(null);
     voiceMeshRef.current?.stop();
     voiceMeshRef.current = null;
@@ -2138,6 +2148,7 @@ function Workspace() {
   const voiceRoomLayoutClassName = `voice-room-layout theme-chat-bg${chatBgThemeSuffix}`;
 
   return <div className="noise workspace-shell" style={shellStyle}>
+    <PatriotJoinPopup token={patriotPopupToken} />
     <WorkspaceNav unreadTotal={unreadTotal} onDiagnostics={() => setOverlay('diagnostics')} onSettings={() => setOverlay('settings')} />
     <ChannelPane
       server={server}
