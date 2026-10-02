@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-restart-public-tunnel"
+description = "Restart Cloudflare Quick Tunnel"
+commands.allow = ["restart_public_tunnel"]

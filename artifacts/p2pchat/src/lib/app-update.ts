@@ -82,16 +82,22 @@ export async function installAppUpdate(
   onProgress?: (loaded: number, total: number | null, phase: string) => void,
 ): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
-  const { listen } = await import("@tauri-apps/api/event");
-  const unlisten = await listen<{ loaded: number; total?: number | null; phase?: string }>(
-    "update-progress",
-    (event) => {
-      onProgress?.(event.payload.loaded, event.payload.total ?? null, event.payload.phase ?? "download");
-    },
-  );
+  let unlisten: (() => void) | undefined;
+  try {
+    const { listen } = await import("@tauri-apps/api/event");
+    unlisten = await listen<{ loaded: number; total?: number | null; phase?: string }>(
+      "update-progress",
+      (event) => {
+        onProgress?.(event.payload.loaded, event.payload.total ?? null, event.payload.phase ?? "download");
+      },
+    );
+  } catch (error) {
+    // Older ACL without core:event:allow-listen — still install, just no progress bar.
+    console.warn("update-progress listen unavailable", error);
+  }
   try {
     await invoke("install_update", { url: downloadUrl });
   } finally {
-    unlisten();
+    unlisten?.();
   }
 }

@@ -345,6 +345,36 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Read Windows autostart state",
+          "type": "string",
+          "const": "allow-get-autostart-enabled",
+          "markdownDescription": "Read Windows autostart state"
+        },
+        {
+          "description": "Download and install Drift updates",
+          "type": "string",
+          "const": "allow-install-update",
+          "markdownDescription": "Download and install Drift updates"
+        },
+        {
+          "description": "Restart Cloudflare Quick Tunnel",
+          "type": "string",
+          "const": "allow-restart-public-tunnel",
+          "markdownDescription": "Restart Cloudflare Quick Tunnel"
+        },
+        {
+          "description": "Change Windows autostart state",
+          "type": "string",
+          "const": "allow-set-autostart-enabled",
+          "markdownDescription": "Change Windows autostart state"
+        },
+        {
+          "description": "Start local P2P hub and tunnel",
+          "type": "string",
+          "const": "allow-start-local-sync-server",
+          "markdownDescription": "Start local P2P hub and tunnel"
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

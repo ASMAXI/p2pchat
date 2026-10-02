@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-start-local-sync-server"
+description = "Start local P2P hub and tunnel"
+commands.allow = ["start_local_sync_server"]

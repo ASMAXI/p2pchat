@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-get-autostart-enabled"
+description = "Read Windows autostart state"
+commands.allow = ["get_autostart_enabled"]
+
+[[permission]]
+identifier = "allow-set-autostart-enabled"
+description = "Change Windows autostart state"
+commands.allow = ["set_autostart_enabled"]

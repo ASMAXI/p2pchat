@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-install-update"
+description = "Download and install Drift updates"
+commands.allow = ["install_update"]
