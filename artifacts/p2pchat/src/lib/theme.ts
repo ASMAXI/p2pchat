@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-export type AppThemeId = "light" | "dark" | "pink" | "dota" | "patriot";
+export type AppThemeId = "light" | "dark" | "pink" | "dota" | "patriot" | "gachi";
 
 const KEY = "p2pchat-theme";
 
@@ -10,6 +10,7 @@ export const APP_THEMES: { id: AppThemeId; label: string }[] = [
   { id: "pink", label: "Розовая" },
   { id: "dota", label: "DOTA 2" },
   { id: "patriot", label: "Патриотическая" },
+  { id: "gachi", label: "Гачимучи" },
 ];
 
 export function loadTheme(): AppThemeId {
@@ -31,7 +32,7 @@ export function saveTheme(theme: AppThemeId): void {
 export function applyTheme(theme: AppThemeId): void {
   const root = document.documentElement;
   root.dataset.theme = theme;
-  root.classList.toggle("dark", theme === "dark" || theme === "dota");
+  root.classList.toggle("dark", theme === "dark" || theme === "dota" || theme === "gachi");
 }
 
 export function initTheme(): void {

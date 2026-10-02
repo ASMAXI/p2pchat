@@ -6,6 +6,7 @@ export const REACT_PREFIX = "[[drift-react:v1]]";
 export const EDIT_PREFIX = "[[drift-edit:v1]]";
 export const DEL_PREFIX = "[[drift-del:v1]]";
 export const PIN_PREFIX = "[[drift-pin:v1]]";
+export const SFX_PREFIX = "[[drift-sfx:v1]]";
 
 export const MAX_FILE_BYTES = 900_000; // keep under plaintext limit with base64 overhead
 export const MAX_FILE_NAME = 120;
@@ -29,6 +30,7 @@ export type ReactBody = { v: 1; target: string; emoji: string; op?: "add" | "rem
 export type EditBody = { v: 1; target: string; body: string };
 export type DelBody = { v: 1; target: string };
 export type PinBody = { v: 1; target: string; pinned: boolean };
+export type SfxBody = { v: 1; id: string };
 
 export type ParsedWireText =
   | { kind: "text"; body: string; replyTo?: string; mentions?: string[]; file?: ChatFileRef }
@@ -37,6 +39,7 @@ export type ParsedWireText =
   | { kind: "edit"; target: string; body: string }
   | { kind: "delete"; target: string }
   | { kind: "pin"; target: string; pinned: boolean }
+  | { kind: "sfx"; id: string }
   | { kind: "unknown"; raw: string };
 
 function parseJson<T>(raw: string): T | null {
@@ -90,6 +93,10 @@ export function encodePin(target: string, pinned: boolean): string {
   return `${PIN_PREFIX}${JSON.stringify({ v: 1, target, pinned } satisfies PinBody)}`;
 }
 
+export function encodeSfx(id: string): string {
+  return `${SFX_PREFIX}${JSON.stringify({ v: 1, id } satisfies SfxBody)}`;
+}
+
 export function parseWireText(text: string | null | undefined): ParsedWireText {
   if (!text) return { kind: "unknown", raw: "" };
   if (text.startsWith(IMAGE_MESSAGE_PREFIX)) {
@@ -125,6 +132,11 @@ export function parseWireText(text: string | null | undefined): ParsedWireText {
     const data = parseJson<PinBody>(text.slice(PIN_PREFIX.length));
     if (!data?.target) return { kind: "unknown", raw: text };
     return { kind: "pin", target: data.target, pinned: Boolean(data.pinned) };
+  }
+  if (text.startsWith(SFX_PREFIX)) {
+    const data = parseJson<SfxBody>(text.slice(SFX_PREFIX.length));
+    if (!data?.id || typeof data.id !== "string") return { kind: "unknown", raw: text };
+    return { kind: "sfx", id: data.id };
   }
   return { kind: "text", body: text };
 }
@@ -198,6 +210,7 @@ export type DisplayMessage = {
   deleted?: boolean;
   reactions?: Record<string, string[]>; // emoji -> author names
   pinned?: boolean;
+  sfxId?: string;
 };
 
 /** Fold control messages (react/edit/delete/pin) into display list. */
@@ -272,7 +285,10 @@ export function foldChatMessages(
       delivery: item.delivery,
     };
 
-    if (parsed.kind === "image") {
+    if (parsed.kind === "sfx") {
+      base.sfxId = parsed.id;
+      base.content = parsed.id;
+    } else if (parsed.kind === "image") {
       base.imageUrl = parsed.dataUrl;
       base.content = "";
     } else if (parsed.kind === "text") {

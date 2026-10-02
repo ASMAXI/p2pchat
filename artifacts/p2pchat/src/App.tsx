@@ -36,6 +36,7 @@ import {
   ImageIcon,
   Monitor,
   MonitorOff,
+  Music2,
   PanelRightClose,
   PanelRightOpen,
 } from 'lucide-react';
@@ -99,6 +100,7 @@ import {
   encodeEdit,
   encodeDelete,
   encodePin,
+  encodeSfx,
   foldChatMessages,
   extractMentions,
   mentionSuggestions,
@@ -112,7 +114,14 @@ import { notifyDesktop } from '@/lib/desktop-notify';
 import { cacheRoomMessages, loadCachedRoomMessages, mergeMessagesWithCache } from '@/lib/message-cache';
 import { getAutostartEnabled, setAutostartEnabled } from '@/lib/autostart';
 import { APP_THEMES, loadTheme, saveTheme, useAppTheme, type AppThemeId } from '@/lib/theme';
-import { rfRankFor } from '@/lib/patriot-ranks';
+import { refreshPatriotRankSalt, rfRankFor } from '@/lib/patriot-ranks';
+import {
+  FUN_SOUNDS,
+  funSoundLabel,
+  isFunSoundId,
+  playFunSound,
+  type FunSoundId,
+} from '@/lib/fun-sounds';
 import {
   loadChannelPaneWidth,
   loadMemberPaneCollapsed,
@@ -128,7 +137,16 @@ import {
   saveAudioInputId,
   saveAudioOutputId,
 } from '@/lib/audio-settings';
-import { loadUiSoundsEnabled, playUiSound, saveUiSoundsEnabled } from '@/lib/ui-sounds';
+import {
+  STARTUP_SOUND_OPTIONS,
+  loadStartupSoundId,
+  loadUiSoundsEnabled,
+  playUiSound,
+  previewStartupSound,
+  saveStartupSoundId,
+  saveUiSoundsEnabled,
+  type StartupSoundId,
+} from '@/lib/ui-sounds';
 
 type ConnectivityState = 'connected' | 'checking' | 'offline';
 type ChannelType = 'text' | 'voice';
@@ -879,6 +897,9 @@ const REACTION_EMOJIS = ['👍', '😂', '🔥', '❤️'] as const;
 function messagePreview(content: string): string {
   const parsed = parseWireText(content);
   if (parsed.kind === 'image') return 'Изображение';
+  if (parsed.kind === 'sfx') {
+    return isFunSoundId(parsed.id) ? `🔊 ${funSoundLabel(parsed.id)}` : '🔊 звук';
+  }
   if (parsed.kind === 'text') {
     if (parsed.file) return `Файл: ${parsed.file.name}`;
     return parsed.body.slice(0, 120) || 'Сообщение';
@@ -985,6 +1006,11 @@ function MessageList({
                 <a href={message.file.dataUrl} download={message.file.name} className="mt-2 inline-flex items-center gap-2 rounded-lg border border-[hsl(var(--border))] px-3 py-2 text-xs font-semibold hover:bg-[hsl(var(--muted)/.5)]" data-testid={`message-file-${message.id}`}>
                   <Download size={14} /> {message.file.name}
                 </a>
+              ) : message.sfxId ? (
+                <div className="mt-1 inline-flex items-center gap-2 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card)/.92)] px-3 py-1.5 text-xs font-semibold" data-testid={`message-sfx-${message.id}`}>
+                  <span>{FUN_SOUNDS.find((s) => s.id === message.sfxId)?.emoji ?? '🔊'}</span>
+                  <span>{isFunSoundId(message.sfxId) ? funSoundLabel(message.sfxId) : message.sfxId}</span>
+                </div>
               ) : (
                 renderMessageBody(message.content, memberNames, message.deleted)
               )}
@@ -997,7 +1023,7 @@ function MessageList({
                   ))}
                 </div>
               )}
-              {!message.deleted && (
+              {!message.deleted && !message.sfxId && (
                 <div className="mt-1 flex flex-wrap gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100" data-testid={`message-actions-${message.id}`}>
                   <button type="button" className="ghost-btn !h-7 !px-2 text-[10px]" onClick={() => onReply(message.id)} data-testid={`button-reply-${message.id}`}>Ответить</button>
                   {REACTION_EMOJIS.map((emoji) => (
@@ -1196,6 +1222,7 @@ function ChatComposer({
   footerHint,
   fileInputTestId,
   attachTestId,
+  onPlayFunSound,
 }: {
   draft: string;
   memberNames: string[];
@@ -1211,8 +1238,10 @@ function ChatComposer({
   footerHint: string;
   fileInputTestId: string;
   attachTestId: string;
+  onPlayFunSound?: (id: FunSoundId) => void;
 }) {
   const [mentionDismissed, setMentionDismissed] = useState(false);
+  const [sfxOpen, setSfxOpen] = useState(false);
   const mentionState = mentionSuggestions(draft, memberNames);
   const showMentionMenu = Boolean(mentionState && mentionState.matches.length > 0 && !mentionDismissed);
 
@@ -1271,8 +1300,38 @@ function ChatComposer({
         </div>
       )}
       <input ref={fileInputRef} type="file" accept="image/*,application/pdf,application/zip,.pdf,.zip" className="hidden" onChange={(e) => { void onPickFile(e.target.files?.[0]); }} data-testid={fileInputTestId} />
+      {sfxOpen && onPlayFunSound && (
+        <div className="mb-2 grid grid-cols-5 gap-1.5 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card)/.95)] p-2" data-testid="soundboard-panel">
+          {FUN_SOUNDS.map((sound) => (
+            <button
+              key={sound.id}
+              type="button"
+              className="flex flex-col items-center gap-0.5 rounded-lg px-1 py-1.5 text-[10px] font-semibold hover:bg-[hsl(var(--muted)/.55)]"
+              onClick={() => {
+                onPlayFunSound(sound.id);
+                setSfxOpen(false);
+              }}
+              data-testid={`button-sfx-${sound.id}`}
+            >
+              <span className="text-base leading-none">{sound.emoji}</span>
+              <span className="truncate max-w-full">{sound.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="composer-inner">
         <button type="button" className="icon-btn shrink-0" onClick={() => fileInputRef.current?.click()} aria-label="Прикрепить файл" data-testid={attachTestId}><ImageIcon size={18} /></button>
+        {onPlayFunSound && (
+          <button
+            type="button"
+            className={`icon-btn shrink-0 ${sfxOpen ? 'border-[hsl(var(--primary))] text-[hsl(var(--primary))]' : ''}`}
+            onClick={() => setSfxOpen((open) => !open)}
+            aria-label="Звуковая панель"
+            data-testid="button-soundboard"
+          >
+            <Music2 size={18} />
+          </button>
+        )}
         <textarea value={draft} onChange={(event) => onDraftChange(event.target.value)} onKeyDown={handleKeyDown} placeholder={placeholder} aria-label="Новое сообщение" data-testid="input-message" rows={1} />
         <button className="primary-btn !h-9 !w-9 !p-0" onClick={onSend} aria-label="Отправить сообщение" data-testid="button-send-message"><Send size={15} /></button>
       </div>
@@ -1409,6 +1468,7 @@ function Workspace() {
       setConnectionStatus('offline');
       return;
     }
+    refreshPatriotRankSalt();
     let closed = false;
     let closer: (() => void) | null = null;
     void openRoomSession({
@@ -1502,7 +1562,7 @@ function Workspace() {
           for (const message of mappedMessages) {
             if (knownMessageIdsRef.current.has(message.id) || message.isCurrentUser) continue;
             const parsed = parseWireText(message.content);
-            if (parsed.kind === 'react' || parsed.kind === 'edit' || parsed.kind === 'delete' || parsed.kind === 'pin' || parsed.kind === 'unknown') {
+            if (parsed.kind === 'react' || parsed.kind === 'edit' || parsed.kind === 'delete' || parsed.kind === 'pin' || parsed.kind === 'sfx' || parsed.kind === 'unknown') {
               continue;
             }
             const channelId = message.channelId ?? 'general';
@@ -1529,7 +1589,9 @@ function Workspace() {
             }
             const preview = messagePreview(message.content);
             void notifyDesktop('message', message.author, preview);
-            if (parsed.kind === 'text') {
+            if (parsed.kind === 'sfx') {
+              if (isFunSoundId(parsed.id)) playFunSound(parsed.id);
+            } else if (parsed.kind === 'text') {
               const selfName = displayName.trim().toLowerCase();
               const mentionedNames = [
                 ...(parsed.mentions ?? []),
@@ -1623,6 +1685,10 @@ function Workspace() {
       return false;
     }
     return true;
+  };
+  const sendFunSound = (id: FunSoundId) => {
+    playFunSound(id);
+    sendChatPayload(encodeSfx(id));
   };
   const onChatFilePick = async (file: File | undefined) => {
     if (!file) return;
@@ -1859,6 +1925,10 @@ function Workspace() {
     '--channel-pane-w': `${channelPaneWidth}px`,
     '--member-pane-w': `${memberPaneWidth}px`,
   } as CSSProperties;
+  const theme = useAppTheme();
+  const chatBgThemeSuffix = theme === 'patriot' ? ' theme-chat-bg--patriot' : theme === 'gachi' ? ' theme-chat-bg--gachi' : '';
+  const chatAreaClassName = `chat-area theme-chat-bg${chatBgThemeSuffix}`;
+  const voiceRoomLayoutClassName = `voice-room-layout theme-chat-bg${chatBgThemeSuffix}`;
 
   return <div className="noise workspace-shell" style={shellStyle}>
     <WorkspaceNav unreadTotal={unreadTotal} onDiagnostics={() => setOverlay('diagnostics')} onSettings={() => setOverlay('settings')} />
@@ -2004,7 +2074,7 @@ function Workspace() {
             />
           )}
           {activeVoice === selectedVoice.id && (
-            <div className="voice-room-layout">
+            <div className={voiceRoomLayoutClassName}>
               <div className="message-scroll scrollbar-thin min-h-0 flex-1"><MessageList {...messageListProps} /></div>
               <ChatComposer
                 draft={draft}
@@ -2021,12 +2091,13 @@ function Workspace() {
                 footerHint="end-to-end · голос + чат канала"
                 fileInputTestId="input-voice-image-file"
                 attachTestId="button-voice-image-attach"
+                onPlayFunSound={sendFunSound}
               />
             </div>
           )}
         </div>
       ) : (
-        <div className="chat-area">
+        <div className={chatAreaClassName}>
           <div className="message-scroll scrollbar-thin"><MessageList {...messageListProps} /></div>
           <ChatComposer
             draft={draft}
@@ -2043,6 +2114,7 @@ function Workspace() {
             footerHint={`end-to-end · ${isCoordinator ? 'вы координатор' : connectionHint}`}
             fileInputTestId="input-chat-image-file"
             attachTestId="button-add-attachment"
+            onPlayFunSound={sendFunSound}
           />
         </div>
       )}
@@ -2198,6 +2270,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [audioInputId, setAudioInputId] = useState(() => loadAudioInputId());
   const [audioOutputId, setAudioOutputId] = useState(() => loadAudioOutputId());
   const [uiSoundsEnabled, setUiSoundsEnabled] = useState(() => loadUiSoundsEnabled());
+  const [startupSoundId, setStartupSoundId] = useState<StartupSoundId>(() => loadStartupSoundId());
   const [updateProgress, setUpdateProgress] = useState<{ loaded: number; total: number | null; phase: string } | null>(null);
 
   useEffect(() => {
@@ -2423,6 +2496,43 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
               </span>
             </span>
           </label>
+          <div className="mt-4 rounded-lg border border-[hsl(var(--border))] p-3" data-testid="startup-sound-picker">
+            <div className="text-xs font-bold">Звук запуска Drift</div>
+            <p className="mt-1 text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">Три варианта ~2 с. Нажмите «Слушать», выберите понравившийся.</p>
+            <div className="mt-3 space-y-2">
+              {STARTUP_SOUND_OPTIONS.map((option) => {
+                const selected = startupSoundId === option.id;
+                return (
+                  <div key={option.id} className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 ${selected ? 'border-[hsl(var(--primary)/.55)] bg-[hsl(var(--primary)/.08)]' : 'border-[hsl(var(--border))]'}`}>
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 text-left"
+                      onClick={() => {
+                        setStartupSoundId(option.id);
+                        saveStartupSoundId(option.id);
+                      }}
+                      data-testid={`button-select-startup-${option.id}`}
+                    >
+                      <span className="block text-xs font-bold">{option.label}{selected ? ' · выбран' : ''}</span>
+                      <span className="mt-0.5 block text-[10px] text-[hsl(var(--muted-foreground))]">{option.hint}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-btn !h-8 shrink-0 !px-2.5 text-[10px]"
+                      onClick={() => {
+                        setStartupSoundId(option.id);
+                        saveStartupSoundId(option.id);
+                        previewStartupSound(option.id);
+                      }}
+                      data-testid={`button-preview-startup-${option.id}`}
+                    >
+                      Слушать
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
 
         <div className="mt-6 rounded-xl border border-[hsl(var(--border))] p-4">
