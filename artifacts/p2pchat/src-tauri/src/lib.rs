@@ -1,10 +1,13 @@
 mod autostart;
 mod local_hub;
+mod overlay;
+mod ptt;
 mod tray_activity;
 mod tunnel;
 mod updater;
 
 use local_hub::LocalHubHandle;
+use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -119,13 +122,20 @@ pub fn run() {
             tunnel: tokio::sync::Mutex::new(None),
             public_origin: tokio::sync::Mutex::new(None),
         })
+        .manage(Arc::new(ptt::PttWatchState::default()))
         .invoke_handler(tauri::generate_handler![
             start_local_sync_server,
             restart_public_tunnel,
             updater::install_update,
             autostart::get_autostart_enabled,
             autostart::set_autostart_enabled,
-            tray_activity::set_tray_speaking
+            tray_activity::set_tray_speaking,
+            ptt::start_ptt_watch,
+            ptt::stop_ptt_watch,
+            ptt::set_ptt_vk,
+            overlay::show_voice_overlay,
+            overlay::hide_voice_overlay,
+            overlay::close_voice_overlay
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Открыть Drift", true, None::<&str>)?;
@@ -166,8 +176,10 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .run(tauri::generate_context!())

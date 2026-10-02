@@ -535,3 +535,71 @@ html[data-theme="gachi"] .nav-icon.active {
   .mobile-channel-chip { display: flex !important; }
 }
 @media (min-width: 611px) { .mobile-channel-chip { display: none !important; } }
+
+html.voice-overlay-mode,
+html.voice-overlay-mode body,
+html.voice-overlay-mode #root {
+  height: 100%;
+  min-height: 100%;
+  background: transparent !important;
+}
+.voice-overlay-root {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: transparent;
+}
+.voice-overlay-panel {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  min-width: 180px;
+  max-width: min(280px, 42vw);
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid hsl(var(--primary) / .22);
+  box-shadow: 0 8px 28px hsl(0 0% 0% / .35);
+  font-family: var(--app-font-sans, system-ui, sans-serif);
+  color: hsl(210 20% 96%);
+}
+.voice-overlay-channel {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.85;
+  margin-bottom: 8px;
+}
+.voice-overlay-peers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.voice-overlay-peer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 6px;
+  border-radius: 8px;
+  transition: box-shadow 0.15s, background 0.15s;
+}
+.voice-overlay-peer.speaking {
+  background: hsl(var(--primary) / .18);
+  box-shadow: 0 0 0 1px hsl(var(--primary) / .45), 0 0 12px hsl(var(--primary) / .35);
+}
+.voice-overlay-peer-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-overlay-peer-badge {
+  margin-left: auto;
+  font-size: 11px;
+  opacity: 0.8;
+}

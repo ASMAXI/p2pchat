@@ -45,6 +45,7 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
+import { VoiceOverlayPage } from '@/components/voice-overlay-page';
 import {
   activateSavedServer,
   createLocalRoom,
@@ -147,6 +148,22 @@ import {
   saveUiSoundsEnabled,
   type StartupSoundId,
 } from '@/lib/ui-sounds';
+import {
+  loadPttKeyCode,
+  loadVoiceOverlayEnabled,
+  loadVoiceOverlayOpacity,
+  loadVoiceTalkMode,
+  pttVkForCode,
+  PTT_KEY_OPTIONS,
+  savePttKeyCode,
+  saveVoiceOverlayEnabled,
+  saveVoiceOverlayOpacity,
+  saveVoiceTalkMode,
+  VOICE_OVERLAY_PAYLOAD_KEY,
+  type PttKeyCode,
+  type VoiceOverlayPayload,
+  type VoiceTalkMode,
+} from '@/lib/voice-settings';
 
 type ConnectivityState = 'connected' | 'checking' | 'offline';
 type ChannelType = 'text' | 'voice';
@@ -1389,6 +1406,25 @@ function Workspace() {
   const sessionRef = useRef<RoomSession | null>(null);
   const voiceMeshRef = useRef<VoiceMesh | null>(null);
   const voiceChannelRef = useRef<string | null>(null);
+  const [voiceTalkMode, setVoiceTalkMode] = useState<VoiceTalkMode>(() => loadVoiceTalkMode());
+  const [pttKeyCode, setPttKeyCode] = useState<PttKeyCode>(() => loadPttKeyCode());
+  const [pttHeld, setPttHeld] = useState(false);
+  const pttHeldRef = useRef(false);
+  const voiceTalkModeRef = useRef(voiceTalkMode);
+  const pttKeyCodeRef = useRef(pttKeyCode);
+  const userMutedRef = useRef(false);
+  const [voiceOverlayEnabled, setVoiceOverlayEnabled] = useState(() => loadVoiceOverlayEnabled());
+  const [voiceOverlayOpacity, setVoiceOverlayOpacity] = useState(() => loadVoiceOverlayOpacity());
+  voiceTalkModeRef.current = voiceTalkMode;
+  pttKeyCodeRef.current = pttKeyCode;
+  userMutedRef.current = muted;
+  pttHeldRef.current = pttHeld;
+
+  const effectiveMicMuted = (userMuted: boolean, held: boolean, mode: VoiceTalkMode) =>
+    userMuted || (mode === 'ptt' && !held);
+  const applyEffectiveMicMute = (userMuted = userMutedRef.current, held = pttHeldRef.current, mode = voiceTalkModeRef.current) => {
+    voiceMeshRef.current?.setMuted(effectiveMicMuted(userMuted, held, mode));
+  };
   const selectedIdRef = useRef(selectedId);
   const knownMemberIdsRef = useRef<Set<string> | null>(null);
   const knownMessageIdsRef = useRef<Set<string> | null>(null);
@@ -1414,6 +1450,144 @@ function Workspace() {
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
+
+  useEffect(() => {
+    const onVoiceSettings = () => {
+      const mode = loadVoiceTalkMode();
+      const key = loadPttKeyCode();
+      setVoiceTalkMode(mode);
+      setPttKeyCode(key);
+      setVoiceOverlayEnabled(loadVoiceOverlayEnabled());
+      setVoiceOverlayOpacity(loadVoiceOverlayOpacity());
+      if (activeVoice) applyEffectiveMicMute(userMutedRef.current, pttHeldRef.current, mode);
+    };
+    window.addEventListener('p2pchat-voice-settings', onVoiceSettings);
+    return () => window.removeEventListener('p2pchat-voice-settings', onVoiceSettings);
+  }, [activeVoice]);
+
+  useEffect(() => {
+    if (!activeVoice || voiceTalkMode !== 'ptt' || !isDesktopShell()) {
+      if (isDesktopShell()) {
+        void import('@tauri-apps/api/core').then(({ invoke }) => {
+          void invoke('stop_ptt_watch').catch(() => {});
+        });
+      }
+      setPttHeld(false);
+      pttHeldRef.current = false;
+      return;
+    }
+    const vk = pttVkForCode(pttKeyCode);
+    let unlistenDown: (() => void) | undefined;
+    let unlistenUp: (() => void) | undefined;
+    let closed = false;
+
+    const setHeld = (held: boolean) => {
+      pttHeldRef.current = held;
+      setPttHeld(held);
+      applyEffectiveMicMute(userMutedRef.current, held, 'ptt');
+    };
+
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.code !== pttKeyCodeRef.current || event.repeat) return;
+      if (event.code === 'Mouse4' || event.code === 'Mouse5') return;
+      event.preventDefault();
+      setHeld(true);
+    };
+    const onKeyUp = (event: globalThis.KeyboardEvent) => {
+      if (event.code !== pttKeyCodeRef.current) return;
+      event.preventDefault();
+      setHeld(false);
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+
+    void import('@tauri-apps/api/core').then(({ invoke }) => {
+      void invoke('start_ptt_watch', { vk }).catch(() => {});
+    });
+    void import('@tauri-apps/api/event').then(({ listen }) => {
+      void listen('ptt-down', () => {
+        if (!closed) setHeld(true);
+      }).then((fn) => {
+        unlistenDown = fn;
+      });
+      void listen('ptt-up', () => {
+        if (!closed) setHeld(false);
+      }).then((fn) => {
+        unlistenUp = fn;
+      });
+    });
+
+    applyEffectiveMicMute(userMutedRef.current, false, 'ptt');
+
+    return () => {
+      closed = true;
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      unlistenDown?.();
+      unlistenUp?.();
+      void import('@tauri-apps/api/core').then(({ invoke }) => {
+        void invoke('stop_ptt_watch').catch(() => {});
+      });
+    };
+  }, [activeVoice, voiceTalkMode, pttKeyCode]);
+
+  useEffect(() => {
+    if (!activeVoice) return;
+    if (voiceTalkMode === 'vad') {
+      applyEffectiveMicMute(userMutedRef.current, true, 'vad');
+    }
+  }, [activeVoice, voiceTalkMode, muted]);
+
+  useEffect(() => {
+    if (!isDesktopShell()) return;
+    const show = Boolean(activeVoice && voiceOverlayEnabled);
+    void import('@tauri-apps/api/core').then(({ invoke }) => {
+      if (show) void invoke('show_voice_overlay').catch(() => {});
+      else void invoke('hide_voice_overlay').catch(() => {});
+    });
+  }, [activeVoice, voiceOverlayEnabled]);
+
+  useEffect(() => {
+    if (!activeVoice) {
+      try {
+        window.localStorage.removeItem(VOICE_OVERLAY_PAYLOAD_KEY);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    const room = voiceRooms.find((item) => item.id === activeVoice);
+    const channelName = room?.name ?? 'Голос';
+    const selfEffectiveMuted = effectiveMicMuted(muted, pttHeld, voiceTalkMode);
+    const peers: VoiceOverlayPayload['peers'] = [
+      {
+        id: peerId,
+        name: displayName,
+        speaking: Boolean(speakingPeers[peerId]),
+        muted: selfEffectiveMuted,
+      },
+      ...voicePeers.map((peer) => ({
+        id: peer.id,
+        name: peer.name,
+        speaking: Boolean(speakingPeers[peer.id]),
+        muted: Boolean(peerVoiceStates[peer.id]?.muted),
+      })),
+    ];
+    const payload: VoiceOverlayPayload = {
+      channelName,
+      opacity: voiceOverlayOpacity,
+      peers,
+    };
+    try {
+      window.localStorage.setItem(VOICE_OVERLAY_PAYLOAD_KEY, JSON.stringify(payload));
+    } catch {
+      // ignore
+    }
+    void import('@tauri-apps/api/event').then(({ emit }) => {
+      void emit('voice-overlay-state', payload);
+    });
+  }, [activeVoice, voiceRooms, voicePeers, speakingPeers, peerVoiceStates, members, voiceOverlayOpacity, muted, pttHeld, voiceTalkMode, peerId, displayName]);
 
   useEffect(() => { writeStore(SERVER_KEY, server); }, [server]);
   useEffect(() => { writeStore(CHANNELS_KEY, channels); }, [channels]);
@@ -1817,7 +1991,7 @@ function Workspace() {
         setVoiceHint('Соединяем…');
         setVoicePeerStatus('connecting');
         voiceMeshRef.current?.setMicVolume(micVolume);
-        voiceMeshRef.current?.setMuted(muted);
+        applyEffectiveMicMute(muted, pttHeldRef.current, voiceTalkModeRef.current);
         voiceMeshRef.current?.setDeafened(deafened);
         void voiceMeshRef.current?.setMicProcessing({ noiseSuppression, echoCancellation, enhancedNoise });
         sessionRef.current?.setVoiceChannel(room.id);
@@ -1844,6 +2018,14 @@ function Workspace() {
     setSharingScreen(false);
     setScreenSharePeerId(null);
     setScreenShareStream(null);
+    setPttHeld(false);
+    pttHeldRef.current = false;
+    if (isDesktopShell()) {
+      void import('@tauri-apps/api/core').then(({ invoke }) => {
+        void invoke('stop_ptt_watch').catch(() => {});
+        void invoke('hide_voice_overlay').catch(() => {});
+      });
+    }
     setVoiceRooms((current) => current.map((item) => item.id === activeVoice ? { ...item, participantCount: Math.max(0, item.participantCount - 1), participants: item.participants.filter((person) => person !== displayName), state: item.participantCount <= 1 ? 'ready' : 'live' } : item));
     setActiveVoice(null); setMuted(false); setDeafened(false); setToast('Вы вышли из голосовой комнаты');
   };
@@ -1943,7 +2125,7 @@ function Workspace() {
       onLeaveServer={leaveServer}
       selfPeerId={peerId}
       selfDisplayName={displayName}
-      selfMuted={muted}
+      selfMuted={effectiveMicMuted(muted, pttHeld, voiceTalkMode)}
       selfDeafened={deafened}
       activeVoiceChannelId={activeVoice}
       voicePeers={voicePeers}
@@ -1951,7 +2133,11 @@ function Workspace() {
       speakingPeers={speakingPeers}
       muted={muted}
       deafened={deafened}
-      onMute={() => setMuted((value) => { const next = !value; voiceMeshRef.current?.setMuted(next); return next; })}
+      onMute={() => setMuted((value) => {
+        const next = !value;
+        applyEffectiveMicMute(next, pttHeldRef.current, voiceTalkModeRef.current);
+        return next;
+      })}
       onDeafen={() => setDeafened((value) => { const next = !value; voiceMeshRef.current?.setDeafened(next); return next; })}
       micVolume={micVolume}
       onMicVolume={(value) => { setMicVolume(value); voiceMeshRef.current?.setMicVolume(value); }}
@@ -2243,6 +2429,34 @@ function Diagnostics({ onClose }: { onClose?: () => void }) {
   </div>;
 }
 
+function PttKeyCaptureButton({ onCapture }: { onCapture: (code: PttKeyCode) => void }) {
+  const [capturing, setCapturing] = useState(false);
+  useEffect(() => {
+    if (!capturing) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.code === 'Mouse4' || event.code === 'Mouse5') return;
+      const known = PTT_KEY_OPTIONS.some((item) => item.code === event.code);
+      if (!known) return;
+      onCapture(event.code);
+      setCapturing(false);
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [capturing, onCapture]);
+  return (
+    <button
+      type="button"
+      className="ghost-btn mt-2 w-full text-xs"
+      onClick={() => setCapturing(true)}
+      data-testid="button-capture-ptt-key"
+    >
+      {capturing ? 'Нажмите клавишу…' : 'Нажмите клавишу…'}
+    </button>
+  );
+}
+
 function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [, setLocation] = useLocation();
   const goBack = () => (onClose ? onClose() : setLocation('/server'));
@@ -2271,6 +2485,10 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [audioOutputId, setAudioOutputId] = useState(() => loadAudioOutputId());
   const [uiSoundsEnabled, setUiSoundsEnabled] = useState(() => loadUiSoundsEnabled());
   const [startupSoundId, setStartupSoundId] = useState<StartupSoundId>(() => loadStartupSoundId());
+  const [voiceTalkMode, setVoiceTalkMode] = useState<VoiceTalkMode>(() => loadVoiceTalkMode());
+  const [pttKeyCode, setPttKeyCode] = useState<PttKeyCode>(() => loadPttKeyCode());
+  const [voiceOverlayEnabled, setVoiceOverlayEnabled] = useState(() => loadVoiceOverlayEnabled());
+  const [voiceOverlayOpacity, setVoiceOverlayOpacity] = useState(() => loadVoiceOverlayOpacity());
   const [updateProgress, setUpdateProgress] = useState<{ loaded: number; total: number | null; phase: string } | null>(null);
 
   useEffect(() => {
@@ -2476,6 +2694,112 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
               <option key={device.deviceId} value={device.deviceId}>{device.label || `Выход ${device.deviceId.slice(0, 8)}`}</option>
             ))}
           </select>
+        </div>
+
+        <div className="mt-6 rounded-xl border border-[hsl(var(--border))] p-4">
+          <div className="text-sm font-bold">Голос</div>
+          <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Режим микрофона и мини-оверлей поверх игр (desktop).</p>
+          <label className="field-label mt-3" htmlFor="voice-mode">Режим</label>
+          <select
+            id="voice-mode"
+            className="field-input"
+            value={voiceTalkMode}
+            onChange={(event) => {
+              const mode = event.target.value === 'ptt' ? 'ptt' : 'vad';
+              setVoiceTalkMode(mode);
+              saveVoiceTalkMode(mode);
+              window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
+            }}
+            data-testid="select-voice-mode"
+          >
+            <option value="vad">Активация голосом (по умолчанию)</option>
+            <option value="ptt">По нажатию клавиши (PTT)</option>
+          </select>
+          {voiceTalkMode === 'ptt' && (
+            <>
+              <label className="field-label mt-3" htmlFor="ptt-key">Клавиша PTT</label>
+              <select
+                id="ptt-key"
+                className="field-input"
+                value={pttKeyCode}
+                onChange={(event) => {
+                  const code = event.target.value;
+                  setPttKeyCode(code);
+                  savePttKeyCode(code);
+                  if (isDesktopShell()) {
+                    void import('@tauri-apps/api/core').then(({ invoke }) => {
+                      void invoke('set_ptt_vk', { vk: pttVkForCode(code) }).catch(() => {});
+                    });
+                  }
+                  window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
+                }}
+                data-testid="select-ptt-key"
+              >
+                {PTT_KEY_OPTIONS.map((option) => (
+                  <option key={option.code} value={option.code}>{option.label}</option>
+                ))}
+              </select>
+              <PttKeyCaptureButton
+                onCapture={(code) => {
+                  setPttKeyCode(code);
+                  savePttKeyCode(code);
+                  if (isDesktopShell()) {
+                    void import('@tauri-apps/api/core').then(({ invoke }) => {
+                      void invoke('set_ptt_vk', { vk: pttVkForCode(code) }).catch(() => {});
+                    });
+                  }
+                  window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
+                }}
+              />
+            </>
+          )}
+          <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={voiceOverlayEnabled}
+              disabled={!isDesktopShell()}
+              onChange={(event) => {
+                const next = event.target.checked;
+                setVoiceOverlayEnabled(next);
+                saveVoiceOverlayEnabled(next);
+                window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
+              }}
+              data-testid="checkbox-voice-overlay"
+            />
+            <span>
+              <span className="block text-xs font-bold">Мини-войс оверлей</span>
+              <span className="mt-0.5 block text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
+                Компактная панель поверх игр и полноэкранных приложений (только desktop).
+              </span>
+            </span>
+          </label>
+          {voiceOverlayEnabled && (
+            <div className="mt-3">
+              <label className="field-label" htmlFor="overlay-opacity">
+                Прозрачность оверлея · {Math.round(voiceOverlayOpacity * 100)}%
+              </label>
+              <input
+                id="overlay-opacity"
+                type="range"
+                min={15}
+                max={100}
+                value={Math.round(voiceOverlayOpacity * 100)}
+                onChange={(event) => {
+                  const next = Number(event.target.value) / 100;
+                  setVoiceOverlayOpacity(next);
+                  saveVoiceOverlayOpacity(next);
+                  window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
+                }}
+                className="w-full"
+                data-testid="range-overlay-opacity"
+              />
+            </div>
+          )}
+        </div>
+
+        <div className="mt-6 rounded-xl border border-[hsl(var(--border))] p-4">
+          <div className="text-sm font-bold">Звуки интерфейса</div>
           <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
             <input
               type="checkbox"
@@ -2636,13 +2960,53 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   );
 }
 
+function voiceOverlayRouteActive(): boolean {
+  if (typeof window === 'undefined') return false;
+  const path = window.location.pathname.replace(/\/$/, '') || '/';
+  return path.endsWith('/voice-overlay');
+}
+
 function Router() {
   const [location] = useLocation();
-  return <ErrorBoundary resetKey={location}><Switch><Route path="/" component={Home} /><Route path="/server" component={Workspace} /><Route path="/diagnostics">{() => <Diagnostics />}</Route><Route path="/settings">{() => <SettingsPage />}</Route><Route component={NotFound} /></Switch></ErrorBoundary>;
+  if (voiceOverlayRouteActive()) {
+    return (
+      <ErrorBoundary resetKey={location}>
+        <VoiceOverlayPage />
+      </ErrorBoundary>
+    );
+  }
+  return (
+    <ErrorBoundary resetKey={location}>
+      <Switch>
+        <Route path="/" component={Home} />
+        <Route path="/server" component={Workspace} />
+        <Route path="/diagnostics">{() => <Diagnostics />}</Route>
+        <Route path="/settings">{() => <SettingsPage />}</Route>
+        <Route path="/voice-overlay">{() => <VoiceOverlayPage />}</Route>
+        <Route component={NotFound} />
+      </Switch>
+    </ErrorBoundary>
+  );
 }
 
 function App() {
-  return <QueryClientProvider client={queryClient}><TooltipProvider><WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}><Router /></WouterRouter><Toaster /></TooltipProvider></QueryClientProvider>;
+  const overlayShell = voiceOverlayRouteActive();
+  const router = (
+    <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+      <Router />
+    </WouterRouter>
+  );
+  if (overlayShell) {
+    return router;
+  }
+  return (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        {router}
+        <Toaster />
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
 }
 
 export default App;

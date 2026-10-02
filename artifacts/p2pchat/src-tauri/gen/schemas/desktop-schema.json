@@ -345,10 +345,22 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Close mini voice overlay window",
+          "type": "string",
+          "const": "allow-close-voice-overlay",
+          "markdownDescription": "Close mini voice overlay window"
+        },
+        {
           "description": "Read Windows autostart state",
           "type": "string",
           "const": "allow-get-autostart-enabled",
           "markdownDescription": "Read Windows autostart state"
+        },
+        {
+          "description": "Hide mini voice overlay window",
+          "type": "string",
+          "const": "allow-hide-voice-overlay",
+          "markdownDescription": "Hide mini voice overlay window"
         },
         {
           "description": "Download and install Drift updates",
@@ -369,16 +381,40 @@
           "markdownDescription": "Change Windows autostart state"
         },
         {
+          "description": "Update push-to-talk virtual-key code",
+          "type": "string",
+          "const": "allow-set-ptt-vk",
+          "markdownDescription": "Update push-to-talk virtual-key code"
+        },
+        {
           "description": "Update tray speaking indicator",
           "type": "string",
           "const": "allow-set-tray-speaking",
           "markdownDescription": "Update tray speaking indicator"
         },
         {
+          "description": "Show mini voice overlay window",
+          "type": "string",
+          "const": "allow-show-voice-overlay",
+          "markdownDescription": "Show mini voice overlay window"
+        },
+        {
           "description": "Start local P2P hub and tunnel",
           "type": "string",
           "const": "allow-start-local-sync-server",
           "markdownDescription": "Start local P2P hub and tunnel"
+        },
+        {
+          "description": "Start global push-to-talk key watch",
+          "type": "string",
+          "const": "allow-start-ptt-watch",
+          "markdownDescription": "Start global push-to-talk key watch"
+        },
+        {
+          "description": "Stop global push-to-talk key watch",
+          "type": "string",
+          "const": "allow-stop-ptt-watch",
+          "markdownDescription": "Stop global push-to-talk key watch"
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

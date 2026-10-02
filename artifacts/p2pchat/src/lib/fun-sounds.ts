@@ -23,7 +23,9 @@ export type FunSoundId =
   | "tada"
   | "pipe"
   | "sneeze"
-  | "whistle";
+  | "whistle"
+  | "moan_m"
+  | "moan_f";
 
 export const FUN_SOUNDS: Array<{ id: FunSoundId; label: string; emoji: string }> = [
   { id: "fart", label: "Пердёж", emoji: "💨" },
@@ -46,6 +48,8 @@ export const FUN_SOUNDS: Array<{ id: FunSoundId; label: string; emoji: string }>
   { id: "pipe", label: "Труба", emoji: "🔩" },
   { id: "sneeze", label: "Апчхи", emoji: "🤧" },
   { id: "whistle", label: "Свисток", emoji: "🫠" },
+  { id: "moan_m", label: "Стон ♂", emoji: "🥵" },
+  { id: "moan_f", label: "Стон ♀", emoji: "💋" },
 ];
 
 const FUN_SOUND_SET = new Set(FUN_SOUNDS.map((item) => item.id));

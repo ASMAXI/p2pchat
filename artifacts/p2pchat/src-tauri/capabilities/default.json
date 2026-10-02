@@ -2,11 +2,18 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Main window capability for Drift",
-  "windows": ["main"],
+  "windows": ["main", "voice-overlay"],
   "permissions": [
     "core:default",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "core:event:allow-emit",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-focus",
     "opener:default",
     "allow-start-local-sync-server",
     "allow-restart-public-tunnel",
@@ -14,6 +21,12 @@
     "allow-get-autostart-enabled",
     "allow-set-autostart-enabled",
     "allow-set-tray-speaking",
+    "allow-start-ptt-watch",
+    "allow-stop-ptt-watch",
+    "allow-set-ptt-vk",
+    "allow-show-voice-overlay",
+    "allow-hide-voice-overlay",
+    "allow-close-voice-overlay",
     "notification:default"
   ]
 }
