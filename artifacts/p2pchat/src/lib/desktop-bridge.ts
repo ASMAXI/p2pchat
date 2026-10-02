@@ -1,4 +1,5 @@
 import { debugLog } from "@/lib/debug-log";
+import { tunnelInvokeArgs } from "@/lib/tunnel-settings";
 
 export type LocalNodeInfo = {
   origin: string;
@@ -12,7 +13,7 @@ async function invoke<T>(command: string, args?: Record<string, unknown>): Promi
   return tauriInvoke<T>(command, args);
 }
 
-/** Starts the embedded peer node + Cloudflare Quick Tunnel (no-op in the browser). */
+/** Starts the embedded peer node + selected public tunnel (no-op in the browser). */
 export async function ensureLocalNode(): Promise<LocalNodeInfo | null> {
   if (!("__TAURI_INTERNALS__" in window)) {
     debugLog("node", "ensureLocalNode skipped (not desktop)");
@@ -20,7 +21,7 @@ export async function ensureLocalNode(): Promise<LocalNodeInfo | null> {
   }
   try {
     debugLog("node", "start_local_sync_server…");
-    const info = await invoke<LocalNodeInfo>("start_local_sync_server");
+    const info = await invoke<LocalNodeInfo>("start_local_sync_server", tunnelInvokeArgs());
     debugLog(
       "node",
       "local node ready",
@@ -43,7 +44,7 @@ export async function restartPublicTunnel(): Promise<LocalNodeInfo | null> {
   if (!("__TAURI_INTERNALS__" in window)) return null;
   try {
     debugLog("tunnel", "restart_public_tunnel…");
-    const info = await invoke<LocalNodeInfo>("restart_public_tunnel");
+    const info = await invoke<LocalNodeInfo>("restart_public_tunnel", tunnelInvokeArgs());
     debugLog(
       "tunnel",
       "restart result",

@@ -164,6 +164,14 @@ import {
   type VoiceOverlayPayload,
   type VoiceTalkMode,
 } from '@/lib/voice-settings';
+import {
+  TUNNEL_PROVIDER_OPTIONS,
+  loadNgrokAuthToken,
+  loadTunnelProvider,
+  saveNgrokAuthToken,
+  saveTunnelProvider,
+  type TunnelProviderId,
+} from '@/lib/tunnel-settings';
 
 type ConnectivityState = 'connected' | 'checking' | 'offline';
 type ChannelType = 'text' | 'voice';
@@ -2507,6 +2515,8 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [voiceOverlayEnabled, setVoiceOverlayEnabled] = useState(() => loadVoiceOverlayEnabled());
   const [voiceOverlayOpacity, setVoiceOverlayOpacity] = useState(() => loadVoiceOverlayOpacity());
   const [updateProgress, setUpdateProgress] = useState<{ loaded: number; total: number | null; phase: string } | null>(null);
+  const [tunnelProvider, setTunnelProvider] = useState<TunnelProviderId>(() => loadTunnelProvider());
+  const [ngrokToken, setNgrokToken] = useState(() => loadNgrokAuthToken());
 
   useEffect(() => {
     void currentAppVersion().then(setAppVersion);
@@ -2530,6 +2540,8 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   const retryTunnel = async () => {
     setTunnelBusy(true);
     setTunnelMsg('');
+    saveTunnelProvider(tunnelProvider);
+    saveNgrokAuthToken(ngrokToken);
     try {
       const info = await restartPublicTunnel();
       if (info?.publicOrigin) {
@@ -2539,7 +2551,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
         if (next) {
           writeStore(SERVER_KEY, { ...readStore(SERVER_KEY, seedServer), invite: next.invite });
         }
-        setTunnelMsg(`Туннель: ${info.publicOrigin}. Скопируйте новое приглашение.`);
+        setTunnelMsg(`Туннель (${tunnelProvider}): ${info.publicOrigin}. Скопируйте новое приглашение.`);
       } else {
         setTunnelMsg(info?.tunnelError || 'Не удалось поднять туннель');
       }
@@ -2600,6 +2612,8 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
       meteredApiKey: meteredKey.trim() || null,
       meteredAppName: meteredApp.trim() || null,
     });
+    saveTunnelProvider(tunnelProvider);
+    saveNgrokAuthToken(ngrokToken);
     void warmIceServers();
     void refreshCoordinatorInvite().then((next) => {
       if (next) {
@@ -2948,8 +2962,49 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
         </div>
 
         <div className="mt-6 rounded-xl border border-[hsl(var(--border))] p-4">
-          <div className="text-sm font-bold">Авто-туннель Cloudflare</div>
+          <div className="text-sm font-bold">Публичный туннель</div>
           <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+            Чат и signaling идут через туннель. Голос — отдельно (TURN/Metered). Если Cloudflare не пускает друзей — переключитесь на ngrok или localhost.run.
+          </p>
+          <div className="mt-3 flex flex-col gap-2">
+            {TUNNEL_PROVIDER_OPTIONS.map((opt) => (
+              <label
+                key={opt.id}
+                className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 text-sm ${
+                  tunnelProvider === opt.id
+                    ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/.08)]'
+                    : 'border-[hsl(var(--border))]'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="tunnel-provider"
+                  className="mt-1"
+                  checked={tunnelProvider === opt.id}
+                  onChange={() => setTunnelProvider(opt.id)}
+                  data-testid={`radio-tunnel-${opt.id}`}
+                />
+                <span>
+                  <span className="font-semibold">{opt.label}</span>
+                  <span className="mt-0.5 block text-xs text-[hsl(var(--muted-foreground))]">{opt.hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {tunnelProvider === 'ngrok' && (
+            <div className="mt-3">
+              <label className="field-label" htmlFor="ngrok-token">ngrok Authtoken</label>
+              <input
+                id="ngrok-token"
+                className="field-input"
+                value={ngrokToken}
+                onChange={(e) => setNgrokToken(e.target.value)}
+                placeholder="из dashboard.ngrok.com → Your Authtoken"
+                data-testid="input-ngrok-token"
+              />
+            </div>
+          )}
+          <p className="mt-3 text-xs text-[hsl(var(--muted-foreground))]">
             Текущий URL: {publicUrl || 'ещё нет — создайте комнату или нажмите «Поднять»'}
           </p>
           <button type="button" className="primary-btn mt-3" disabled={tunnelBusy || !isDesktopShell()} onClick={() => void retryTunnel()} data-testid="button-retry-tunnel">

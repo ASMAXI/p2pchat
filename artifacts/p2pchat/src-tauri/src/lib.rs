@@ -34,6 +34,8 @@ async fn ensure_node_and_tunnel(
     app: &tauri::AppHandle,
     state: &LocalNodeState,
     force_restart_tunnel: bool,
+    provider: Option<String>,
+    ngrok_auth_token: Option<String>,
 ) -> Result<LocalNodeInfoDto, String> {
     let mut handle = state.handle.lock().await;
     if handle.is_none() {
@@ -65,8 +67,16 @@ async fn ensure_node_and_tunnel(
     }
 
     let dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
-    let started =
-        tokio::task::spawn_blocking(move || tunnel::start_quick_tunnel(&dir, port)).await;
+    let (stored_provider, stored_token) = tunnel::load_tunnel_prefs(&dir);
+    let provider = provider
+        .as_deref()
+        .map(tunnel::TunnelProvider::parse)
+        .unwrap_or(stored_provider);
+    let token = ngrok_auth_token.unwrap_or(stored_token);
+    let started = tokio::task::spawn_blocking(move || {
+        tunnel::start_tunnel(&dir, port, provider, &token)
+    })
+    .await;
 
     match started {
         Ok(Ok((tunnel_handle, info))) => {
@@ -94,22 +104,26 @@ async fn ensure_node_and_tunnel(
     }
 }
 
-/// Starts this computer's peer node once and returns its addresses (+ auto Cloudflare tunnel).
+/// Starts this computer's peer node once and returns its addresses (+ public tunnel).
 #[tauri::command]
 async fn start_local_sync_server(
     app: tauri::AppHandle,
     state: tauri::State<'_, LocalNodeState>,
+    provider: Option<String>,
+    ngrok_auth_token: Option<String>,
 ) -> Result<LocalNodeInfoDto, String> {
-    ensure_node_and_tunnel(&app, &state, false).await
+    ensure_node_and_tunnel(&app, &state, false, provider, ngrok_auth_token).await
 }
 
-/// Restarts the Cloudflare Quick Tunnel.
+/// Restarts the public tunnel with the selected provider.
 #[tauri::command]
 async fn restart_public_tunnel(
     app: tauri::AppHandle,
     state: tauri::State<'_, LocalNodeState>,
+    provider: Option<String>,
+    ngrok_auth_token: Option<String>,
 ) -> Result<LocalNodeInfoDto, String> {
-    ensure_node_and_tunnel(&app, &state, true).await
+    ensure_node_and_tunnel(&app, &state, true, provider, ngrok_auth_token).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
