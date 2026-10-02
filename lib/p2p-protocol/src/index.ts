@@ -6,8 +6,8 @@
 export const PROTOCOL_VERSION = 1;
 
 export const LIMITS = {
-  maxPlainMessageLength: 4000,
-  maxCiphertextLength: 12000,
+  maxPlainMessageLength: 250_000,
+  maxCiphertextLength: 400_000,
   maxStoredMessages: 1000,
   maxChannelNameLength: 50,
   maxChannels: 50,

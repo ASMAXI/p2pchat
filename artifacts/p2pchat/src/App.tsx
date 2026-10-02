@@ -33,6 +33,7 @@ import {
   Wifi,
   X,
   Zap,
+  ImageIcon,
 } from 'lucide-react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
@@ -83,6 +84,15 @@ import {
   getDebugLogs,
   subscribeDebugLogs,
 } from '@/lib/debug-log';
+import {
+  avatarColors,
+  avatarInitials,
+  IMAGE_MESSAGE_PREFIX,
+  isImageMessage,
+  imagePayload,
+  fileToChatImageDataUrl,
+} from '@/lib/avatar';
+import { getAutostartEnabled, setAutostartEnabled } from '@/lib/autostart';
 
 type ConnectivityState = 'connected' | 'checking' | 'offline';
 type ChannelType = 'text' | 'voice';
@@ -127,7 +137,6 @@ const PROFILE_NAME_KEY = 'p2pchat-profile-name';
 const CONNECTION_KEY = 'p2pchat-connection-status';
 
 const uid = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
-const initials = (value: string) => value.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
 const readStore = <T,>(key: string, fallback: T): T => {
   try {
     const value = localStorage.getItem(key);
@@ -364,7 +373,7 @@ function Home() {
                         onClick={() => openSaved(server)}
                         data-testid={`button-open-server-${server.roomId}`}
                       >
-                        <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[hsl(var(--primary))] text-[11px] font-extrabold text-[hsl(var(--primary-foreground))]">{initials(server.name)}</div>
+                        <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-[11px] font-extrabold" style={avatarColors(server.name)}>{avatarInitials(server.name)}</div>
                         <span className="min-w-0">
                           <span className="block truncate text-sm font-bold">{server.name}</span>
                           <span className="mt-0.5 block font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]">{server.role}{server.hostName ? ` · ${server.hostName}` : ''}</span>
@@ -480,6 +489,14 @@ function ChannelPane({
   onAdd,
   onInvite,
   onLeaveServer,
+  selfPeerId,
+  selfDisplayName,
+  selfMuted,
+  selfDeafened,
+  activeVoiceChannelId,
+  voicePeers,
+  peerVoiceStates,
+  speakingPeers,
 }: {
   server: Server;
   channels: Channel[];
@@ -489,6 +506,14 @@ function ChannelPane({
   onAdd: () => void;
   onInvite: () => void;
   onLeaveServer: () => void;
+  selfPeerId?: string;
+  selfDisplayName?: string;
+  selfMuted?: boolean;
+  selfDeafened?: boolean;
+  activeVoiceChannelId?: string | null;
+  voicePeers?: Array<{ id: string; name: string }>;
+  peerVoiceStates?: Record<string, { muted: boolean; deafened: boolean }>;
+  speakingPeers?: Record<string, boolean>;
 }) {
   const textChannels = channels.filter((channel) => channel.type === 'text');
   const voiceChannels = channels.filter((channel) => channel.type === 'voice');
@@ -511,12 +536,34 @@ function ChannelPane({
               </button>
               {people.length > 0 && (
                 <div className="mb-1 ml-2 space-y-0.5 border-l border-[hsl(var(--border))] pl-2" data-testid={`voice-members-${channel.id}`}>
-                  {people.map((person) => (
-                    <div key={`${channel.id}-${person}`} className="flex items-center gap-2 rounded-md px-2 py-1 text-[12px] text-[hsl(var(--foreground)/.85)]">
-                      <div className="member-avatar" style={{ width: 22, height: 22, fontSize: 8 }}>{initials(person)}</div>
-                      <span className="truncate font-semibold">{person}</span>
-                    </div>
-                  ))}
+                  {people.map((person) => {
+                    const voiceUi = channel.id === activeVoiceChannelId;
+                    const peer = voiceUi ? voicePeers?.find((item) => item.name === person) : undefined;
+                    const isSelf = person === selfDisplayName;
+                    const voiceState = voiceUi
+                      ? isSelf
+                        ? { muted: selfMuted ?? false, deafened: selfDeafened ?? false }
+                        : peer ? peerVoiceStates?.[peer.id] : undefined
+                      : undefined;
+                    const speaking = voiceUi
+                      ? isSelf
+                        ? Boolean(speakingPeers?.[selfPeerId ?? ''])
+                        : peer ? Boolean(speakingPeers?.[peer.id]) : false
+                      : false;
+                    return (
+                      <div key={`${channel.id}-${person}`} className="flex items-center gap-2 rounded-md px-2 py-1 text-[12px] text-[hsl(var(--foreground)/.85)]">
+                        <div
+                          className={`member-avatar ${speaking ? 'ring-2 ring-[hsl(var(--primary))] ring-offset-1 ring-offset-[hsl(var(--background))]' : ''}`}
+                          style={{ width: 22, height: 22, fontSize: 8, ...avatarColors(person) }}
+                        >
+                          {avatarInitials(person)}
+                        </div>
+                        <span className="min-w-0 flex-1 truncate font-semibold">{person}</span>
+                        {voiceState?.muted && <MicOff size={12} className="shrink-0 text-[hsl(var(--muted-foreground))]" aria-label="Микрофон выкл" />}
+                        {voiceState?.deafened && <Headphones size={12} className="shrink-0 text-[hsl(var(--muted-foreground))]" aria-label="Звук выкл" />}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -551,6 +598,10 @@ function VoiceCard({
   voicePeers,
   peerVolumes,
   onPeerVolume,
+  selfPeerId,
+  selfDisplayName,
+  speakingPeers,
+  peerVoiceStates,
 }: {
   room: StoredVoice;
   active: boolean;
@@ -570,10 +621,38 @@ function VoiceCard({
   voicePeers: Array<{ id: string; name: string }>;
   peerVolumes: Record<string, number>;
   onPeerVolume: (peerId: string, value: number) => void;
+  selfPeerId: string;
+  selfDisplayName: string;
+  speakingPeers: Record<string, boolean>;
+  peerVoiceStates: Record<string, { muted: boolean; deafened: boolean }>;
 }) {
   return <div className={`mx-4 mb-3 rounded-xl border p-3 transition ${active ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/.1)]' : 'border-[hsl(var(--border))] bg-[hsl(var(--card))]'}`}>
     <div className="flex items-center gap-2"><span className={`grid h-7 w-7 place-items-center rounded-lg ${active ? 'bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))]' : 'bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]'}`}><Volume2 size={14} /></span><div className="min-w-0 flex-1"><div className="truncate text-xs font-bold">{room.name}</div><div className="mt-0.5 font-mono text-[9px] uppercase text-[hsl(var(--muted-foreground))]">{active ? (voiceHint || 'Вы внутри') : `${room.participantCount} ${room.participantCount === 1 ? 'участник' : 'участника'}`}</div></div>{active ? <button className="icon-btn" onClick={onLeave} aria-label="Покинуть голосовую комнату" data-testid={`button-leave-voice-${room.id}`}><X size={15} /></button> : <button className="icon-btn" onClick={onJoin} aria-label="Войти в голосовую комнату" data-testid={`button-join-voice-${room.id}`}><ArrowRight size={15} /></button>}</div>
-    {room.participants.length > 0 && <div className="mt-3 flex items-center gap-1.5">{room.participants.map((person) => <div key={person} className="member-avatar" title={person}>{initials(person)}</div>)}</div>}
+    {room.participants.length > 0 && (
+      <div className="mt-3 space-y-1.5">
+        {room.participants.map((person) => {
+          const peer = voicePeers.find((item) => item.name === person);
+          const isSelf = person === selfDisplayName;
+          const voiceState = isSelf ? { muted, deafened } : peer ? peerVoiceStates[peer.id] : undefined;
+          const peerKey = isSelf ? selfPeerId : peer?.id;
+          const speaking = peerKey ? Boolean(speakingPeers[peerKey]) : false;
+          return (
+            <div key={person} className="flex items-center gap-2 text-[11px]">
+              <div
+                className={`member-avatar ${speaking ? 'ring-2 ring-[hsl(var(--primary))] ring-offset-1 ring-offset-[hsl(var(--card))]' : ''}`}
+                title={person}
+                style={avatarColors(person)}
+              >
+                {avatarInitials(person)}
+              </div>
+              <span className="min-w-0 flex-1 truncate font-semibold">{person}{isSelf ? ' (вы)' : ''}</span>
+              {voiceState?.muted && <MicOff size={12} className="shrink-0 text-[hsl(var(--muted-foreground))]" />}
+              {voiceState?.deafened && <Headphones size={12} className="shrink-0 text-[hsl(var(--muted-foreground))]" />}
+            </div>
+          );
+        })}
+      </div>
+    )}
     {active && (
       <div className="mt-3 space-y-2 border-t border-[hsl(var(--border))] pt-2">
         <div className="flex gap-1">
@@ -591,7 +670,7 @@ function VoiceCard({
             <input
               type="range"
               min={0}
-              max={100}
+              max={200}
               value={Math.round((peerVolumes[peer.id] ?? 1) * 100)}
               onChange={(e) => onPeerVolume(peer.id, Number(e.target.value) / 100)}
               className="mt-1 w-full"
@@ -606,7 +685,7 @@ function VoiceCard({
 
 function MessageList({ messages }: { messages: Message[] }) {
   if (!messages.length) return <div className="flex h-full flex-col items-center justify-center px-6 text-center"><div className="grid h-16 w-16 place-items-center rounded-2xl bg-[hsl(var(--primary)/.18)] text-[hsl(var(--secondary))]"><Sparkles size={25} /></div><h3 className="font-display mt-5 text-xl font-bold">Здесь пока тихо</h3><p className="mt-2 max-w-xs text-sm leading-6 text-[hsl(var(--muted-foreground))]">Начните разговор — первое сообщение задаст настроение комнате.</p></div>;
-  return <div className="space-y-1"><div className="mb-7 flex items-center gap-3 text-[11px] text-[hsl(var(--muted-foreground))]"><div className="diag-line" /><span>Сегодня</span><div className="diag-line" /></div>{messages.map((message, index) => <article className="message-item" key={message.id} style={{ animationDelay: `${index * 45}ms` }} data-testid={`message-${message.id}`}><div className="message-avatar" style={{ background: message.isCurrentUser ? 'hsl(var(--accent))' : undefined, color: message.isCurrentUser ? 'hsl(var(--accent-foreground))' : undefined }}>{message.avatar}</div><div className="min-w-0"><div className="flex items-baseline gap-2"><strong className="text-[13px]">{message.author}</strong><time className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">{message.timestamp}</time></div><p className="mt-1 text-[14px] leading-6 text-[hsl(var(--foreground)/.82)]">{message.content}</p></div></article>)}</div>;
+  return <div className="space-y-1"><div className="mb-7 flex items-center gap-3 text-[11px] text-[hsl(var(--muted-foreground))]"><div className="diag-line" /><span>Сегодня</span><div className="diag-line" /></div>{messages.map((message, index) => <article className="message-item" key={message.id} style={{ animationDelay: `${index * 45}ms` }} data-testid={`message-${message.id}`}><div className="message-avatar" style={avatarColors(message.author)}>{message.avatar}</div><div className="min-w-0"><div className="flex items-baseline gap-2"><strong className="text-[13px]">{message.author}</strong><time className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">{message.timestamp}</time></div>{isImageMessage(message.content) ? <img src={imagePayload(message.content)} alt="Изображение в чате" className="mt-2 max-h-80 max-w-full rounded-xl border border-[hsl(var(--border))]" data-testid={`message-image-${message.id}`} /> : <p className="mt-1 text-[14px] leading-6 text-[hsl(var(--foreground)/.82)]">{message.content}</p>}</div></article>)}</div>;
 }
 
 function Workspace() {
@@ -628,7 +707,11 @@ function Workspace() {
   const [noiseSuppression, setNoiseSuppression] = useState(true);
   const [echoCancellation, setEchoCancellation] = useState(true);
   const [peerVolumes, setPeerVolumes] = useState<Record<string, number>>({});
+  const [speakingPeers, setSpeakingPeers] = useState<Record<string, boolean>>({});
+  const [peerVoiceStates, setPeerVoiceStates] = useState<Record<string, { muted: boolean; deafened: boolean }>>({});
+  const [showMeteredHint, setShowMeteredHint] = useState(false);
   const [voicePeers, setVoicePeers] = useState<Array<{ id: string; name: string }>>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [members, setMembers] = useState<ApiRoomMember[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<SessionStatus>('offline');
   const [connectionError, setConnectionError] = useState('');
@@ -697,7 +780,7 @@ function Workspace() {
           view.messages.map((message) => ({
             id: message.id,
             author: message.author,
-            avatar: initials(message.author),
+            avatar: avatarInitials(message.author),
             content: message.text ?? '🔒 не удалось расшифровать',
             timestamp: new Date(message.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
             isCurrentUser: message.authorId === peerId,
@@ -758,6 +841,28 @@ function Workspace() {
     }
     setDraft('');
   };
+  const sendChatPayload = (content: string) => {
+    if (!sessionRef.current) {
+      setToast('Переподключаемся к комнате…');
+      return false;
+    }
+    if (!sessionRef.current.sendChat(selectedId, content)) {
+      setToast('Сообщение слишком длинное или нет ключа комнаты');
+      return false;
+    }
+    return true;
+  };
+  const onVoiceImagePick = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const dataUrl = await fileToChatImageDataUrl(file);
+      if (sendChatPayload(`${IMAGE_MESSAGE_PREFIX}${dataUrl}`)) setToast('Изображение отправлено');
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : 'Не удалось обработать изображение');
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } };
   const addChannel = (channelName: string, type: ChannelType) => {
     if (server.roomId) {
@@ -793,12 +898,21 @@ function Workspace() {
               setVoicePeerStatus(status);
               if (status === 'connecting') setVoiceHint(detail || 'Соединяем…');
               else if (status === 'connected') setVoiceHint('Голос подключен');
-              else if (status === 'failed') setVoiceHint(detail || 'Нет прямого пути — нужен TURN');
-              else setVoiceHint('');
+              else if (status === 'failed') {
+                setShowMeteredHint(true);
+                setVoiceHint(detail || 'Нет прямого пути — нужен TURN');
+              } else setVoiceHint('');
+            },
+            onSpeaking: (id, speaking) => {
+              setSpeakingPeers((current) => ({ ...current, [id]: speaking }));
+            },
+            onPeerVoiceState: (id, state) => {
+              setPeerVoiceStates((current) => ({ ...current, [id]: state }));
             },
           },
         );
         await mesh.start();
+        mesh.hydratePeerVolumes(peerVolumes);
         voiceMeshRef.current = mesh;
         voiceChannelRef.current = room.id;
         setVoiceHint('Соединяем…');
@@ -825,6 +939,8 @@ function Workspace() {
     setVoiceHint('');
     setVoicePeerStatus(null);
     setVoicePeers([]);
+    setSpeakingPeers({});
+    setPeerVoiceStates({});
     setVoiceRooms((current) => current.map((item) => item.id === activeVoice ? { ...item, participantCount: Math.max(0, item.participantCount - 1), participants: item.participants.filter((person) => person !== displayName), state: item.participantCount <= 1 ? 'ready' : 'live' } : item));
     setActiveVoice(null); setMuted(false); setDeafened(false); setToast('Вы вышли из голосовой комнаты');
   };
@@ -858,7 +974,7 @@ function Workspace() {
         : voiceHint || (activeVoice ? 'Соединяем…' : '');
   return <div className="noise workspace-shell">
     <WorkspaceNav onDiagnostics={() => setOverlay('diagnostics')} onSettings={() => setOverlay('settings')} />
-    <ChannelPane server={server} channels={channels} voiceRooms={voiceRooms} selectedId={selectedId} onSelect={selectChannel} onAdd={() => setShowChannelDialog(true)} onInvite={() => setShowInviteDialog(true)} onLeaveServer={leaveServer} />
+    <ChannelPane server={server} channels={channels} voiceRooms={voiceRooms} selectedId={selectedId} onSelect={selectChannel} onAdd={() => setShowChannelDialog(true)} onInvite={() => setShowInviteDialog(true)} onLeaveServer={leaveServer} selfPeerId={peerId} selfDisplayName={displayName} selfMuted={muted} selfDeafened={deafened} activeVoiceChannelId={activeVoice} voicePeers={voicePeers} peerVoiceStates={peerVoiceStates} speakingPeers={speakingPeers} />
     <main className="content-pane">
       <header className="topbar">
         <div className="flex min-w-0 items-center gap-3"><button className="icon-btn mobile-channel-chip" aria-label="Открыть список каналов" data-testid="button-open-channels"><Menu size={18} /></button><div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]">{selectedChannel?.type === 'voice' ? <Volume2 size={16} /> : <Hash size={16} />}</div><div className="min-w-0"><h1 className="truncate font-display text-[16px] font-bold tracking-[-.03em]">{selectedChannel?.name ?? 'общий'}</h1><p className="topbar-subtitle truncate text-[10px] text-[hsl(var(--muted-foreground))]">{selectedChannel?.type === 'voice' ? 'Голосовая комната' : connectionHint}</p></div></div>
@@ -891,12 +1007,68 @@ function Workspace() {
           </div>
         </div>
       )}
-       {selectedVoice ? <div className="flex flex-1 flex-col items-center justify-center px-6 text-center"><div className="relative grid h-24 w-24 place-items-center rounded-[28px] bg-[hsl(var(--primary)/.18)] text-[hsl(var(--secondary))]"><Volume2 size={36} /><span className="animate-pulse-dot absolute right-1 top-1 h-3 w-3 rounded-full bg-[hsl(var(--primary))]" /></div><p className="mt-7 font-mono text-[10px] uppercase tracking-[.2em] text-[hsl(var(--muted-foreground))]">Голосовая комната</p><h2 className="font-display mt-2 text-3xl font-bold tracking-[-.06em]">{selectedVoice.name}</h2><p className="mt-3 max-w-sm text-sm leading-6 text-[hsl(var(--muted-foreground))]">Нажмите «войти», чтобы разрешить микрофон и подключиться по WebRTC.</p>{activeVoice === selectedVoice.id && voiceStatusLabel && <p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]" data-testid="text-voice-status">{voiceStatusLabel}</p>}<div className="mt-7 flex items-center gap-3"><button className="primary-btn" onClick={() => activeVoice === selectedVoice.id ? leaveVoice() : void joinVoice(selectedVoice)} data-testid="button-main-voice-toggle">{activeVoice === selectedVoice.id ? <><X size={16} /> Покинуть комнату</> : <><Radio size={16} /> Войти в комнату</>}</button></div><div className="mt-9 flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]"><Users size={14} /> {selectedVoice.participantCount} сейчас в комнате</div></div> : <div className="chat-area"><div className="message-scroll scrollbar-thin"><MessageList messages={channelMessages} /></div><div className="composer"><div className="composer-inner"><button className="icon-btn shrink-0" onClick={() => setShowChannelDialog(true)} aria-label="Добавить вложение" data-testid="button-add-attachment"><Plus size={18} /></button><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onComposerKeyDown} placeholder={`Написать в #${selectedChannel?.name ?? 'общий'}...`} aria-label="Новое сообщение" data-testid="input-message" rows={1} /><button className="primary-btn !h-9 !w-9 !p-0" onClick={sendMessage} aria-label="Отправить сообщение" data-testid="button-send-message"><Send size={15} /></button></div><div className="mt-2 flex items-center gap-1.5 px-1 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]"><LockKeyhole size={10} /> end-to-end · {isCoordinator ? 'вы координатор' : connectionHint} <span className="ml-auto">enter — отправить</span></div></div></div>}
+      {selectedVoice ? (
+        <div className={`flex min-h-0 flex-1 flex-col ${activeVoice === selectedVoice.id ? '' : 'items-center justify-center px-6 text-center'}`}>
+          {(showMeteredHint || voicePeerStatus === 'failed') && (
+            <div className="mx-4 mt-3 rounded-xl border border-[hsl(var(--accent)/.45)] bg-[hsl(var(--accent)/.12)] px-4 py-3 text-left text-sm" data-testid="banner-voice-turn">
+              <div className="font-semibold">Голос через интернет не подключился</div>
+              <p className="mt-1 text-xs leading-5 text-[hsl(var(--muted-foreground))]">
+                Часто это NAT или firewall: нужен рабочий TURN. Бесплатный вариант —{' '}
+                <a href="https://www.metered.ca/" target="_blank" rel="noreferrer" className="font-semibold text-[hsl(var(--primary))] underline">metered.ca</a>
+                , API key в настройках Drift. {voiceHint && <span className="block mt-1 font-mono text-[10px]">{voiceHint}</span>}
+              </p>
+              <button type="button" className="ghost-btn mt-2" onClick={() => setOverlay('settings')} data-testid="button-voice-turn-settings">Открыть настройки</button>
+            </div>
+          )}
+          <div className={`shrink-0 ${activeVoice === selectedVoice.id ? 'border-b border-[hsl(var(--border))] px-4 py-4 sm:px-6' : ''}`}>
+            <div className={`flex flex-col gap-3 ${activeVoice === selectedVoice.id ? 'sm:flex-row sm:items-center sm:justify-between' : 'items-center'}`}>
+              <div className={`flex items-center gap-3 ${activeVoice === selectedVoice.id ? '' : 'flex-col'}`}>
+                <div className="relative grid h-16 w-16 place-items-center rounded-[22px] bg-[hsl(var(--primary)/.18)] text-[hsl(var(--secondary))] sm:h-14 sm:w-14">
+                  <Volume2 size={activeVoice === selectedVoice.id ? 28 : 36} />
+                  {activeVoice === selectedVoice.id && <span className="animate-pulse-dot absolute right-1 top-1 h-3 w-3 rounded-full bg-[hsl(var(--primary))]" />}
+                </div>
+                <div className={activeVoice === selectedVoice.id ? 'min-w-0 text-left' : 'text-center'}>
+                  <p className="font-mono text-[10px] uppercase tracking-[.2em] text-[hsl(var(--muted-foreground))]">Голосовая комната</p>
+                  <h2 className="font-display text-2xl font-bold tracking-[-.06em] sm:text-xl">{selectedVoice.name}</h2>
+                  {activeVoice === selectedVoice.id && voiceStatusLabel && (
+                    <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]" data-testid="text-voice-status">{voiceStatusLabel}</p>
+                  )}
+                  {activeVoice !== selectedVoice.id && (
+                    <p className="mt-2 max-w-sm text-sm leading-6 text-[hsl(var(--muted-foreground))]">Нажмите «войти», чтобы разрешить микрофон и подключиться по WebRTC.</p>
+                  )}
+                </div>
+              </div>
+              <div className={`flex items-center gap-3 ${activeVoice === selectedVoice.id ? '' : 'mt-4 flex-col'}`}>
+                <button className="primary-btn" onClick={() => (activeVoice === selectedVoice.id ? leaveVoice() : void joinVoice(selectedVoice))} data-testid="button-main-voice-toggle">
+                  {activeVoice === selectedVoice.id ? <><X size={16} /> Покинуть комнату</> : <><Radio size={16} /> Войти в комнату</>}
+                </button>
+                <div className="flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]"><Users size={14} /> {selectedVoice.participantCount} в комнате</div>
+              </div>
+            </div>
+          </div>
+          {activeVoice === selectedVoice.id && (
+            <>
+              <div className="message-scroll scrollbar-thin min-h-0 flex-1"><MessageList messages={channelMessages} /></div>
+              <div className="composer">
+                <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onVoiceImagePick(e.target.files?.[0])} data-testid="input-voice-image-file" />
+                <div className="composer-inner">
+                  <button type="button" className="icon-btn shrink-0" onClick={() => fileInputRef.current?.click()} aria-label="Прикрепить изображение" data-testid="button-voice-image-attach"><ImageIcon size={18} /></button>
+                  <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onComposerKeyDown} placeholder={`Написать в #${selectedVoice.name}...`} aria-label="Новое сообщение в голосовом канале" data-testid="input-message" rows={1} />
+                  <button className="primary-btn !h-9 !w-9 !p-0" onClick={sendMessage} aria-label="Отправить сообщение" data-testid="button-send-message"><Send size={15} /></button>
+                </div>
+                <div className="mt-2 flex items-center gap-1.5 px-1 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]"><LockKeyhole size={10} /> end-to-end · голос + чат канала <span className="ml-auto">enter — отправить</span></div>
+              </div>
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="chat-area"><div className="message-scroll scrollbar-thin"><MessageList messages={channelMessages} /></div><div className="composer"><input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onVoiceImagePick(e.target.files?.[0])} data-testid="input-chat-image-file" /><div className="composer-inner"><button className="icon-btn shrink-0" onClick={() => fileInputRef.current?.click()} aria-label="Прикрепить изображение" data-testid="button-add-attachment"><ImageIcon size={18} /></button><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onComposerKeyDown} placeholder={`Написать в #${selectedChannel?.name ?? 'общий'}...`} aria-label="Новое сообщение" data-testid="input-message" rows={1} /><button className="primary-btn !h-9 !w-9 !p-0" onClick={sendMessage} aria-label="Отправить сообщение" data-testid="button-send-message"><Send size={15} /></button></div><div className="mt-2 flex items-center gap-1.5 px-1 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]"><LockKeyhole size={10} /> end-to-end · {isCoordinator ? 'вы координатор' : connectionHint} <span className="ml-auto">enter — отправить</span></div></div></div>
+      )}
     </main>
     <aside className="member-pane scrollbar-thin">
-      <div className="mb-7"><div className="flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Комната</span><span className="h-2 w-2 rounded-full bg-[hsl(var(--primary))]" /></div><div className="mt-4 flex items-center gap-2"><div className="grid h-8 w-8 place-items-center rounded-lg bg-[hsl(var(--primary))] text-xs font-extrabold text-[hsl(var(--primary-foreground))]">{initials(server.name)}</div><div><div className="text-xs font-bold">{server.name}</div><div className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">координатор: {server.hostName}</div></div></div></div>
-      <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.length === 0 ? <p className="text-xs text-[hsl(var(--muted-foreground))]">{connectionStatus === 'connected' ? 'Пока только вы' : 'Ждём подключения…'}</p> : visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={member.id === peerId ? { background: 'hsl(var(--accent))', color: 'hsl(var(--accent-foreground))' } : undefined}>{initials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="text-xs font-semibold">{member.name}</span>{member.name === server.hostName && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">координатор</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
-      <div><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Голосовые</span><button className="icon-btn" style={{ width: 22, height: 22 }} onClick={() => setShowChannelDialog(true)} aria-label="Создать голосовую комнату" data-testid="button-member-add-voice"><Plus size={14} /></button></div>{voiceRooms.map((room) => <VoiceCard key={room.id} room={room} active={activeVoice === room.id} onJoin={() => void joinVoice(room)} onLeave={leaveVoice} muted={muted} deafened={deafened} voiceHint={activeVoice === room.id ? voiceStatusLabel : undefined} micVolume={micVolume} onMicVolume={(value) => { setMicVolume(value); voiceMeshRef.current?.setMicVolume(value); }} noiseSuppression={noiseSuppression} echoCancellation={echoCancellation} onToggleNoise={() => { const next = !noiseSuppression; setNoiseSuppression(next); void voiceMeshRef.current?.setMicProcessing({ noiseSuppression: next }); }} onToggleEcho={() => { const next = !echoCancellation; setEchoCancellation(next); void voiceMeshRef.current?.setMicProcessing({ echoCancellation: next }); }} voicePeers={voicePeers} peerVolumes={peerVolumes} onPeerVolume={(id, value) => { setPeerVolumes((current) => ({ ...current, [id]: value })); voiceMeshRef.current?.setPeerVolume(id, value); }} onMute={() => setMuted((value) => { const next = !value; voiceMeshRef.current?.setMuted(next); return next; })} onDeafen={() => setDeafened((value) => { const next = !value; voiceMeshRef.current?.setDeafened(next); return next; })} />)}</div>
+      <div className="mb-7"><div className="flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Комната</span><span className="h-2 w-2 rounded-full bg-[hsl(var(--primary))]" /></div><div className="mt-4 flex items-center gap-2"><div className="grid h-8 w-8 place-items-center rounded-lg text-xs font-extrabold" style={avatarColors(server.name)}>{avatarInitials(server.name)}</div><div><div className="text-xs font-bold">{server.name}</div><div className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">координатор: {server.hostName}</div></div></div></div>
+      <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.length === 0 ? <p className="text-xs text-[hsl(var(--muted-foreground))]">{connectionStatus === 'connected' ? 'Пока только вы' : 'Ждём подключения…'}</p> : visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={avatarColors(member.name)}>{avatarInitials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="text-xs font-semibold">{member.name}</span>{member.name === server.hostName && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">координатор</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
+      <div><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Голосовые</span><button className="icon-btn" style={{ width: 22, height: 22 }} onClick={() => setShowChannelDialog(true)} aria-label="Создать голосовую комнату" data-testid="button-member-add-voice"><Plus size={14} /></button></div>{voiceRooms.map((room) => <VoiceCard key={room.id} room={room} active={activeVoice === room.id} onJoin={() => void joinVoice(room)} onLeave={leaveVoice} muted={muted} deafened={deafened} voiceHint={activeVoice === room.id ? voiceStatusLabel : undefined} micVolume={micVolume} onMicVolume={(value) => { setMicVolume(value); voiceMeshRef.current?.setMicVolume(value); }} noiseSuppression={noiseSuppression} echoCancellation={echoCancellation} onToggleNoise={() => { const next = !noiseSuppression; setNoiseSuppression(next); void voiceMeshRef.current?.setMicProcessing({ noiseSuppression: next }); }} onToggleEcho={() => { const next = !echoCancellation; setEchoCancellation(next); void voiceMeshRef.current?.setMicProcessing({ echoCancellation: next }); }} voicePeers={voicePeers} peerVolumes={peerVolumes} onPeerVolume={(id, value) => { setPeerVolumes((current) => ({ ...current, [id]: value })); voiceMeshRef.current?.setPeerVolume(id, value); }} selfPeerId={peerId} selfDisplayName={displayName} speakingPeers={speakingPeers} peerVoiceStates={peerVoiceStates} onMute={() => setMuted((value) => { const next = !value; voiceMeshRef.current?.setMuted(next); return next; })} onDeafen={() => setDeafened((value) => { const next = !value; voiceMeshRef.current?.setDeafened(next); return next; })} />)}</div>
     </aside>
     {showChannelDialog && <CreateChannelDialog onClose={() => setShowChannelDialog(false)} onCreate={addChannel} />}
     {showInviteDialog && <InviteDialog server={server} onClose={() => setShowInviteDialog(false)} onNotify={notify} />}
@@ -988,9 +1160,13 @@ function Diagnostics({ onClose }: { onClose?: () => void }) {
             ? 'Пока пусто — создайте/зайдите в комнату, напишите, зайдите в голос, затем скопируйте лог.'
             : logs.slice(-120).map((entry) => `${entry.ts.slice(11, 19)} ${entry.level[0]} [${entry.scope}] ${entry.message}`).join('\n')}
         </pre>
+        <p className="border-t border-[hsl(var(--border))] px-5 py-3 text-xs leading-5 text-[hsl(var(--muted-foreground))] sm:px-7">
+          Баги и пожелания:{' '}
+          <a href="mailto:maximrus96@gmail.com" className="font-semibold text-[hsl(var(--primary))] underline">maximrus96@gmail.com</a>
+        </p>
       </section>
 
-      <div className="mt-7 flex items-start gap-3 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card)/.55)] p-4 text-xs leading-5 text-[hsl(var(--muted-foreground))]"><LockKeyhole size={15} className="mt-0.5 shrink-0 text-[hsl(var(--secondary))]" /><span><strong className="text-[hsl(var(--foreground))]">Как сдать баг:</strong> после теста → Диагностика → «Скачать .txt» или «Копировать» → прислать вам. В логе нет текста чата, только сеть и голос.</span></div>
+      <div className="mt-7 flex items-start gap-3 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card)/.55)] p-4 text-xs leading-5 text-[hsl(var(--muted-foreground))]"><LockKeyhole size={15} className="mt-0.5 shrink-0 text-[hsl(var(--secondary))]" /><span><strong className="text-[hsl(var(--foreground))]">Как сдать баг:</strong> после теста → Диагностика → «Скачать .txt» или «Копировать» → прислать на <a href="mailto:maximrus96@gmail.com" className="font-semibold text-[hsl(var(--foreground))] underline">maximrus96@gmail.com</a>. В логе нет текста чата, только сеть и голос.</span></div>
     </main>
   </div>;
 }
@@ -1014,9 +1190,15 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [updateMsg, setUpdateMsg] = useState('');
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
   const [appVersion, setAppVersion] = useState('');
+  const [autostartEnabled, setAutostartEnabledState] = useState(false);
+  const [autostartBusy, setAutostartBusy] = useState(false);
 
   useEffect(() => {
     void currentAppVersion().then(setAppVersion);
+  }, []);
+
+  useEffect(() => {
+    void getAutostartEnabled().then(setAutostartEnabledState);
   }, []);
 
   useEffect(() => {
@@ -1112,6 +1294,36 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
         </p>
 
         <div className="mt-8 rounded-xl border border-[hsl(var(--border))] p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-sm font-bold">Автозапуск Drift с Windows</div>
+              <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Запускать приложение при входе в систему (только desktop).</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autostartEnabled}
+              className={`relative h-7 w-12 shrink-0 rounded-full transition ${autostartEnabled ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted))]'}`}
+              disabled={autostartBusy || !isDesktopShell()}
+              onClick={() => {
+                const next = !autostartEnabled;
+                setAutostartBusy(true);
+                void setAutostartEnabled(next)
+                  .then((ok) => {
+                    setAutostartEnabledState(ok);
+                    setSaved(next ? 'Автозапуск включён' : 'Автозапуск выключен');
+                  })
+                  .catch((error) => setSaved(error instanceof Error ? error.message : 'Не удалось изменить автозапуск'))
+                  .finally(() => setAutostartBusy(false));
+              }}
+              data-testid="toggle-autostart"
+            >
+              <span className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition ${autostartEnabled ? 'left-[22px]' : 'left-0.5'}`} />
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-6 rounded-xl border border-[hsl(var(--border))] p-4">
           <div className="text-sm font-bold">Обновления</div>
           <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Drift {appVersion} · создатель ASMAXI. Релизы — GitHub ASMAXI/p2pchat.</p>
           <div className="mt-3 flex flex-wrap gap-2">

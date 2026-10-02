@@ -40,7 +40,7 @@ use tokio::{
 use tower_http::cors::{Any, CorsLayer};
 
 const PROTOCOL_VERSION: u64 = 1;
-const MAX_CIPHERTEXT_LENGTH: usize = 12_000;
+const MAX_CIPHERTEXT_LENGTH: usize = 400_000;
 const MAX_STORED_MESSAGES: usize = 1_000;
 const MAX_CHANNEL_NAME_CHARS: usize = 50;
 const MAX_CHANNELS: usize = 50;

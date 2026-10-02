@@ -11,7 +11,8 @@ import { debugLog } from "@/lib/debug-log";
 type VoiceSignal =
   | { kind: "offer"; description: RTCSessionDescriptionInit }
   | { kind: "answer"; description: RTCSessionDescriptionInit }
-  | { kind: "ice"; candidate: RTCIceCandidateInit };
+  | { kind: "ice"; candidate: RTCIceCandidateInit }
+  | { kind: "voice-state"; muted: boolean; deafened: boolean };
 
 export type VoicePeerStatus = "connecting" | "connected" | "failed" | "closed";
 
@@ -23,6 +24,8 @@ export type MicProcessing = {
 
 export type VoiceMeshOptions = {
   onPeerStatus?: (peerId: string, status: VoicePeerStatus, detail?: string) => void;
+  onSpeaking?: (peerId: string, speaking: boolean) => void;
+  onPeerVoiceState?: (peerId: string, state: { muted: boolean; deafened: boolean }) => void;
 };
 
 type PeerRuntime = {
@@ -33,6 +36,11 @@ type PeerRuntime = {
   restartAttempted: boolean;
   sawRelay: boolean;
   candidateTypes: Set<string>;
+  gain?: GainNode;
+  analyser?: AnalyserNode;
+  source?: MediaStreamAudioSourceNode;
+  speakTimer?: number;
+  speaking: boolean;
 };
 
 const DEFAULT_MIC: MicProcessing = {
@@ -40,6 +48,9 @@ const DEFAULT_MIC: MicProcessing = {
   noiseSuppression: true,
   autoGainControl: true,
 };
+
+/** Discord-like user-volume boost: 0..2 (200%). */
+const MAX_PEER_GAIN = 2;
 
 function failHint(runtime: PeerRuntime): string {
   const source = getLastIceSource();
@@ -89,9 +100,21 @@ export class VoiceMesh {
     return { ...this.micProcessing };
   }
 
+  /** Restore slider values after leave/rejoin (bug: UI.min + audio.max). */
+  hydratePeerVolumes(volumes: Record<string, number>): void {
+    for (const [peerId, volume] of Object.entries(volumes)) {
+      this.peerVolumes.set(peerId, Math.min(MAX_PEER_GAIN, Math.max(0, volume)));
+    }
+  }
+
   async start(): Promise<void> {
     if (this.outboundStream) return;
     await this.acquireMic();
+  }
+
+  private ensureAudioContext(): AudioContext {
+    if (!this.audioContext) this.audioContext = new AudioContext();
+    return this.audioContext;
   }
 
   private async acquireMic(): Promise<void> {
@@ -108,13 +131,13 @@ export class VoiceMesh {
     for (const track of this.rawStream?.getTracks() ?? []) track.stop();
     this.rawStream = nextRaw;
 
-    if (!this.audioContext) this.audioContext = new AudioContext();
-    if (this.audioContext.state === "suspended") await this.audioContext.resume();
+    const ctx = this.ensureAudioContext();
+    if (ctx.state === "suspended") await ctx.resume();
 
-    const source = this.audioContext.createMediaStreamSource(nextRaw);
-    if (!this.micGain) this.micGain = this.audioContext.createGain();
+    const source = ctx.createMediaStreamSource(nextRaw);
+    if (!this.micGain) this.micGain = ctx.createGain();
     this.micGain.gain.value = this.muted ? 0 : this.micVolume;
-    const dest = this.audioContext.createMediaStreamDestination();
+    const dest = ctx.createMediaStreamDestination();
     source.connect(this.micGain);
     this.micGain.connect(dest);
     this.outboundStream = dest.stream;
@@ -148,7 +171,6 @@ export class VoiceMesh {
     await this.acquireMic();
   }
 
-  /** Local mic gain 0..1 (does not change what others set on their side). */
   setMicVolume(volume: number): void {
     this.micVolume = Math.min(1, Math.max(0, volume));
     if (this.micGain) this.micGain.gain.value = this.muted ? 0 : this.micVolume;
@@ -158,16 +180,84 @@ export class VoiceMesh {
     return this.micVolume;
   }
 
-  /** Local-only playback volume for a remote peer (Discord-style). */
   setPeerVolume(peerId: string, volume: number): void {
-    const next = Math.min(1, Math.max(0, volume));
+    const next = Math.min(MAX_PEER_GAIN, Math.max(0, volume));
     this.peerVolumes.set(peerId, next);
-    const audio = this.audioElements.get(peerId);
-    if (audio) audio.volume = this.deafened ? 0 : next;
+    this.applyPeerGain(peerId);
   }
 
   getPeerVolume(peerId: string): number {
     return this.peerVolumes.get(peerId) ?? 1;
+  }
+
+  private applyPeerGain(peerId: string): void {
+    const runtime = this.peers.get(peerId);
+    const gain = this.deafened ? 0 : this.getPeerVolume(peerId);
+    if (runtime?.gain) runtime.gain.gain.value = gain;
+    const audio = this.audioElements.get(peerId);
+    if (audio) {
+      // Keep element unmuted; loudness comes from GainNode (supports >100%).
+      audio.volume = 1;
+      audio.muted = false;
+    }
+  }
+
+  private attachRemoteAudio(peerId: string, stream: MediaStream): void {
+    const ctx = this.ensureAudioContext();
+    const runtime = this.peers.get(peerId);
+    if (!runtime) return;
+
+    runtime.source?.disconnect();
+    runtime.analyser?.disconnect();
+    runtime.gain?.disconnect();
+    if (runtime.speakTimer) window.clearInterval(runtime.speakTimer);
+
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.5;
+    const gain = ctx.createGain();
+    gain.gain.value = this.deafened ? 0 : this.getPeerVolume(peerId);
+    source.connect(analyser);
+    analyser.connect(gain);
+    gain.connect(ctx.destination);
+
+    runtime.source = source;
+    runtime.analyser = analyser;
+    runtime.gain = gain;
+    runtime.speaking = false;
+
+    // Keep a silent <audio> so autoplay policies stay happy on some platforms.
+    let audio = this.audioElements.get(peerId);
+    if (!audio) {
+      audio = document.createElement("audio");
+      audio.autoplay = true;
+      audio.setAttribute("playsinline", "true");
+      audio.setAttribute("aria-hidden", "true");
+      audio.style.display = "none";
+      document.body.appendChild(audio);
+      this.audioElements.set(peerId, audio);
+    }
+    audio.srcObject = stream;
+    audio.volume = 0; // playback via Web Audio graph
+    void audio.play().catch((error) => {
+      debugLog("voice", "audio.play blocked", error, "warn");
+      this.options.onPeerStatus?.(peerId, "connecting", "Разрешите воспроизведение звука в системе");
+    });
+    void ctx.resume();
+
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    runtime.speakTimer = window.setInterval(() => {
+      analyser.getByteFrequencyData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 1) sum += data[i]!;
+      const avg = sum / data.length;
+      const speaking = avg > 18;
+      if (speaking !== runtime.speaking) {
+        runtime.speaking = speaking;
+        this.options.onSpeaking?.(peerId, speaking);
+      }
+    }, 120);
   }
 
   async addPeer(peerId: string, initiator: boolean): Promise<void> {
@@ -180,6 +270,7 @@ export class VoiceMesh {
       turn: this.hasTurn(),
       iceSource: getLastIceSource(),
       iceServers: iceServers.length,
+      volume: this.getPeerVolume(peerId),
     });
 
     const connection = new RTCPeerConnection({
@@ -193,6 +284,7 @@ export class VoiceMesh {
       restartAttempted: false,
       sawRelay: false,
       candidateTypes: new Set(),
+      speaking: false,
     };
     this.peers.set(peerId, runtime);
     this.options.onPeerStatus?.(peerId, "connecting");
@@ -230,23 +322,10 @@ export class VoiceMesh {
     connection.ontrack = (event) => {
       const [stream] = event.streams;
       if (!stream) return;
-      debugLog("voice", "ontrack", { peerId, tracks: stream.getTracks().length });
-      let audio = this.audioElements.get(peerId);
-      if (!audio) {
-        audio = document.createElement("audio");
-        audio.autoplay = true;
-        audio.setAttribute("playsinline", "true");
-        audio.setAttribute("aria-hidden", "true");
-        audio.style.display = "none";
-        document.body.appendChild(audio);
-        this.audioElements.set(peerId, audio);
-      }
-      audio.srcObject = stream;
-      audio.volume = this.deafened ? 0 : this.getPeerVolume(peerId);
-      void audio.play().catch((error) => {
-        debugLog("voice", "audio.play blocked", error, "warn");
-        this.options.onPeerStatus?.(peerId, "connecting", "Разрешите воспроизведение звука в системе");
-      });
+      debugLog("voice", "ontrack", { peerId, tracks: stream.getTracks().length, volume: this.getPeerVolume(peerId) });
+      this.attachRemoteAudio(peerId, stream);
+      // Share our mute/deaf so peer can show icons.
+      this.sendSignal(peerId, { kind: "voice-state", muted: this.muted, deafened: this.deafened });
     };
 
     connection.onconnectionstatechange = () => {
@@ -256,6 +335,7 @@ export class VoiceMesh {
         if (runtime.failTimer) window.clearTimeout(runtime.failTimer);
         runtime.failTimer = undefined;
         this.options.onPeerStatus?.(peerId, "connected");
+        this.sendSignal(peerId, { kind: "voice-state", muted: this.muted, deafened: this.deafened });
         return;
       }
       if (state === "failed") {
@@ -309,6 +389,13 @@ export class VoiceMesh {
   async handleSignal(fromPeerId: string, data: unknown): Promise<void> {
     const signal = data as Partial<VoiceSignal>;
     if (!signal.kind) return;
+    if (signal.kind === "voice-state") {
+      this.options.onPeerVoiceState?.(fromPeerId, {
+        muted: Boolean(signal.muted),
+        deafened: Boolean(signal.deafened),
+      });
+      return;
+    }
     if (!this.peers.has(fromPeerId)) await this.addPeer(fromPeerId, false);
     const runtime = this.peers.get(fromPeerId);
     if (!runtime) return;
@@ -351,29 +438,39 @@ export class VoiceMesh {
     }
   }
 
+  private broadcastVoiceState(): void {
+    for (const peerId of this.peers.keys()) {
+      this.sendSignal(peerId, { kind: "voice-state", muted: this.muted, deafened: this.deafened });
+    }
+  }
+
   setMuted(muted: boolean): void {
     this.muted = muted;
     if (this.micGain) this.micGain.gain.value = muted ? 0 : this.micVolume;
     for (const track of this.outboundStream?.getAudioTracks() ?? []) track.enabled = !muted;
     for (const track of this.rawStream?.getAudioTracks() ?? []) track.enabled = !muted;
+    this.broadcastVoiceState();
   }
 
   setDeafened(deafened: boolean): void {
     this.deafened = deafened;
-    for (const [peerId, audio] of this.audioElements) {
-      audio.volume = deafened ? 0 : this.getPeerVolume(peerId);
-      audio.muted = false;
-    }
+    for (const peerId of this.peers.keys()) this.applyPeerGain(peerId);
+    this.broadcastVoiceState();
   }
 
   removePeer(peerId: string): void {
     const runtime = this.peers.get(peerId);
     if (runtime?.failTimer) window.clearTimeout(runtime.failTimer);
+    if (runtime?.speakTimer) window.clearInterval(runtime.speakTimer);
+    runtime?.source?.disconnect();
+    runtime?.analyser?.disconnect();
+    runtime?.gain?.disconnect();
     runtime?.connection.close();
     this.peers.delete(peerId);
     const audio = this.audioElements.get(peerId);
     audio?.remove();
     this.audioElements.delete(peerId);
+    this.options.onSpeaking?.(peerId, false);
   }
 
   stop(): void {

@@ -10,7 +10,7 @@ export type AppUpdateInfo = {
 
 export const GITHUB_REPO = "ASMAXI/p2pchat";
 
-/** Pulls `x.y.z` out of tags like `v0.3.3`, `drift-v0.3.3`, `p2pchat-v0.2.0`. */
+/** Pulls `x.y.z` out of tags like `v0.4.0`, `drift-v0.4.0`, `p2pchat-v0.2.0`. */
 function normalizeVersion(value: string): string {
   return value.match(/\d+\.\d+\.\d+/)?.[0] ?? value.trim().replace(/^v/i, "");
 }
@@ -37,7 +37,7 @@ export async function currentAppVersion(): Promise<string> {
   } catch {
     // fall through
   }
-  return "0.3.3";
+  return "0.4.0";
 }
 
 export async function checkForAppUpdate(): Promise<AppUpdateInfo> {

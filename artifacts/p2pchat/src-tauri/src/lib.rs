@@ -1,3 +1,4 @@
+mod autostart;
 mod local_hub;
 mod tunnel;
 mod updater;
@@ -119,7 +120,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_local_sync_server,
             restart_public_tunnel,
-            updater::install_update
+            updater::install_update,
+            autostart::get_autostart_enabled,
+            autostart::set_autostart_enabled
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Открыть Drift", true, None::<&str>)?;
