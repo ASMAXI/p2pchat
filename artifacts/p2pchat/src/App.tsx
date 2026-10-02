@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import { Route, Switch, Link, useLocation, Router as WouterRouter } from 'wouter';
 import {
   Activity,
@@ -21,7 +21,7 @@ import {
   Radio,
   RefreshCw,
   Send,
-  Settings2,
+  Settings,
   ShieldCheck,
   Signal,
   Sparkles,
@@ -93,6 +93,20 @@ import {
   fileToChatImageDataUrl,
 } from '@/lib/avatar';
 import { getAutostartEnabled, setAutostartEnabled } from '@/lib/autostart';
+import { APP_THEMES, loadTheme, saveTheme, type AppThemeId } from '@/lib/theme';
+import {
+  loadChannelPaneWidth,
+  loadMemberPaneWidth,
+  saveChannelPaneWidth,
+  saveMemberPaneWidth,
+} from '@/lib/layout-settings';
+import {
+  listAudioDevices,
+  loadAudioInputId,
+  loadAudioOutputId,
+  saveAudioInputId,
+  saveAudioOutputId,
+} from '@/lib/audio-settings';
 
 type ConnectivityState = 'connected' | 'checking' | 'offline';
 type ChannelType = 'text' | 'voice';
@@ -434,7 +448,7 @@ function WorkspaceNav({ onDiagnostics, onSettings }: { onDiagnostics: () => void
       <button className={`nav-icon ${location === '/server' ? 'active' : ''}`} onClick={() => setLocation('/server')} aria-label="Чаты" data-testid="button-nav-chat"><Hash size={18} /></button>
       <button className="nav-icon" onClick={onDiagnostics} aria-label="Диагностика" data-testid="button-nav-diagnostics"><Activity size={18} /></button>
       <div className="mt-auto flex flex-col gap-3">
-        <button className="nav-icon" onClick={onSettings} aria-label="Настройки" data-testid="button-nav-settings"><Settings2 size={18} /></button>
+        <button className="nav-icon" onClick={onSettings} aria-label="Настройки" data-testid="button-nav-settings"><Settings size={18} /></button>
         <div className="member-avatar" style={{ width: 38, height: 38, background: 'hsl(var(--accent))', color: 'hsl(var(--accent-foreground))' }}>ВЫ</div>
       </div>
     </aside>
@@ -470,7 +484,7 @@ function InviteDialog({ server, onClose, onNotify }: { server: Server; onClose: 
   };
   return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="dialog-card">
     <div className="mb-6 flex items-start justify-between"><div><div className="font-mono text-[10px] uppercase tracking-[.18em] text-[hsl(var(--muted-foreground))]">Доступ в комнату</div><h3 className="font-display mt-2 text-2xl font-bold tracking-[-.05em]">Позвать своих</h3></div><button className="icon-btn" onClick={onClose} aria-label="Закрыть" data-testid="button-close-invite-dialog"><X size={18} /></button></div>
-    <p className="text-sm leading-6 text-[hsl(var(--muted-foreground))]">Отправьте ссылку друзьям — она уже готова. После перезапуска приложения скопируйте ссылку заново (туннель меняет адрес).</p>
+    <p className="text-sm leading-6 text-[hsl(var(--muted-foreground))]">Отправьте ссылку друзьям — комната и токен в ней постоянные для этой сессии. Меняются только адреса <span className="font-mono text-[11px]">api=</span> (bootstrap / туннель): после перезапуска desktop или смены Cloudflare-туннеля скопируйте свежую ссылку из меню сервера.</p>
     {isLocal && <div className="mt-4 rounded-xl border border-[hsl(var(--accent))]/30 bg-[hsl(var(--accent)/.08)] p-3 text-xs leading-5 text-[hsl(var(--accent))]">
       <strong>Внимание:</strong> в ссылке только localhost. Друзья в другой сети не подключатся.
       <div className="mt-2 font-mono text-[10px]">В одной Wi‑Fi приглашение должно содержать LAN-адрес (его подставит desktop-клиент). Между сетями нужен публичный bootstrap или туннель.</div>
@@ -497,6 +511,18 @@ function ChannelPane({
   voicePeers,
   peerVoiceStates,
   speakingPeers,
+  muted,
+  deafened,
+  onMute,
+  onDeafen,
+  micVolume,
+  onMicVolume,
+  noiseSuppression,
+  echoCancellation,
+  onToggleNoise,
+  onToggleEcho,
+  onPeerContextMenu,
+  onChannelResizeMouseDown,
 }: {
   server: Server;
   channels: Channel[];
@@ -514,6 +540,18 @@ function ChannelPane({
   voicePeers?: Array<{ id: string; name: string }>;
   peerVoiceStates?: Record<string, { muted: boolean; deafened: boolean }>;
   speakingPeers?: Record<string, boolean>;
+  muted?: boolean;
+  deafened?: boolean;
+  onMute?: () => void;
+  onDeafen?: () => void;
+  micVolume?: number;
+  onMicVolume?: (value: number) => void;
+  noiseSuppression?: boolean;
+  echoCancellation?: boolean;
+  onToggleNoise?: () => void;
+  onToggleEcho?: () => void;
+  onPeerContextMenu?: (event: ReactMouseEvent, peerId: string) => void;
+  onChannelResizeMouseDown?: (event: ReactMouseEvent) => void;
 }) {
   const textChannels = channels.filter((channel) => channel.type === 'text');
   const voiceChannels = channels.filter((channel) => channel.type === 'voice');
@@ -550,8 +588,13 @@ function ChannelPane({
                         ? Boolean(speakingPeers?.[selfPeerId ?? ''])
                         : peer ? Boolean(speakingPeers?.[peer.id]) : false
                       : false;
+                    const rowPeerId = isSelf ? undefined : peer?.id;
                     return (
-                      <div key={`${channel.id}-${person}`} className="flex items-center gap-2 rounded-md px-2 py-1 text-[12px] text-[hsl(var(--foreground)/.85)]">
+                      <div
+                        key={`${channel.id}-${person}`}
+                        className="flex items-center gap-2 rounded-md px-2 py-1 text-[12px] text-[hsl(var(--foreground)/.85)]"
+                        onContextMenu={rowPeerId && onPeerContextMenu ? (event) => { event.preventDefault(); onPeerContextMenu(event, rowPeerId); } : undefined}
+                      >
                         <div
                           className={`member-avatar ${speaking ? 'ring-2 ring-[hsl(var(--primary))] ring-offset-1 ring-offset-[hsl(var(--background))]' : ''}`}
                           style={{ width: 22, height: 22, fontSize: 8, ...avatarColors(person) }}
@@ -571,7 +614,36 @@ function ChannelPane({
         })}
       </div>
     </div>
+    {onChannelResizeMouseDown && (
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Изменить ширину панели каналов"
+        className="panel-resizer panel-resizer-right"
+        onMouseDown={onChannelResizeMouseDown}
+        data-testid="resizer-channel-pane"
+      />
+    )}
     <div className="channel-footer space-y-1">
+      {activeVoiceChannelId && onMute && onDeafen && (
+        <div className="mb-2 space-y-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.35)] p-2" data-testid="channel-voice-controls">
+          <div className="flex flex-wrap gap-1">
+            <button className={`icon-btn ${muted ? 'bg-[hsl(var(--accent)/.18)] text-[hsl(var(--accent))]' : ''}`} onClick={onMute} aria-label={muted ? 'Включить микрофон' : 'Выключить микрофон'} data-testid="button-toggle-mute">{muted ? <MicOff size={15} /> : <Mic size={15} />}</button>
+            <button className={`icon-btn ${deafened ? 'bg-[hsl(var(--accent)/.18)] text-[hsl(var(--accent))]' : ''}`} onClick={onDeafen} aria-label={deafened ? 'Включить звук' : 'Отключить звук'} data-testid="button-toggle-deafen">{deafened ? <VolumeX size={15} /> : <Headphones size={15} />}</button>
+            {onToggleNoise && (
+              <button className={`ghost-btn !h-8 !px-2 text-[10px] ${noiseSuppression ? '' : 'opacity-50'}`} onClick={onToggleNoise} data-testid="button-toggle-noise">Шум {noiseSuppression ? 'вкл' : 'выкл'}</button>
+            )}
+            {onToggleEcho && (
+              <button className={`ghost-btn !h-8 !px-2 text-[10px] ${echoCancellation ? '' : 'opacity-50'}`} onClick={onToggleEcho} data-testid="button-toggle-echo">Эхо {echoCancellation ? 'вкл' : 'выкл'}</button>
+            )}
+          </div>
+          {onMicVolume && micVolume !== undefined && (
+            <label className="block text-[10px] text-[hsl(var(--muted-foreground))]">Громкость микрофона
+              <input type="range" min={0} max={100} value={Math.round(micVolume * 100)} onChange={(e) => onMicVolume(Number(e.target.value) / 100)} className="mt-1 w-full" data-testid="input-mic-volume" />
+            </label>
+          )}
+        </div>
+      )}
       <button className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-xs font-semibold text-[hsl(var(--muted-foreground))] transition hover:bg-[hsl(var(--muted))] hover:text-[hsl(var(--foreground))]" onClick={onInvite} data-testid="button-invite-members"><UserPlus size={15} /> Пригласить друзей</button>
       <button className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-xs font-semibold text-[hsl(var(--accent))] transition hover:bg-[hsl(var(--accent)/.12)]" onClick={onLeaveServer} data-testid="button-leave-server"><X size={15} /> Покинуть сервер</button>
       <CreatorCredit className="block px-2 pt-1 text-[8px] text-[hsl(var(--muted-foreground)/.7)]" />
@@ -586,22 +658,13 @@ function VoiceCard({
   onLeave,
   muted,
   deafened,
-  onMute,
-  onDeafen,
   voiceHint,
-  micVolume,
-  onMicVolume,
-  noiseSuppression,
-  echoCancellation,
-  onToggleNoise,
-  onToggleEcho,
   voicePeers,
-  peerVolumes,
-  onPeerVolume,
   selfPeerId,
   selfDisplayName,
   speakingPeers,
   peerVoiceStates,
+  onPeerContextMenu,
 }: {
   room: StoredVoice;
   active: boolean;
@@ -609,22 +672,13 @@ function VoiceCard({
   onLeave: () => void;
   muted: boolean;
   deafened: boolean;
-  onMute: () => void;
-  onDeafen: () => void;
   voiceHint?: string;
-  micVolume: number;
-  onMicVolume: (value: number) => void;
-  noiseSuppression: boolean;
-  echoCancellation: boolean;
-  onToggleNoise: () => void;
-  onToggleEcho: () => void;
   voicePeers: Array<{ id: string; name: string }>;
-  peerVolumes: Record<string, number>;
-  onPeerVolume: (peerId: string, value: number) => void;
   selfPeerId: string;
   selfDisplayName: string;
   speakingPeers: Record<string, boolean>;
   peerVoiceStates: Record<string, { muted: boolean; deafened: boolean }>;
+  onPeerContextMenu?: (event: ReactMouseEvent, peerId: string) => void;
 }) {
   return <div className={`mx-4 mb-3 rounded-xl border p-3 transition ${active ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/.1)]' : 'border-[hsl(var(--border))] bg-[hsl(var(--card))]'}`}>
     <div className="flex items-center gap-2"><span className={`grid h-7 w-7 place-items-center rounded-lg ${active ? 'bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))]' : 'bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]'}`}><Volume2 size={14} /></span><div className="min-w-0 flex-1"><div className="truncate text-xs font-bold">{room.name}</div><div className="mt-0.5 font-mono text-[9px] uppercase text-[hsl(var(--muted-foreground))]">{active ? (voiceHint || 'Вы внутри') : `${room.participantCount} ${room.participantCount === 1 ? 'участник' : 'участника'}`}</div></div>{active ? <button className="icon-btn" onClick={onLeave} aria-label="Покинуть голосовую комнату" data-testid={`button-leave-voice-${room.id}`}><X size={15} /></button> : <button className="icon-btn" onClick={onJoin} aria-label="Войти в голосовую комнату" data-testid={`button-join-voice-${room.id}`}><ArrowRight size={15} /></button>}</div>
@@ -636,8 +690,13 @@ function VoiceCard({
           const voiceState = isSelf ? { muted, deafened } : peer ? peerVoiceStates[peer.id] : undefined;
           const peerKey = isSelf ? selfPeerId : peer?.id;
           const speaking = peerKey ? Boolean(speakingPeers[peerKey]) : false;
+          const rowPeerId = isSelf ? undefined : peer?.id;
           return (
-            <div key={person} className="flex items-center gap-2 text-[11px]">
+            <div
+              key={person}
+              className="flex items-center gap-2 text-[11px]"
+              onContextMenu={active && rowPeerId && onPeerContextMenu ? (event) => { event.preventDefault(); onPeerContextMenu(event, rowPeerId); } : undefined}
+            >
               <div
                 className={`member-avatar ${speaking ? 'ring-2 ring-[hsl(var(--primary))] ring-offset-1 ring-offset-[hsl(var(--card))]' : ''}`}
                 title={person}
@@ -653,34 +712,53 @@ function VoiceCard({
         })}
       </div>
     )}
-    {active && (
-      <div className="mt-3 space-y-2 border-t border-[hsl(var(--border))] pt-2">
-        <div className="flex gap-1">
-          <button className={`icon-btn ${muted ? 'bg-[hsl(var(--accent)/.18)] text-[hsl(var(--accent))]' : ''}`} onClick={onMute} aria-label={muted ? 'Включить микрофон' : 'Выключить микрофон'} data-testid="button-toggle-mute">{muted ? <MicOff size={15} /> : <Mic size={15} />}</button>
-          <button className={`icon-btn ${deafened ? 'bg-[hsl(var(--accent)/.18)] text-[hsl(var(--accent))]' : ''}`} onClick={onDeafen} aria-label={deafened ? 'Включить звук' : 'Отключить звук'} data-testid="button-toggle-deafen">{deafened ? <VolumeX size={15} /> : <Headphones size={15} />}</button>
-          <button className={`ghost-btn !h-8 !px-2 text-[10px] ${noiseSuppression ? '' : 'opacity-50'}`} onClick={onToggleNoise} data-testid="button-toggle-noise">Шум {noiseSuppression ? 'вкл' : 'выкл'}</button>
-          <button className={`ghost-btn !h-8 !px-2 text-[10px] ${echoCancellation ? '' : 'opacity-50'}`} onClick={onToggleEcho} data-testid="button-toggle-echo">Эхо {echoCancellation ? 'вкл' : 'выкл'}</button>
-        </div>
-        <label className="block text-[10px] text-[hsl(var(--muted-foreground))]">Громкость микрофона (только у вас → в эфир)
-          <input type="range" min={0} max={100} value={Math.round(micVolume * 100)} onChange={(e) => onMicVolume(Number(e.target.value) / 100)} className="mt-1 w-full" data-testid="input-mic-volume" />
-        </label>
-        {voicePeers.filter((peer) => peer.id !== getPeerId()).map((peer) => (
-          <label key={peer.id} className="block text-[10px] text-[hsl(var(--muted-foreground))]">
-            Громкость «{peer.name}» (только у вас)
-            <input
-              type="range"
-              min={0}
-              max={200}
-              value={Math.round((peerVolumes[peer.id] ?? 1) * 100)}
-              onChange={(e) => onPeerVolume(peer.id, Number(e.target.value) / 100)}
-              className="mt-1 w-full"
-              data-testid={`input-peer-volume-${peer.id}`}
-            />
-          </label>
-        ))}
-      </div>
-    )}
   </div>;
+}
+
+type PeerVolumeMenuState = { peerId: string; x: number; y: number };
+
+function PeerVolumeContextMenu({
+  menu,
+  peerName,
+  volume,
+  onVolume,
+  onClose,
+}: {
+  menu: PeerVolumeMenuState;
+  peerName: string;
+  volume: number;
+  onVolume: (peerId: string, value: number) => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const close = () => onClose();
+    window.addEventListener('mousedown', close);
+    window.addEventListener('scroll', close, true);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('scroll', close, true);
+    };
+  }, [onClose]);
+  return (
+    <div
+      className="fixed z-[95] min-w-[220px] rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3 shadow-lg"
+      style={{ left: menu.x, top: menu.y }}
+      onMouseDown={(event) => event.stopPropagation()}
+      data-testid="peer-volume-context-menu"
+    >
+      <div className="text-xs font-bold">Громкость: {peerName}</div>
+      <p className="mt-1 text-[10px] text-[hsl(var(--muted-foreground))]">Только у вас · 0–200%</p>
+      <input
+        type="range"
+        min={0}
+        max={200}
+        value={Math.round(volume * 100)}
+        onChange={(event) => onVolume(menu.peerId, Number(event.target.value) / 100)}
+        className="mt-2 w-full"
+        data-testid={`context-peer-volume-${menu.peerId}`}
+      />
+    </div>
+  );
 }
 
 function MessageList({ messages }: { messages: Message[] }) {
@@ -719,6 +797,14 @@ function Workspace() {
   const [peerId] = useState(getPeerId);
   const [voiceHint, setVoiceHint] = useState('');
   const [voicePeerStatus, setVoicePeerStatus] = useState<VoicePeerStatus | null>(null);
+  const [channelPaneWidth, setChannelPaneWidth] = useState(loadChannelPaneWidth);
+  const [memberPaneWidth, setMemberPaneWidth] = useState(loadMemberPaneWidth);
+  const [peerVolumeMenu, setPeerVolumeMenu] = useState<PeerVolumeMenuState | null>(null);
+  const layoutDragRef = useRef<'channel' | 'member' | null>(null);
+  const channelWidthRef = useRef(channelPaneWidth);
+  const memberWidthRef = useRef(memberPaneWidth);
+  channelWidthRef.current = channelPaneWidth;
+  memberWidthRef.current = memberPaneWidth;
   const sessionRef = useRef<RoomSession | null>(null);
   const voiceMeshRef = useRef<VoiceMesh | null>(null);
   const voiceChannelRef = useRef<string | null>(null);
@@ -731,6 +817,43 @@ function Workspace() {
   useEffect(() => { writeStore(CHANNELS_KEY, channels); }, [channels]);
   useEffect(() => { writeStore(MESSAGES_KEY, messages); }, [messages]);
   useEffect(() => { writeStore(VOICE_KEY, voiceRooms); }, [voiceRooms]);
+
+  useEffect(() => {
+    const onMove = (event: MouseEvent) => {
+      if (layoutDragRef.current === 'channel') {
+        const next = Math.min(480, Math.max(200, event.clientX - 70));
+        channelWidthRef.current = next;
+        setChannelPaneWidth(next);
+      } else if (layoutDragRef.current === 'member') {
+        const next = Math.min(420, Math.max(180, window.innerWidth - event.clientX));
+        memberWidthRef.current = next;
+        setMemberPaneWidth(next);
+      }
+    };
+    const onUp = () => {
+      if (layoutDragRef.current === 'channel') saveChannelPaneWidth(channelWidthRef.current);
+      if (layoutDragRef.current === 'member') saveMemberPaneWidth(memberWidthRef.current);
+      layoutDragRef.current = null;
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  const openPeerVolumeMenu = (event: ReactMouseEvent, peerId: string) => {
+    setPeerVolumeMenu({ peerId, x: event.clientX, y: event.clientY });
+  };
+  const setPeerVolume = (id: string, value: number) => {
+    setPeerVolumes((current) => ({ ...current, [id]: value }));
+    voiceMeshRef.current?.setPeerVolume(id, value);
+  };
+  const peerVolumeMenuName =
+    peerVolumeMenu
+      ? voicePeers.find((peer) => peer.id === peerVolumeMenu.peerId)?.name ?? 'Участник'
+      : '';
 
   useEffect(() => {
     if (!server.roomId || !server.inviteToken) {
@@ -913,6 +1036,10 @@ function Workspace() {
         );
         await mesh.start();
         mesh.hydratePeerVolumes(peerVolumes);
+        const savedInput = loadAudioInputId();
+        const savedOutput = loadAudioOutputId();
+        if (savedInput) mesh.setInputDevice(savedInput);
+        if (savedOutput) mesh.setOutputDevice(savedOutput);
         voiceMeshRef.current = mesh;
         voiceChannelRef.current = room.id;
         setVoiceHint('Соединяем…');
@@ -972,9 +1099,43 @@ function Workspace() {
       : voicePeerStatus === 'failed'
         ? voiceHint || 'Нет прямого пути / нужен TURN'
         : voiceHint || (activeVoice ? 'Соединяем…' : '');
-  return <div className="noise workspace-shell">
+  const shellStyle = {
+    '--channel-pane-w': `${channelPaneWidth}px`,
+    '--member-pane-w': `${memberPaneWidth}px`,
+  } as CSSProperties;
+
+  return <div className="noise workspace-shell" style={shellStyle}>
     <WorkspaceNav onDiagnostics={() => setOverlay('diagnostics')} onSettings={() => setOverlay('settings')} />
-    <ChannelPane server={server} channels={channels} voiceRooms={voiceRooms} selectedId={selectedId} onSelect={selectChannel} onAdd={() => setShowChannelDialog(true)} onInvite={() => setShowInviteDialog(true)} onLeaveServer={leaveServer} selfPeerId={peerId} selfDisplayName={displayName} selfMuted={muted} selfDeafened={deafened} activeVoiceChannelId={activeVoice} voicePeers={voicePeers} peerVoiceStates={peerVoiceStates} speakingPeers={speakingPeers} />
+    <ChannelPane
+      server={server}
+      channels={channels}
+      voiceRooms={voiceRooms}
+      selectedId={selectedId}
+      onSelect={selectChannel}
+      onAdd={() => setShowChannelDialog(true)}
+      onInvite={() => setShowInviteDialog(true)}
+      onLeaveServer={leaveServer}
+      selfPeerId={peerId}
+      selfDisplayName={displayName}
+      selfMuted={muted}
+      selfDeafened={deafened}
+      activeVoiceChannelId={activeVoice}
+      voicePeers={voicePeers}
+      peerVoiceStates={peerVoiceStates}
+      speakingPeers={speakingPeers}
+      muted={muted}
+      deafened={deafened}
+      onMute={() => setMuted((value) => { const next = !value; voiceMeshRef.current?.setMuted(next); return next; })}
+      onDeafen={() => setDeafened((value) => { const next = !value; voiceMeshRef.current?.setDeafened(next); return next; })}
+      micVolume={micVolume}
+      onMicVolume={(value) => { setMicVolume(value); voiceMeshRef.current?.setMicVolume(value); }}
+      noiseSuppression={noiseSuppression}
+      echoCancellation={echoCancellation}
+      onToggleNoise={() => { const next = !noiseSuppression; setNoiseSuppression(next); void voiceMeshRef.current?.setMicProcessing({ noiseSuppression: next }); }}
+      onToggleEcho={() => { const next = !echoCancellation; setEchoCancellation(next); void voiceMeshRef.current?.setMicProcessing({ echoCancellation: next }); }}
+      onPeerContextMenu={openPeerVolumeMenu}
+      onChannelResizeMouseDown={(event) => { event.preventDefault(); layoutDragRef.current = 'channel'; }}
+    />
     <main className="content-pane">
       <header className="topbar">
         <div className="flex min-w-0 items-center gap-3"><button className="icon-btn mobile-channel-chip" aria-label="Открыть список каналов" data-testid="button-open-channels"><Menu size={18} /></button><div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]">{selectedChannel?.type === 'voice' ? <Volume2 size={16} /> : <Hash size={16} />}</div><div className="min-w-0"><h1 className="truncate font-display text-[16px] font-bold tracking-[-.03em]">{selectedChannel?.name ?? 'общий'}</h1><p className="topbar-subtitle truncate text-[10px] text-[hsl(var(--muted-foreground))]">{selectedChannel?.type === 'voice' ? 'Голосовая комната' : connectionHint}</p></div></div>
@@ -1047,7 +1208,7 @@ function Workspace() {
             </div>
           </div>
           {activeVoice === selectedVoice.id && (
-            <>
+            <div className="voice-room-layout">
               <div className="message-scroll scrollbar-thin min-h-0 flex-1"><MessageList messages={channelMessages} /></div>
               <div className="composer">
                 <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onVoiceImagePick(e.target.files?.[0])} data-testid="input-voice-image-file" />
@@ -1058,22 +1219,39 @@ function Workspace() {
                 </div>
                 <div className="mt-2 flex items-center gap-1.5 px-1 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]"><LockKeyhole size={10} /> end-to-end · голос + чат канала <span className="ml-auto">enter — отправить</span></div>
               </div>
-            </>
+            </div>
           )}
         </div>
       ) : (
         <div className="chat-area"><div className="message-scroll scrollbar-thin"><MessageList messages={channelMessages} /></div><div className="composer"><input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onVoiceImagePick(e.target.files?.[0])} data-testid="input-chat-image-file" /><div className="composer-inner"><button className="icon-btn shrink-0" onClick={() => fileInputRef.current?.click()} aria-label="Прикрепить изображение" data-testid="button-add-attachment"><ImageIcon size={18} /></button><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onComposerKeyDown} placeholder={`Написать в #${selectedChannel?.name ?? 'общий'}...`} aria-label="Новое сообщение" data-testid="input-message" rows={1} /><button className="primary-btn !h-9 !w-9 !p-0" onClick={sendMessage} aria-label="Отправить сообщение" data-testid="button-send-message"><Send size={15} /></button></div><div className="mt-2 flex items-center gap-1.5 px-1 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]"><LockKeyhole size={10} /> end-to-end · {isCoordinator ? 'вы координатор' : connectionHint} <span className="ml-auto">enter — отправить</span></div></div></div>
       )}
     </main>
-    <aside className="member-pane scrollbar-thin">
+    <aside className="member-pane scrollbar-thin relative">
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Изменить ширину панели участников"
+        className="panel-resizer panel-resizer-left"
+        onMouseDown={(event) => { event.preventDefault(); layoutDragRef.current = 'member'; }}
+        data-testid="resizer-member-pane"
+      />
       <div className="mb-7"><div className="flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Комната</span><span className="h-2 w-2 rounded-full bg-[hsl(var(--primary))]" /></div><div className="mt-4 flex items-center gap-2"><div className="grid h-8 w-8 place-items-center rounded-lg text-xs font-extrabold" style={avatarColors(server.name)}>{avatarInitials(server.name)}</div><div><div className="text-xs font-bold">{server.name}</div><div className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">координатор: {server.hostName}</div></div></div></div>
       <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.length === 0 ? <p className="text-xs text-[hsl(var(--muted-foreground))]">{connectionStatus === 'connected' ? 'Пока только вы' : 'Ждём подключения…'}</p> : visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={avatarColors(member.name)}>{avatarInitials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="text-xs font-semibold">{member.name}</span>{member.name === server.hostName && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">координатор</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
-      <div><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Голосовые</span><button className="icon-btn" style={{ width: 22, height: 22 }} onClick={() => setShowChannelDialog(true)} aria-label="Создать голосовую комнату" data-testid="button-member-add-voice"><Plus size={14} /></button></div>{voiceRooms.map((room) => <VoiceCard key={room.id} room={room} active={activeVoice === room.id} onJoin={() => void joinVoice(room)} onLeave={leaveVoice} muted={muted} deafened={deafened} voiceHint={activeVoice === room.id ? voiceStatusLabel : undefined} micVolume={micVolume} onMicVolume={(value) => { setMicVolume(value); voiceMeshRef.current?.setMicVolume(value); }} noiseSuppression={noiseSuppression} echoCancellation={echoCancellation} onToggleNoise={() => { const next = !noiseSuppression; setNoiseSuppression(next); void voiceMeshRef.current?.setMicProcessing({ noiseSuppression: next }); }} onToggleEcho={() => { const next = !echoCancellation; setEchoCancellation(next); void voiceMeshRef.current?.setMicProcessing({ echoCancellation: next }); }} voicePeers={voicePeers} peerVolumes={peerVolumes} onPeerVolume={(id, value) => { setPeerVolumes((current) => ({ ...current, [id]: value })); voiceMeshRef.current?.setPeerVolume(id, value); }} selfPeerId={peerId} selfDisplayName={displayName} speakingPeers={speakingPeers} peerVoiceStates={peerVoiceStates} onMute={() => setMuted((value) => { const next = !value; voiceMeshRef.current?.setMuted(next); return next; })} onDeafen={() => setDeafened((value) => { const next = !value; voiceMeshRef.current?.setDeafened(next); return next; })} />)}</div>
+      <div><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Голосовые</span><button className="icon-btn" style={{ width: 22, height: 22 }} onClick={() => setShowChannelDialog(true)} aria-label="Создать голосовую комнату" data-testid="button-member-add-voice"><Plus size={14} /></button></div>{voiceRooms.map((room) => <VoiceCard key={room.id} room={room} active={activeVoice === room.id} onJoin={() => void joinVoice(room)} onLeave={leaveVoice} muted={muted} deafened={deafened} voiceHint={activeVoice === room.id ? voiceStatusLabel : undefined} voicePeers={voicePeers} selfPeerId={peerId} selfDisplayName={displayName} speakingPeers={speakingPeers} peerVoiceStates={peerVoiceStates} onPeerContextMenu={openPeerVolumeMenu} />)}</div>
     </aside>
     {showChannelDialog && <CreateChannelDialog onClose={() => setShowChannelDialog(false)} onCreate={addChannel} />}
     {showInviteDialog && <InviteDialog server={server} onClose={() => setShowInviteDialog(false)} onNotify={notify} />}
     {overlay === 'diagnostics' && <div className="fixed inset-0 z-[80] overflow-auto bg-[hsl(var(--background))]"><Diagnostics onClose={() => setOverlay(null)} /></div>}
     {overlay === 'settings' && <div className="fixed inset-0 z-[80] overflow-auto bg-[hsl(var(--background))]"><SettingsPage onClose={() => setOverlay(null)} /></div>}
+    {peerVolumeMenu && (
+      <PeerVolumeContextMenu
+        menu={peerVolumeMenu}
+        peerName={peerVolumeMenuName}
+        volume={peerVolumes[peerVolumeMenu.peerId] ?? 1}
+        onVolume={setPeerVolume}
+        onClose={() => setPeerVolumeMenu(null)}
+      />
+    )}
     {toast && <Toast text={toast} onClose={() => setToast('')} />}
   </div>;
 }
@@ -1192,6 +1370,12 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [appVersion, setAppVersion] = useState('');
   const [autostartEnabled, setAutostartEnabledState] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
+  const [themeId, setThemeId] = useState<AppThemeId>(() => loadTheme());
+  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
+  const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
+  const [audioInputId, setAudioInputId] = useState(() => loadAudioInputId());
+  const [audioOutputId, setAudioOutputId] = useState(() => loadAudioOutputId());
+  const [updateProgress, setUpdateProgress] = useState<{ loaded: number; total: number | null; phase: string } | null>(null);
 
   useEffect(() => {
     void currentAppVersion().then(setAppVersion);
@@ -1203,6 +1387,13 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
 
   useEffect(() => {
     void warmIceServers();
+  }, []);
+
+  useEffect(() => {
+    void listAudioDevices().then(({ inputs, outputs }) => {
+      setAudioInputs(inputs);
+      setAudioOutputs(outputs);
+    });
   }, []);
 
   const retryTunnel = async () => {
@@ -1248,14 +1439,23 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
       return;
     }
     setUpdateBusy(true);
+    setUpdateProgress({ loaded: 0, total: null, phase: 'download' });
     setUpdateMsg(`Скачиваем Drift ${updateInfo.latestVersion}… Приложение закроется и обновится само.`);
     try {
-      await installAppUpdate(updateInfo.downloadUrl);
+      await installAppUpdate(updateInfo.downloadUrl, (loaded, total, phase) => {
+        setUpdateProgress({ loaded, total, phase });
+      });
     } catch (error) {
       setUpdateMsg(error instanceof Error ? error.message : String(error));
       setUpdateBusy(false);
+      setUpdateProgress(null);
     }
   };
+
+  const updateProgressPercent =
+    updateProgress?.total && updateProgress.total > 0
+      ? Math.min(100, Math.round((updateProgress.loaded / updateProgress.total) * 100))
+      : null;
 
   const save = (event: FormEvent) => {
     event.preventDefault();
@@ -1279,7 +1479,30 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   };
 
   return (
-    <div className="noise min-h-[100dvh] app-grid" style={{ background: 'hsl(var(--background))' }}>
+    <div className="noise relative min-h-[100dvh] app-grid" style={{ background: 'hsl(var(--background))' }}>
+      {updateProgress && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[hsl(var(--background)/.85)] backdrop-blur-sm" data-testid="overlay-update-progress">
+          <div className="mx-4 w-full max-w-md rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 shadow-xl">
+            <div className="text-sm font-bold">Обновление Drift</div>
+            <p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]">
+              {updateProgress.phase === 'install' ? 'Запуск установщика…' : 'Скачивание…'} Не закрывайте окно.
+            </p>
+            <div className="mt-4 h-2 overflow-hidden rounded-full bg-[hsl(var(--muted))]">
+              <div
+                className="h-full bg-[hsl(var(--primary))] transition-all duration-200"
+                style={{ width: `${updateProgressPercent ?? (updateProgress.loaded > 0 ? 8 : 0)}%` }}
+              />
+            </div>
+            <p className="mt-2 font-mono text-[10px] text-[hsl(var(--muted-foreground))]">
+              {updateProgressPercent !== null
+                ? `${updateProgressPercent}%`
+                : updateProgress.loaded > 0
+                  ? `${Math.round(updateProgress.loaded / 1024 / 1024)} МБ`
+                  : 'Подготовка…'}
+            </p>
+          </div>
+        </div>
+      )}
       <header className="flex h-[76px] items-center justify-between border-b border-[hsl(var(--border))] bg-[hsl(var(--card)/.72)] px-5 backdrop-blur-md sm:px-10">
         <Link href="/server" className="flex items-center gap-3" data-testid="link-settings-back" onClick={(event) => { if (onClose) { event.preventDefault(); onClose(); } }}>
           <div className="server-mark" style={{ width: 35, height: 35, borderRadius: 10 }}><Signal size={17} /></div>
@@ -1294,6 +1517,66 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
         </p>
 
         <div className="mt-8 rounded-xl border border-[hsl(var(--border))] p-4">
+          <div className="text-sm font-bold">Тема интерфейса</div>
+          <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Оформление сохраняется на этом устройстве.</p>
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {APP_THEMES.map((theme) => (
+              <button
+                key={theme.id}
+                type="button"
+                className={`rounded-lg border px-3 py-2 text-left text-xs font-semibold transition ${themeId === theme.id ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/.12)]' : 'border-[hsl(var(--border))]'}`}
+                onClick={() => {
+                  setThemeId(theme.id);
+                  saveTheme(theme.id);
+                }}
+                data-testid={`button-theme-${theme.id}`}
+              >
+                {theme.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-6 rounded-xl border border-[hsl(var(--border))] p-4">
+          <div className="text-sm font-bold">Микрофон и звук</div>
+          <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Устройства применяются при следующем входе в голос (или сразу, если вы уже в комнате — перезайдите).</p>
+          <label className="field-label mt-3" htmlFor="audio-input">Вход (микрофон)</label>
+          <select
+            id="audio-input"
+            className="field-input"
+            value={audioInputId}
+            onChange={(event) => {
+              const id = event.target.value;
+              setAudioInputId(id);
+              saveAudioInputId(id);
+            }}
+            data-testid="select-audio-input"
+          >
+            <option value="">Системный по умолчанию</option>
+            {audioInputs.map((device) => (
+              <option key={device.deviceId} value={device.deviceId}>{device.label || `Микрофон ${device.deviceId.slice(0, 8)}`}</option>
+            ))}
+          </select>
+          <label className="field-label mt-3" htmlFor="audio-output">Выход (динамики)</label>
+          <select
+            id="audio-output"
+            className="field-input"
+            value={audioOutputId}
+            onChange={(event) => {
+              const id = event.target.value;
+              setAudioOutputId(id);
+              saveAudioOutputId(id);
+            }}
+            data-testid="select-audio-output"
+          >
+            <option value="">Системный по умолчанию</option>
+            {audioOutputs.map((device) => (
+              <option key={device.deviceId} value={device.deviceId}>{device.label || `Выход ${device.deviceId.slice(0, 8)}`}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="mt-6 rounded-xl border border-[hsl(var(--border))] p-4">
           <div className="flex items-start justify-between gap-4">
             <div>
               <div className="text-sm font-bold">Автозапуск Drift с Windows</div>

@@ -10,7 +10,7 @@ export type AppUpdateInfo = {
 
 export const GITHUB_REPO = "ASMAXI/p2pchat";
 
-/** Pulls `x.y.z` out of tags like `v0.4.0`, `drift-v0.4.0`, `p2pchat-v0.2.0`. */
+/** Pulls `x.y.z` out of tags like `v0.5.0`, `drift-v0.5.0`, `p2pchat-v0.2.0`. */
 function normalizeVersion(value: string): string {
   return value.match(/\d+\.\d+\.\d+/)?.[0] ?? value.trim().replace(/^v/i, "");
 }
@@ -37,7 +37,7 @@ export async function currentAppVersion(): Promise<string> {
   } catch {
     // fall through
   }
-  return "0.4.0";
+  return "0.5.0";
 }
 
 export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
@@ -76,8 +76,22 @@ export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
   };
 }
 
-/** Desktop: downloads the installer, runs it in passive mode and closes the app. */
-export async function installAppUpdate(downloadUrl: string): Promise<void> {
+/** Desktop: downloads the installer with progress, runs it and closes the app. */
+export async function installAppUpdate(
+  downloadUrl: string,
+  onProgress?: (loaded: number, total: number | null, phase: string) => void,
+): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("install_update", { url: downloadUrl });
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<{ loaded: number; total?: number | null; phase?: string }>(
+    "update-progress",
+    (event) => {
+      onProgress?.(event.payload.loaded, event.payload.total ?? null, event.payload.phase ?? "download");
+    },
+  );
+  try {
+    await invoke("install_update", { url: downloadUrl });
+  } finally {
+    unlisten();
+  }
 }

@@ -1,3 +1,4 @@
+import { loadAudioInputId, loadAudioOutputId } from "@/lib/audio-settings";
 import {
   buildIceServers,
   getLastIceSource,
@@ -74,13 +75,19 @@ export class VoiceMesh {
   private outboundStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
   private micGain: GainNode | null = null;
-  private peers = new Map<string, PeerRuntime>();
+  private micSource: MediaStreamAudioSourceNode | null = null;
+  private selfAnalyser: AnalyserNode | null = null;
+  private selfSpeakTimer: number | null = null;
+  private selfSpeaking = false;
+  private inputDeviceId = "";
+  private outputDeviceId = "";
   private audioElements = new Map<string, HTMLAudioElement>();
   private peerVolumes = new Map<string, number>();
   private micVolume = 1;
   private micProcessing: MicProcessing = { ...DEFAULT_MIC };
   private muted = false;
   private deafened = false;
+  private peers = new Map<string, PeerRuntime>();
 
   constructor(
     selfId: string,
@@ -109,7 +116,50 @@ export class VoiceMesh {
 
   async start(): Promise<void> {
     if (this.outboundStream) return;
+    this.inputDeviceId = loadAudioInputId();
+    this.outputDeviceId = loadAudioOutputId();
     await this.acquireMic();
+    this.startSelfSpeakingMonitor();
+  }
+
+  setInputDevice(deviceId: string): void {
+    this.inputDeviceId = deviceId;
+    if (this.rawStream) void this.acquireMic();
+  }
+
+  setOutputDevice(deviceId: string): void {
+    this.outputDeviceId = deviceId;
+    void this.applyOutputDeviceToAll();
+  }
+
+  private async applyOutputDeviceToAll(): Promise<void> {
+    if (!this.outputDeviceId) return;
+    for (const audio of this.audioElements.values()) {
+      const el = audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
+      if (typeof el.setSinkId === "function") {
+        try {
+          await el.setSinkId(this.outputDeviceId);
+        } catch {
+          // unsupported device
+        }
+      }
+    }
+  }
+
+  private startSelfSpeakingMonitor(): void {
+    if (this.selfSpeakTimer) window.clearInterval(this.selfSpeakTimer);
+    if (!this.selfAnalyser) return;
+    const data = new Uint8Array(this.selfAnalyser.frequencyBinCount);
+    this.selfSpeakTimer = window.setInterval(() => {
+      this.selfAnalyser!.getByteFrequencyData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 1) sum += data[i]!;
+      const speaking = sum / data.length > 18 && !this.muted;
+      if (speaking !== this.selfSpeaking) {
+        this.selfSpeaking = speaking;
+        this.options.onSpeaking?.(this.selfId, speaking);
+      }
+    }, 120);
   }
 
   private ensureAudioContext(): AudioContext {
@@ -121,25 +171,34 @@ export class VoiceMesh {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("Браузер не поддерживает доступ к микрофону");
     }
-    const nextRaw = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: this.micProcessing.echoCancellation,
-        noiseSuppression: this.micProcessing.noiseSuppression,
-        autoGainControl: this.micProcessing.autoGainControl,
-      },
-    });
+    const audioConstraints: MediaTrackConstraints = {
+      echoCancellation: this.micProcessing.echoCancellation,
+      noiseSuppression: this.micProcessing.noiseSuppression,
+      autoGainControl: this.micProcessing.autoGainControl,
+    };
+    if (this.inputDeviceId) audioConstraints.deviceId = { exact: this.inputDeviceId };
+    const nextRaw = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
     for (const track of this.rawStream?.getTracks() ?? []) track.stop();
     this.rawStream = nextRaw;
 
     const ctx = this.ensureAudioContext();
     if (ctx.state === "suspended") await ctx.resume();
 
+    this.micSource?.disconnect();
+    this.selfAnalyser?.disconnect();
+
     const source = ctx.createMediaStreamSource(nextRaw);
+    this.micSource = source;
     if (!this.micGain) this.micGain = ctx.createGain();
     this.micGain.gain.value = this.muted ? 0 : this.micVolume;
     const dest = ctx.createMediaStreamDestination();
+    const selfAnalyser = ctx.createAnalyser();
+    selfAnalyser.fftSize = 512;
+    selfAnalyser.smoothingTimeConstant = 0.5;
     source.connect(this.micGain);
     this.micGain.connect(dest);
+    this.micGain.connect(selfAnalyser);
+    this.selfAnalyser = selfAnalyser;
     this.outboundStream = dest.stream;
 
     for (const track of this.outboundStream.getAudioTracks()) {
@@ -147,6 +206,7 @@ export class VoiceMesh {
     }
 
     await this.replaceOutboundTracks();
+    this.startSelfSpeakingMonitor();
     debugLog("voice", "microphone acquired", this.micProcessing);
   }
 
@@ -173,7 +233,10 @@ export class VoiceMesh {
 
   setMicVolume(volume: number): void {
     this.micVolume = Math.min(1, Math.max(0, volume));
-    if (this.micGain) this.micGain.gain.value = this.muted ? 0 : this.micVolume;
+    this.micProcessing.autoGainControl = false;
+    if (this.micGain && this.audioContext) {
+      this.micGain.gain.setTargetAtTime(this.muted ? 0 : this.micVolume, this.audioContext.currentTime, 0.04);
+    }
   }
 
   getMicVolume(): number {
@@ -240,6 +303,7 @@ export class VoiceMesh {
     }
     audio.srcObject = stream;
     audio.volume = 0; // playback via Web Audio graph
+    void this.applyOutputDeviceToAll();
     void audio.play().catch((error) => {
       debugLog("voice", "audio.play blocked", error, "warn");
       this.options.onPeerStatus?.(peerId, "connecting", "Разрешите воспроизведение звука в системе");
@@ -475,6 +539,12 @@ export class VoiceMesh {
 
   stop(): void {
     for (const peerId of [...this.peers.keys()]) this.removePeer(peerId);
+    if (this.selfSpeakTimer) window.clearInterval(this.selfSpeakTimer);
+    this.selfSpeakTimer = null;
+    this.micSource?.disconnect();
+    this.micSource = null;
+    this.selfAnalyser?.disconnect();
+    this.selfAnalyser = null;
     for (const track of this.rawStream?.getTracks() ?? []) track.stop();
     this.rawStream = null;
     this.outboundStream = null;

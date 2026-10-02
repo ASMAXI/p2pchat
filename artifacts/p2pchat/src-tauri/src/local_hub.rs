@@ -634,8 +634,8 @@ fn accept_message(hub: &mut Hub, room_id: &str, peer_id: &str, input: Option<&Va
         return Ok(());
     }
     let channel_id = field("channelId");
-    if !room.state.channels.iter().any(|channel| channel.id == channel_id && channel.kind == "text") {
-        return Err(HubError::new("INVALID", "Текстовый канал не найден"));
+    if !room.state.channels.iter().any(|channel| channel.id == channel_id) {
+        return Err(HubError::new("INVALID", "Канал не найден"));
     }
     let now = now_ms();
     let author_public_key = room

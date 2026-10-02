@@ -434,8 +434,8 @@ export class RoomHub {
       this.sendTo(client.socket, { type: "message", message: existing });
       return;
     }
-    const channel = room.state.channels.find((item) => item.id === input?.channelId && item.type === "text");
-    if (!channel) throw new HubError("INVALID", "Текстовый канал не найден");
+    const channel = room.state.channels.find((item) => item.id === input?.channelId);
+    if (!channel) throw new HubError("INVALID", "Канал не найден");
     const nowMs = Date.now();
     client.sentAt = client.sentAt.filter((at) => nowMs - at < LIMITS.rateWindowMs);
     if (client.sentAt.length >= LIMITS.rateMaxMessages) {
