@@ -19,6 +19,7 @@ struct LocalNodeState {
     handle: tokio::sync::Mutex<Option<LocalHubHandle>>,
     tunnel: tokio::sync::Mutex<Option<TunnelHandle>>,
     public_origin: tokio::sync::Mutex<Option<String>>,
+    active_provider: tokio::sync::Mutex<Option<tunnel::TunnelProvider>>,
 }
 
 #[derive(serde::Serialize)]
@@ -49,15 +50,27 @@ async fn ensure_node_and_tunnel(
     let origin = format!("http://127.0.0.1:{port}");
     let lan_origins = local_hub::lan_origins(port);
 
-    if force_restart_tunnel {
+    let dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+    let (stored_provider, stored_token) = tunnel::load_tunnel_prefs(&dir);
+    let provider = provider
+        .as_deref()
+        .map(tunnel::TunnelProvider::parse)
+        .unwrap_or(stored_provider);
+    let token = ngrok_auth_token.unwrap_or(stored_token);
+
+    let active = *state.active_provider.lock().await;
+    let existing = state.public_origin.lock().await.clone();
+    let provider_changed = active.is_some_and(|current| current != provider);
+    let url_mismatched = existing.as_ref().is_some_and(|url| !provider_matches_url(provider, url));
+    let must_restart = force_restart_tunnel || provider_changed || url_mismatched;
+
+    if must_restart {
         let mut tunnel_guard = state.tunnel.lock().await;
         *tunnel_guard = None;
         let mut public = state.public_origin.lock().await;
         *public = None;
-    }
-
-    let existing = state.public_origin.lock().await.clone();
-    if existing.is_some() && !force_restart_tunnel {
+        *state.active_provider.lock().await = None;
+    } else if existing.is_some() {
         return Ok(LocalNodeInfoDto {
             origin,
             lan_origins,
@@ -66,13 +79,6 @@ async fn ensure_node_and_tunnel(
         });
     }
 
-    let dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
-    let (stored_provider, stored_token) = tunnel::load_tunnel_prefs(&dir);
-    let provider = provider
-        .as_deref()
-        .map(tunnel::TunnelProvider::parse)
-        .unwrap_or(stored_provider);
-    let token = ngrok_auth_token.unwrap_or(stored_token);
     let started = tokio::task::spawn_blocking(move || {
         tunnel::start_tunnel(&dir, port, provider, &token)
     })
@@ -82,6 +88,7 @@ async fn ensure_node_and_tunnel(
         Ok(Ok((tunnel_handle, info))) => {
             *state.tunnel.lock().await = Some(tunnel_handle);
             *state.public_origin.lock().await = Some(info.public_origin.clone());
+            *state.active_provider.lock().await = Some(provider);
             Ok(LocalNodeInfoDto {
                 origin,
                 lan_origins,
@@ -101,6 +108,17 @@ async fn ensure_node_and_tunnel(
             public_origin: None,
             tunnel_error: Some(format!("Tunnel task failed: {err}")),
         }),
+    }
+}
+
+fn provider_matches_url(provider: tunnel::TunnelProvider, url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    match provider {
+        tunnel::TunnelProvider::Cloudflare => {
+            lower.contains("trycloudflare.com") || lower.contains("cfargotunnel.com")
+        }
+        tunnel::TunnelProvider::Ngrok => lower.contains("ngrok"),
+        tunnel::TunnelProvider::LocalhostRun => lower.contains("localhost.run"),
     }
 }
 
@@ -135,6 +153,7 @@ pub fn run() {
             handle: tokio::sync::Mutex::new(None),
             tunnel: tokio::sync::Mutex::new(None),
             public_origin: tokio::sync::Mutex::new(None),
+            active_provider: tokio::sync::Mutex::new(None),
         })
         .manage(Arc::new(ptt::PttWatchState::default()))
         .invoke_handler(tauri::generate_handler![
