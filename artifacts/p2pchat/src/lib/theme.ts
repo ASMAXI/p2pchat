@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+
 export type AppThemeId = "light" | "dark" | "pink" | "dota" | "patriot";
 
 const KEY = "p2pchat-theme";
@@ -23,6 +25,7 @@ export function loadTheme(): AppThemeId {
 export function saveTheme(theme: AppThemeId): void {
   window.localStorage.setItem(KEY, theme);
   applyTheme(theme);
+  window.dispatchEvent(new CustomEvent("p2pchat-theme", { detail: theme }));
 }
 
 export function applyTheme(theme: AppThemeId): void {
@@ -33,4 +36,14 @@ export function applyTheme(theme: AppThemeId): void {
 
 export function initTheme(): void {
   applyTheme(loadTheme());
+}
+
+export function useAppTheme(): AppThemeId {
+  const [theme, setTheme] = useState(loadTheme);
+  useEffect(() => {
+    const sync = () => setTheme(loadTheme());
+    window.addEventListener("p2pchat-theme", sync);
+    return () => window.removeEventListener("p2pchat-theme", sync);
+  }, []);
+  return theme;
 }

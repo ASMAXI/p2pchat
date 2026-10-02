@@ -13,7 +13,8 @@ type VoiceSignal =
   | { kind: "offer"; description: RTCSessionDescriptionInit }
   | { kind: "answer"; description: RTCSessionDescriptionInit }
   | { kind: "ice"; candidate: RTCIceCandidateInit }
-  | { kind: "voice-state"; muted: boolean; deafened: boolean };
+  | { kind: "voice-state"; muted: boolean; deafened: boolean }
+  | { kind: "screen-share"; active: boolean };
 
 export type VoicePeerStatus = "connecting" | "connected" | "failed" | "closed";
 
@@ -27,6 +28,8 @@ export type VoiceMeshOptions = {
   onPeerStatus?: (peerId: string, status: VoicePeerStatus, detail?: string) => void;
   onSpeaking?: (peerId: string, speaking: boolean) => void;
   onPeerVoiceState?: (peerId: string, state: { muted: boolean; deafened: boolean }) => void;
+  /** Remote (or self) screen stream; null when share ends. */
+  onScreenShare?: (peerId: string, stream: MediaStream | null) => void;
 };
 
 type PeerRuntime = {
@@ -37,11 +40,15 @@ type PeerRuntime = {
   restartAttempted: boolean;
   sawRelay: boolean;
   candidateTypes: Set<string>;
+  makingOffer: boolean;
+  ignoreOffer: boolean;
   gain?: GainNode;
   analyser?: AnalyserNode;
   source?: MediaStreamAudioSourceNode;
   speakTimer?: number;
   speaking: boolean;
+  remoteAudioStream?: MediaStream;
+  remoteScreenStream?: MediaStream;
 };
 
 const DEFAULT_MIC: MicProcessing = {
@@ -88,6 +95,9 @@ export class VoiceMesh {
   private muted = false;
   private deafened = false;
   private peers = new Map<string, PeerRuntime>();
+  /** Same PC as voice: screen is an extra video track + renegotiation (not a second mesh). */
+  private screenStream: MediaStream | null = null;
+  private screenSharing = false;
 
   constructor(
     selfId: string,
@@ -243,6 +253,134 @@ export class VoiceMesh {
     return this.micVolume;
   }
 
+  isScreenSharing(): boolean {
+    return this.screenSharing;
+  }
+
+  getLocalScreenStream(): MediaStream | null {
+    return this.screenStream;
+  }
+
+  /**
+   * Capture display and publish as a video track on existing peer connections.
+   * Prefer this over a second RTCPeerConnection: one ICE/DTLS/TURN path, less glare.
+   */
+  async startScreenShare(): Promise<void> {
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error("Демонстрация экрана не поддерживается в этой сборке");
+    }
+    if (this.screenSharing) return;
+    if (!this.outboundStream) await this.start();
+
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        frameRate: { ideal: 15, max: 30 },
+        width: { ideal: 1280, max: 1920 },
+        height: { ideal: 720, max: 1080 },
+      },
+      audio: false,
+    });
+    const [track] = stream.getVideoTracks();
+    if (!track) {
+      for (const item of stream.getTracks()) item.stop();
+      throw new Error("Не удалось получить дорожку экрана");
+    }
+    track.contentHint = "detail";
+    track.onended = () => {
+      void this.stopScreenShare();
+    };
+
+    this.screenStream = stream;
+    this.screenSharing = true;
+    this.options.onScreenShare?.(this.selfId, stream);
+
+    for (const [peerId, runtime] of this.peers) {
+      try {
+        runtime.connection.addTrack(track, stream);
+        await this.tuneScreenSender(runtime.connection, track);
+        await this.renegotiate(peerId);
+      } catch (error) {
+        debugLog("voice", "screen addTrack/renegotiate failed", { peerId, error }, "warn");
+      }
+    }
+    this.broadcastScreenShare(true);
+    debugLog("voice", "screen share started", { peers: this.peers.size });
+  }
+
+  async stopScreenShare(): Promise<void> {
+    if (!this.screenSharing && !this.screenStream) return;
+    const track = this.screenStream?.getVideoTracks()[0] ?? null;
+    for (const [peerId, runtime] of this.peers) {
+      for (const sender of runtime.connection.getSenders()) {
+        if (sender.track && sender.track === track) {
+          try {
+            runtime.connection.removeTrack(sender);
+          } catch {
+            // ignore
+          }
+        }
+      }
+      if (track) {
+        try {
+          await this.renegotiate(peerId);
+        } catch (error) {
+          debugLog("voice", "screen stop renegotiate failed", { peerId, error }, "warn");
+        }
+      }
+    }
+    for (const item of this.screenStream?.getTracks() ?? []) item.stop();
+    this.screenStream = null;
+    this.screenSharing = false;
+    this.options.onScreenShare?.(this.selfId, null);
+    this.broadcastScreenShare(false);
+    debugLog("voice", "screen share stopped");
+  }
+
+  private broadcastScreenShare(active: boolean): void {
+    for (const peerId of this.peers.keys()) {
+      this.sendSignal(peerId, { kind: "screen-share", active });
+    }
+  }
+
+  private async renegotiate(peerId: string): Promise<void> {
+    const runtime = this.peers.get(peerId);
+    if (!runtime) return;
+    const { connection } = runtime;
+    if (connection.signalingState === "closed") return;
+    // Don't offer while answering a remote offer.
+    if (connection.signalingState === "have-remote-offer") return;
+    try {
+      runtime.makingOffer = true;
+      await connection.setLocalDescription(await connection.createOffer());
+      if (connection.localDescription) {
+        this.sendSignal(peerId, { kind: "offer", description: connection.localDescription });
+      }
+    } catch (error) {
+      debugLog("voice", "renegotiate failed", { peerId, error }, "warn");
+    } finally {
+      runtime.makingOffer = false;
+    }
+  }
+
+  private async tuneScreenSender(connection: RTCPeerConnection, track: MediaStreamTrack): Promise<void> {
+    const sender = connection.getSenders().find((item) => item.track === track);
+    if (!sender) return;
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.encodings[0] = {
+        ...params.encodings[0],
+        maxBitrate: 1_500_000,
+        maxFramerate: 15,
+      };
+      await sender.setParameters(params);
+    } catch {
+      // Some engines reject setParameters before negotiation.
+    }
+  }
+
   setPeerVolume(peerId: string, volume: number): void {
     const next = Math.min(MAX_PEER_GAIN, Math.max(0, volume));
     this.peerVolumes.set(peerId, next);
@@ -257,11 +395,12 @@ export class VoiceMesh {
     const runtime = this.peers.get(peerId);
     const gain = this.deafened ? 0 : this.getPeerVolume(peerId);
     if (runtime?.gain) runtime.gain.gain.value = gain;
+    // Keep the hidden <audio> silent forever — loudness is only via GainNode.
+    // Setting volume=1 here used to double the peer's voice with the Web Audio path.
     const audio = this.audioElements.get(peerId);
     if (audio) {
-      // Keep element unmuted; loudness comes from GainNode (supports >100%).
-      audio.volume = 1;
-      audio.muted = false;
+      audio.volume = 0;
+      audio.muted = true;
     }
   }
 
@@ -302,7 +441,8 @@ export class VoiceMesh {
       this.audioElements.set(peerId, audio);
     }
     audio.srcObject = stream;
-    audio.volume = 0; // playback via Web Audio graph
+    audio.volume = 0;
+    audio.muted = true; // never play element + GainNode together
     void this.applyOutputDeviceToAll();
     void audio.play().catch((error) => {
       debugLog("voice", "audio.play blocked", error, "warn");
@@ -348,6 +488,8 @@ export class VoiceMesh {
       restartAttempted: false,
       sawRelay: false,
       candidateTypes: new Set(),
+      makingOffer: false,
+      ignoreOffer: false,
       speaking: false,
     };
     this.peers.set(peerId, runtime);
@@ -355,6 +497,10 @@ export class VoiceMesh {
 
     for (const track of this.outboundStream?.getTracks() ?? []) {
       connection.addTrack(track, this.outboundStream!);
+    }
+    const screenTrack = this.screenStream?.getVideoTracks()[0];
+    if (screenTrack && this.screenStream) {
+      connection.addTrack(screenTrack, this.screenStream);
     }
 
     connection.onicecandidate = (event) => {
@@ -384,12 +530,34 @@ export class VoiceMesh {
     };
 
     connection.ontrack = (event) => {
+      const track = event.track;
       const [stream] = event.streams;
-      if (!stream) return;
-      debugLog("voice", "ontrack", { peerId, tracks: stream.getTracks().length, volume: this.getPeerVolume(peerId) });
-      this.attachRemoteAudio(peerId, stream);
-      // Share our mute/deaf so peer can show icons.
-      this.sendSignal(peerId, { kind: "voice-state", muted: this.muted, deafened: this.deafened });
+      debugLog("voice", "ontrack", {
+        peerId,
+        kind: track.kind,
+        streams: event.streams.length,
+      });
+      if (track.kind === "video") {
+        const videoStream = stream ?? new MediaStream([track]);
+        runtime.remoteScreenStream = videoStream;
+        this.options.onScreenShare?.(peerId, videoStream);
+        track.onended = () => {
+          if (runtime.remoteScreenStream === videoStream) {
+            runtime.remoteScreenStream = undefined;
+            this.options.onScreenShare?.(peerId, null);
+          }
+        };
+        return;
+      }
+      if (track.kind === "audio") {
+        const audioStream = stream ?? new MediaStream([track]);
+        runtime.remoteAudioStream = audioStream;
+        this.attachRemoteAudio(peerId, audioStream);
+        this.sendSignal(peerId, { kind: "voice-state", muted: this.muted, deafened: this.deafened });
+        if (this.screenSharing) {
+          this.sendSignal(peerId, { kind: "screen-share", active: true });
+        }
+      }
     };
 
     connection.onconnectionstatechange = () => {
@@ -451,21 +619,39 @@ export class VoiceMesh {
   }
 
   async handleSignal(fromPeerId: string, data: unknown): Promise<void> {
-    const signal = data as Partial<VoiceSignal>;
+    const signal = data as Partial<VoiceSignal> & { kind?: string };
     if (!signal.kind) return;
     if (signal.kind === "voice-state") {
       this.options.onPeerVoiceState?.(fromPeerId, {
-        muted: Boolean(signal.muted),
-        deafened: Boolean(signal.deafened),
+        muted: Boolean((signal as { muted?: boolean }).muted),
+        deafened: Boolean((signal as { deafened?: boolean }).deafened),
       });
+      return;
+    }
+    if (signal.kind === "screen-share") {
+      const active = Boolean((signal as { active?: boolean }).active);
+      if (!active) {
+        const runtime = this.peers.get(fromPeerId);
+        if (runtime?.remoteScreenStream) {
+          runtime.remoteScreenStream = undefined;
+        }
+        this.options.onScreenShare?.(fromPeerId, null);
+      }
       return;
     }
     if (!this.peers.has(fromPeerId)) await this.addPeer(fromPeerId, false);
     const runtime = this.peers.get(fromPeerId);
     if (!runtime) return;
     const { connection } = runtime;
+    const polite = this.selfId > fromPeerId;
 
     if (signal.kind === "offer" && signal.description) {
+      const offerCollision = runtime.makingOffer || connection.signalingState !== "stable";
+      runtime.ignoreOffer = !polite && offerCollision;
+      if (runtime.ignoreOffer) {
+        debugLog("voice", "ignoring glare offer", { fromPeerId }, "warn");
+        return;
+      }
       await connection.setRemoteDescription(signal.description);
       runtime.remoteReady = true;
       await this.flushIce(fromPeerId);
@@ -473,9 +659,13 @@ export class VoiceMesh {
       await connection.setLocalDescription(answer);
       this.sendSignal(fromPeerId, { kind: "answer", description: answer });
     } else if (signal.kind === "answer" && signal.description) {
-      await connection.setRemoteDescription(signal.description);
-      runtime.remoteReady = true;
-      await this.flushIce(fromPeerId);
+      try {
+        await connection.setRemoteDescription(signal.description);
+        runtime.remoteReady = true;
+        await this.flushIce(fromPeerId);
+      } catch (error) {
+        debugLog("voice", "setRemoteDescription answer failed", error, "warn");
+      }
     } else if (signal.kind === "ice" && signal.candidate) {
       if (!runtime.remoteReady) {
         runtime.pendingIce.push(signal.candidate);
@@ -529,6 +719,9 @@ export class VoiceMesh {
     runtime?.source?.disconnect();
     runtime?.analyser?.disconnect();
     runtime?.gain?.disconnect();
+    if (runtime?.remoteScreenStream) {
+      this.options.onScreenShare?.(peerId, null);
+    }
     runtime?.connection.close();
     this.peers.delete(peerId);
     const audio = this.audioElements.get(peerId);
@@ -538,6 +731,12 @@ export class VoiceMesh {
   }
 
   stop(): void {
+    for (const track of this.screenStream?.getTracks() ?? []) track.stop();
+    this.screenStream = null;
+    if (this.screenSharing) {
+      this.screenSharing = false;
+      this.options.onScreenShare?.(this.selfId, null);
+    }
     for (const peerId of [...this.peers.keys()]) this.removePeer(peerId);
     if (this.selfSpeakTimer) window.clearInterval(this.selfSpeakTimer);
     this.selfSpeakTimer = null;

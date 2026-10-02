@@ -34,6 +34,8 @@ import {
   X,
   Zap,
   ImageIcon,
+  Monitor,
+  MonitorOff,
 } from 'lucide-react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
@@ -93,7 +95,8 @@ import {
   fileToChatImageDataUrl,
 } from '@/lib/avatar';
 import { getAutostartEnabled, setAutostartEnabled } from '@/lib/autostart';
-import { APP_THEMES, loadTheme, saveTheme, type AppThemeId } from '@/lib/theme';
+import { APP_THEMES, loadTheme, saveTheme, useAppTheme, type AppThemeId } from '@/lib/theme';
+import { rfRankFor } from '@/lib/patriot-ranks';
 import {
   loadChannelPaneWidth,
   loadMemberPaneWidth,
@@ -107,6 +110,7 @@ import {
   saveAudioInputId,
   saveAudioOutputId,
 } from '@/lib/audio-settings';
+import { loadUiSoundsEnabled, playUiSound, saveUiSoundsEnabled } from '@/lib/ui-sounds';
 
 type ConnectivityState = 'connected' | 'checking' | 'offline';
 type ChannelType = 'text' | 'voice';
@@ -441,17 +445,44 @@ function Home() {
 
 function WorkspaceNav({ onDiagnostics, onSettings }: { onDiagnostics: () => void; onSettings: () => void }) {
   const [location, setLocation] = useLocation();
+  const theme = useAppTheme();
+  const isPatriot = theme === 'patriot';
   return (
     <aside className="workspace-nav" aria-label="Навигация">
-      <Link href="/server" className="server-mark" aria-label="Drift · создатель ASMAXI" title="Drift · создатель ASMAXI" data-testid="link-server-home"><Signal size={20} strokeWidth={2.5} /></Link>
+      <Link href="/server" className={isPatriot ? 'patriot-crest' : 'server-mark'} aria-label="Drift · создатель ASMAXI" title="Drift · создатель ASMAXI" data-testid="link-server-home">
+        {isPatriot ? (
+          <svg viewBox="0 0 64 64" width="26" height="26" aria-hidden="true">
+            <ellipse cx="32" cy="34" rx="18" ry="20" fill="#1a2a6c" opacity=".9" />
+            <path d="M20 28c4-8 20-8 24 0-2 10-6 16-12 20-6-4-10-10-12-20z" fill="#c9a227" />
+            <circle cx="32" cy="22" r="5" fill="#f4d35e" />
+            <path d="M18 30c2 1 4 0 6-2M46 30c-2 1-4 0-6-2" stroke="#f4d35e" strokeWidth="2" fill="none" />
+            <path d="M26 40h12M28 46h8" stroke="#f4d35e" strokeWidth="2" />
+            <text x="32" y="58" textAnchor="middle" fontSize="7" fontWeight="800" fill="#1a2a6c">РФ</text>
+          </svg>
+        ) : (
+          <Signal size={20} strokeWidth={2.5} />
+        )}
+      </Link>
       <div className="nav-divider" />
       <button className={`nav-icon ${location === '/server' ? 'active' : ''}`} onClick={() => setLocation('/server')} aria-label="Чаты" data-testid="button-nav-chat"><Hash size={18} /></button>
       <button className="nav-icon" onClick={onDiagnostics} aria-label="Диагностика" data-testid="button-nav-diagnostics"><Activity size={18} /></button>
       <div className="mt-auto flex flex-col gap-3">
         <button className="nav-icon" onClick={onSettings} aria-label="Настройки" data-testid="button-nav-settings"><Settings size={18} /></button>
-        <div className="member-avatar" style={{ width: 38, height: 38, background: 'hsl(var(--accent))', color: 'hsl(var(--accent-foreground))' }}>ВЫ</div>
+        <div className="member-avatar" style={{ width: 38, height: 38, background: isPatriot ? 'linear-gradient(180deg,#fff 0 33%,#0039a6 33% 66%,#d52b1e 66%)' : 'hsl(var(--accent))', color: isPatriot ? '#111' : 'hsl(var(--accent-foreground))' }}>ВЫ</div>
       </div>
     </aside>
+  );
+}
+
+function PatriotName({ name, seed }: { name: string; seed?: string }) {
+  const theme = useAppTheme();
+  if (theme !== 'patriot') return <>{name}</>;
+  const rank = rfRankFor(seed || name);
+  return (
+    <>
+      <span className="patriot-rank">{rank}</span>{' '}
+      {name}
+    </>
   );
 }
 
@@ -556,8 +587,24 @@ function ChannelPane({
   const textChannels = channels.filter((channel) => channel.type === 'text');
   const voiceChannels = channels.filter((channel) => channel.type === 'voice');
   const voiceById = Object.fromEntries(voiceRooms.map((room) => [room.id, room]));
+  const theme = useAppTheme();
   return <aside className="channel-pane">
-    <div className="channel-header"><button className="flex w-full items-center justify-between text-left" onClick={onInvite} data-testid="button-server-menu"><span><span className="block font-display text-[17px] font-bold tracking-[-.04em]">{server.name}</span><span className="mt-1 flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]"><span className="animate-pulse-dot h-1.5 w-1.5 rounded-full bg-[hsl(var(--primary))]" /> {server.memberCount} участников</span></span><ChevronDown size={16} className="text-[hsl(var(--muted-foreground))]" /></button>
+    <div className="channel-header">
+      <button className="flex w-full items-center justify-between text-left" onClick={onInvite} data-testid="button-server-menu">
+        <span>
+          <span className="block font-display text-[17px] font-bold tracking-[-.04em]">{server.name}</span>
+          <span className="mt-1 flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+            <span className="animate-pulse-dot h-1.5 w-1.5 rounded-full bg-[hsl(var(--primary))]" /> {server.memberCount} участников
+          </span>
+          {theme === 'patriot' && (
+            <span className="patriot-flag-chip mt-2">
+              <span className="patriot-flag-bars" aria-hidden />
+              Россия · Drift
+            </span>
+          )}
+        </span>
+        <ChevronDown size={16} className="text-[hsl(var(--muted-foreground))]" />
+      </button>
     </div>
     <div className="channel-scroll scrollbar-thin">
       <div className="mb-5"><div className="mb-2 flex items-center justify-between px-2 text-[10px] font-bold uppercase tracking-[.14em] text-[hsl(var(--muted-foreground))]"><span>Текстовые</span><button className="icon-btn" style={{ width: 22, height: 22 }} onClick={onAdd} aria-label="Добавить канал" data-testid="button-add-text-channel"><Plus size={14} /></button></div>{textChannels.map((channel) => <button key={channel.id} className={`channel-row ${channel.id === selectedId ? 'active' : ''}`} onClick={() => onSelect(channel.id)} data-testid={`button-channel-${channel.id}`}><Hash size={17} /><span className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold">{channel.name}</span>{channel.unreadCount > 0 && <span className="rounded-full bg-[hsl(var(--accent))] px-1.5 py-0.5 text-[10px] font-bold text-[hsl(var(--accent-foreground))]">{channel.unreadCount}</span>}</button>)}</div>
@@ -601,7 +648,7 @@ function ChannelPane({
                         >
                           {avatarInitials(person)}
                         </div>
-                        <span className="min-w-0 flex-1 truncate font-semibold">{person}</span>
+                        <span className="min-w-0 flex-1 truncate font-semibold"><PatriotName name={person} seed={peer?.id ?? person} /></span>
                         {voiceState?.muted && <MicOff size={12} className="shrink-0 text-[hsl(var(--muted-foreground))]" aria-label="Микрофон выкл" />}
                         {voiceState?.deafened && <Headphones size={12} className="shrink-0 text-[hsl(var(--muted-foreground))]" aria-label="Звук выкл" />}
                       </div>
@@ -704,7 +751,7 @@ function VoiceCard({
               >
                 {avatarInitials(person)}
               </div>
-              <span className="min-w-0 flex-1 truncate font-semibold">{person}{isSelf ? ' (вы)' : ''}</span>
+              <span className="min-w-0 flex-1 truncate font-semibold"><PatriotName name={person} seed={peerKey ?? person} />{isSelf ? ' (вы)' : ''}</span>
               {voiceState?.muted && <MicOff size={12} className="shrink-0 text-[hsl(var(--muted-foreground))]" />}
               {voiceState?.deafened && <Headphones size={12} className="shrink-0 text-[hsl(var(--muted-foreground))]" />}
             </div>
@@ -763,7 +810,7 @@ function PeerVolumeContextMenu({
 
 function MessageList({ messages }: { messages: Message[] }) {
   if (!messages.length) return <div className="flex h-full flex-col items-center justify-center px-6 text-center"><div className="grid h-16 w-16 place-items-center rounded-2xl bg-[hsl(var(--primary)/.18)] text-[hsl(var(--secondary))]"><Sparkles size={25} /></div><h3 className="font-display mt-5 text-xl font-bold">Здесь пока тихо</h3><p className="mt-2 max-w-xs text-sm leading-6 text-[hsl(var(--muted-foreground))]">Начните разговор — первое сообщение задаст настроение комнате.</p></div>;
-  return <div className="space-y-1"><div className="mb-7 flex items-center gap-3 text-[11px] text-[hsl(var(--muted-foreground))]"><div className="diag-line" /><span>Сегодня</span><div className="diag-line" /></div>{messages.map((message, index) => <article className="message-item" key={message.id} style={{ animationDelay: `${index * 45}ms` }} data-testid={`message-${message.id}`}><div className="message-avatar" style={avatarColors(message.author)}>{message.avatar}</div><div className="min-w-0"><div className="flex items-baseline gap-2"><strong className="text-[13px]">{message.author}</strong><time className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">{message.timestamp}</time></div>{isImageMessage(message.content) ? <img src={imagePayload(message.content)} alt="Изображение в чате" className="mt-2 max-h-80 max-w-full rounded-xl border border-[hsl(var(--border))]" data-testid={`message-image-${message.id}`} /> : <p className="mt-1 text-[14px] leading-6 text-[hsl(var(--foreground)/.82)]">{message.content}</p>}</div></article>)}</div>;
+  return <div className="space-y-1"><div className="mb-7 flex items-center gap-3 text-[11px] text-[hsl(var(--muted-foreground))]"><div className="diag-line" /><span>Сегодня</span><div className="diag-line" /></div>{messages.map((message, index) => <article className="message-item" key={message.id} style={{ animationDelay: `${index * 45}ms` }} data-testid={`message-${message.id}`}><div className="message-avatar" style={avatarColors(message.author)}>{message.avatar}</div><div className="min-w-0"><div className="flex items-baseline gap-2"><strong className="text-[13px]"><PatriotName name={message.author} /></strong><time className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">{message.timestamp}</time></div>{isImageMessage(message.content) ? <img src={imagePayload(message.content)} alt="Изображение в чате" className="mt-2 max-h-80 max-w-full rounded-xl border border-[hsl(var(--border))]" data-testid={`message-image-${message.id}`} /> : <p className="mt-1 text-[14px] leading-6 text-[hsl(var(--foreground)/.82)]">{message.content}</p>}</div></article>)}</div>;
 }
 
 function Workspace() {
@@ -789,6 +836,10 @@ function Workspace() {
   const [peerVoiceStates, setPeerVoiceStates] = useState<Record<string, { muted: boolean; deafened: boolean }>>({});
   const [showMeteredHint, setShowMeteredHint] = useState(false);
   const [voicePeers, setVoicePeers] = useState<Array<{ id: string; name: string }>>([]);
+  const [sharingScreen, setSharingScreen] = useState(false);
+  const [screenSharePeerId, setScreenSharePeerId] = useState<string | null>(null);
+  const [screenShareStream, setScreenShareStream] = useState<MediaStream | null>(null);
+  const screenVideoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [members, setMembers] = useState<ApiRoomMember[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<SessionStatus>('offline');
@@ -808,6 +859,10 @@ function Workspace() {
   const sessionRef = useRef<RoomSession | null>(null);
   const voiceMeshRef = useRef<VoiceMesh | null>(null);
   const voiceChannelRef = useRef<string | null>(null);
+  const knownMemberIdsRef = useRef<Set<string> | null>(null);
+  const knownMessageIdsRef = useRef<Set<string> | null>(null);
+  const deafenedRef = useRef(false);
+  deafenedRef.current = deafened;
   const displayName = readStore(PROFILE_NAME_KEY, 'Вы');
   const selectedChannel = channels.find((channel) => channel.id === selectedId) ?? channels[0];
   const channelMessages = messages.filter((message) => message.channelId === selectedId || (!message.channelId && selectedId === 'general'));
@@ -894,22 +949,46 @@ function Workspace() {
           }));
           setChannels(next.channels);
           setVoiceRooms(next.voiceRooms);
-          setMembers(view.state.members);
+          const nextMembers = view.state.members;
+          if (knownMemberIdsRef.current === null) {
+            knownMemberIdsRef.current = new Set(nextMembers.map((member) => member.id));
+          } else if (!deafenedRef.current) {
+            for (const member of nextMembers) {
+              if (member.id === peerId) continue;
+              if (!knownMemberIdsRef.current.has(member.id) && member.online) {
+                playUiSound('member-join');
+              }
+            }
+            knownMemberIdsRef.current = new Set(nextMembers.map((member) => member.id));
+          } else {
+            knownMemberIdsRef.current = new Set(nextMembers.map((member) => member.id));
+          }
+          setMembers(nextMembers);
           if (voiceChannelRef.current) {
             setVoicePeers(view.state.voiceParticipants[voiceChannelRef.current] ?? []);
           }
         }
-        setMessages(
-          view.messages.map((message) => ({
-            id: message.id,
-            author: message.author,
-            avatar: avatarInitials(message.author),
-            content: message.text ?? '🔒 не удалось расшифровать',
-            timestamp: new Date(message.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
-            isCurrentUser: message.authorId === peerId,
-            channelId: message.channelId,
-          })),
-        );
+        const mappedMessages = view.messages.map((message) => ({
+          id: message.id,
+          author: message.author,
+          avatar: avatarInitials(message.author),
+          content: message.text ?? '🔒 не удалось расшифровать',
+          timestamp: new Date(message.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+          isCurrentUser: message.authorId === peerId,
+          channelId: message.channelId,
+        }));
+        if (knownMessageIdsRef.current === null) {
+          knownMessageIdsRef.current = new Set(mappedMessages.map((message) => message.id));
+        } else if (!deafenedRef.current) {
+          for (const message of mappedMessages) {
+            if (knownMessageIdsRef.current.has(message.id) || message.isCurrentUser) continue;
+            playUiSound(isImageMessage(message.content) ? 'chat-image' : 'chat-text');
+          }
+          knownMessageIdsRef.current = new Set(mappedMessages.map((message) => message.id));
+        } else {
+          knownMessageIdsRef.current = new Set(mappedMessages.map((message) => message.id));
+        }
+        setMessages(mappedMessages);
       },
       onError: (message) => {
         if (!closed) setToast(message);
@@ -917,6 +996,9 @@ function Workspace() {
       onVoice: (event) => {
         if (event.channelId !== voiceChannelRef.current) return;
         if (event.joined) {
+          if (event.peerId !== peerId && !deafenedRef.current) {
+            playUiSound('voice-join');
+          }
           void voiceMeshRef.current?.addPeer(event.peerId, peerId < event.peerId).catch((error) => {
             setToast(error instanceof Error ? error.message : 'Не удалось подключить голосовой канал');
           });
@@ -948,6 +1030,8 @@ function Workspace() {
       voiceMeshRef.current?.stop();
       voiceMeshRef.current = null;
       voiceChannelRef.current = null;
+      knownMemberIdsRef.current = null;
+      knownMessageIdsRef.current = null;
     };
   }, [server.roomId, server.inviteToken, peerId]);
 
@@ -1032,6 +1116,20 @@ function Workspace() {
             onPeerVoiceState: (id, state) => {
               setPeerVoiceStates((current) => ({ ...current, [id]: state }));
             },
+            onScreenShare: (id, stream) => {
+              if (stream) {
+                setScreenSharePeerId(id);
+                setScreenShareStream(stream);
+                setSharingScreen(id === peerId);
+              } else {
+                setScreenSharePeerId((current) => {
+                  if (current !== id) return current;
+                  setScreenShareStream(null);
+                  setSharingScreen(false);
+                  return null;
+                });
+              }
+            },
           },
         );
         await mesh.start();
@@ -1068,9 +1166,50 @@ function Workspace() {
     setVoicePeers([]);
     setSpeakingPeers({});
     setPeerVoiceStates({});
+    setSharingScreen(false);
+    setScreenSharePeerId(null);
+    setScreenShareStream(null);
     setVoiceRooms((current) => current.map((item) => item.id === activeVoice ? { ...item, participantCount: Math.max(0, item.participantCount - 1), participants: item.participants.filter((person) => person !== displayName), state: item.participantCount <= 1 ? 'ready' : 'live' } : item));
     setActiveVoice(null); setMuted(false); setDeafened(false); setToast('Вы вышли из голосовой комнаты');
   };
+
+  const toggleScreenShare = async () => {
+    const mesh = voiceMeshRef.current;
+    if (!mesh || !activeVoice) {
+      setToast('Сначала войдите в голосовую комнату');
+      return;
+    }
+    try {
+      if (mesh.isScreenSharing()) {
+        await mesh.stopScreenShare();
+        setToast('Демонстрация экрана остановлена');
+      } else {
+        await mesh.startScreenShare();
+        setToast('Вы демонстрируете экран');
+      }
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : 'Не удалось поделиться экраном');
+    }
+  };
+
+  useEffect(() => {
+    const video = screenVideoRef.current;
+    if (!video) return;
+    video.srcObject = screenShareStream;
+    if (screenShareStream) {
+      void video.play().catch(() => {
+        /* autoplay may need gesture; muted video usually ok */
+      });
+    }
+  }, [screenShareStream]);
+
+  const screenShareLabel = (() => {
+    if (!screenSharePeerId || !screenShareStream) return '';
+    if (screenSharePeerId === peerId) return 'Вы демонстрируете экран';
+    const peer = voicePeers.find((item) => item.id === screenSharePeerId);
+    return peer ? `${peer.name} демонстрирует экран` : 'Демонстрация экрана';
+  })();
+
   const selectChannel = (id: string) => {
     setSelectedId(id);
     setChannels((current) => current.map((channel) => channel.id === id ? { ...channel, unreadCount: 0 } : channel));
@@ -1199,14 +1338,43 @@ function Workspace() {
                   )}
                 </div>
               </div>
-              <div className={`flex items-center gap-3 ${activeVoice === selectedVoice.id ? '' : 'mt-4 flex-col'}`}>
+              <div className={`flex flex-wrap items-center gap-3 ${activeVoice === selectedVoice.id ? '' : 'mt-4 flex-col'}`}>
                 <button className="primary-btn" onClick={() => (activeVoice === selectedVoice.id ? leaveVoice() : void joinVoice(selectedVoice))} data-testid="button-main-voice-toggle">
                   {activeVoice === selectedVoice.id ? <><X size={16} /> Покинуть комнату</> : <><Radio size={16} /> Войти в комнату</>}
                 </button>
+                {activeVoice === selectedVoice.id && (
+                  <button
+                    className={`ghost-btn ${sharingScreen ? 'border-[hsl(var(--primary))] text-[hsl(var(--primary))]' : ''}`}
+                    onClick={() => void toggleScreenShare()}
+                    data-testid="button-screen-share"
+                  >
+                    {sharingScreen ? <><MonitorOff size={15} /> Стоп экран</> : <><Monitor size={15} /> Поделиться экраном</>}
+                  </button>
+                )}
                 <div className="flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]"><Users size={14} /> {selectedVoice.participantCount} в комнате</div>
               </div>
             </div>
           </div>
+          {activeVoice === selectedVoice.id && screenShareStream && (
+            <div className="screen-share-stage mx-4 mt-3 shrink-0 overflow-hidden rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/.08)]" data-testid="screen-share-stage">
+              <div className="flex items-center justify-between gap-2 border-b border-[hsl(var(--border))] px-3 py-2">
+                <span className="flex items-center gap-2 text-xs font-semibold"><Monitor size={14} className="text-[hsl(var(--primary))]" /> {screenShareLabel}</span>
+                {sharingScreen && (
+                  <button type="button" className="ghost-btn !h-8 !px-2 text-[10px]" onClick={() => void toggleScreenShare()} data-testid="button-screen-share-stop-inline">
+                    Остановить
+                  </button>
+                )}
+              </div>
+              <video
+                ref={screenVideoRef}
+                className="screen-share-video max-h-[42vh] w-full bg-black object-contain"
+                autoPlay
+                playsInline
+                muted={screenSharePeerId === peerId}
+                data-testid="screen-share-video"
+              />
+            </div>
+          )}
           {activeVoice === selectedVoice.id && (
             <div className="voice-room-layout">
               <div className="message-scroll scrollbar-thin min-h-0 flex-1"><MessageList messages={channelMessages} /></div>
@@ -1236,7 +1404,7 @@ function Workspace() {
         data-testid="resizer-member-pane"
       />
       <div className="mb-7"><div className="flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Комната</span><span className="h-2 w-2 rounded-full bg-[hsl(var(--primary))]" /></div><div className="mt-4 flex items-center gap-2"><div className="grid h-8 w-8 place-items-center rounded-lg text-xs font-extrabold" style={avatarColors(server.name)}>{avatarInitials(server.name)}</div><div><div className="text-xs font-bold">{server.name}</div><div className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">координатор: {server.hostName}</div></div></div></div>
-      <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.length === 0 ? <p className="text-xs text-[hsl(var(--muted-foreground))]">{connectionStatus === 'connected' ? 'Пока только вы' : 'Ждём подключения…'}</p> : visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={avatarColors(member.name)}>{avatarInitials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="text-xs font-semibold">{member.name}</span>{member.name === server.hostName && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">координатор</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
+      <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.length === 0 ? <p className="text-xs text-[hsl(var(--muted-foreground))]">{connectionStatus === 'connected' ? 'Пока только вы' : 'Ждём подключения…'}</p> : visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={avatarColors(member.name)}>{avatarInitials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="min-w-0 truncate text-xs font-semibold"><PatriotName name={member.name} seed={member.id} /></span>{member.name === server.hostName && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">координатор</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
       <div><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Голосовые</span><button className="icon-btn" style={{ width: 22, height: 22 }} onClick={() => setShowChannelDialog(true)} aria-label="Создать голосовую комнату" data-testid="button-member-add-voice"><Plus size={14} /></button></div>{voiceRooms.map((room) => <VoiceCard key={room.id} room={room} active={activeVoice === room.id} onJoin={() => void joinVoice(room)} onLeave={leaveVoice} muted={muted} deafened={deafened} voiceHint={activeVoice === room.id ? voiceStatusLabel : undefined} voicePeers={voicePeers} selfPeerId={peerId} selfDisplayName={displayName} speakingPeers={speakingPeers} peerVoiceStates={peerVoiceStates} onPeerContextMenu={openPeerVolumeMenu} />)}</div>
     </aside>
     {showChannelDialog && <CreateChannelDialog onClose={() => setShowChannelDialog(false)} onCreate={addChannel} />}
@@ -1375,6 +1543,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
   const [audioInputId, setAudioInputId] = useState(() => loadAudioInputId());
   const [audioOutputId, setAudioOutputId] = useState(() => loadAudioOutputId());
+  const [uiSoundsEnabled, setUiSoundsEnabled] = useState(() => loadUiSoundsEnabled());
   const [updateProgress, setUpdateProgress] = useState<{ loaded: number; total: number | null; phase: string } | null>(null);
 
   useEffect(() => {
@@ -1532,6 +1701,12 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
                 data-testid={`button-theme-${theme.id}`}
               >
                 {theme.label}
+                {theme.id === 'patriot' && (
+                  <span className="mt-1 flex items-center gap-1.5 text-[10px] font-normal text-[hsl(var(--muted-foreground))]">
+                    <span className="patriot-flag-bars" aria-hidden />
+                    флаг · звания
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -1574,6 +1749,26 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
               <option key={device.deviceId} value={device.deviceId}>{device.label || `Выход ${device.deviceId.slice(0, 8)}`}</option>
             ))}
           </select>
+          <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={uiSoundsEnabled}
+              onChange={(event) => {
+                const next = event.target.checked;
+                setUiSoundsEnabled(next);
+                saveUiSoundsEnabled(next);
+                if (next) playUiSound('chat-text');
+              }}
+              data-testid="checkbox-ui-sounds"
+            />
+            <span>
+              <span className="block text-xs font-bold">Звуки событий</span>
+              <span className="mt-0.5 block text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
+                Вход на сервер, вход в голос, текст и картинка в чате (не свои действия). Не играют при «звук выкл».
+              </span>
+            </span>
+          </label>
         </div>
 
         <div className="mt-6 rounded-xl border border-[hsl(var(--border))] p-4">

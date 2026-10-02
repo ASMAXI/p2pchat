@@ -125,21 +125,106 @@ html[data-theme="dota"] {
 }
 
 html[data-theme="patriot"] {
-  --background: 214 35% 96%;
-  --foreground: 220 40% 14%;
-  --border: 214 20% 82%;
+  --background: 214 40% 96%;
+  --foreground: 220 45% 12%;
+  --border: 214 28% 78%;
+  --input: 214 22% 82%;
   --card: 0 0% 100%;
-  --primary: 4 78% 52%;
+  --card-foreground: 220 45% 12%;
+  --primary: 4 78% 48%;
   --primary-foreground: 0 0% 100%;
-  --secondary: 214 80% 38%;
+  --secondary: 214 82% 32%;
   --secondary-foreground: 0 0% 100%;
-  --muted: 214 25% 90%;
-  --muted-foreground: 220 15% 38%;
-  --accent: 214 80% 38%;
-  --sidebar: 214 55% 18%;
+  --muted: 214 30% 91%;
+  --muted-foreground: 220 18% 36%;
+  --accent: 214 82% 36%;
+  --accent-foreground: 0 0% 100%;
+  --sidebar: 214 58% 14%;
   --sidebar-foreground: 0 0% 98%;
-  --sidebar-accent: 4 70% 42%;
+  --sidebar-border: 214 40% 22%;
+  --sidebar-accent: 4 72% 40%;
   --sidebar-accent-foreground: 0 0% 100%;
+  --ru-white: #ffffff;
+  --ru-blue: #0039a6;
+  --ru-red: #d52b1e;
+}
+
+html[data-theme="patriot"] body,
+html[data-theme="patriot"] .workspace-shell {
+  background-image:
+    linear-gradient(180deg, hsl(214 40% 96%) 0%, hsl(0 0% 100%) 45%, hsl(4 40% 96%) 100%);
+}
+
+html[data-theme="patriot"] .workspace-nav {
+  background:
+    linear-gradient(180deg, var(--ru-white) 0 12px, var(--ru-blue) 12px 24px, var(--ru-red) 24px 36px, hsl(214 58% 14%) 36px);
+  background-color: hsl(214 58% 14%);
+  border-right: 1px solid hsl(214 40% 22%);
+}
+
+html[data-theme="patriot"] .server-mark {
+  background: linear-gradient(180deg, var(--ru-white) 0%, var(--ru-white) 33%, var(--ru-blue) 33%, var(--ru-blue) 66%, var(--ru-red) 66%, var(--ru-red) 100%);
+  color: hsl(214 58% 14%);
+  box-shadow: 0 8px 22px hsl(4 78% 40% / .28);
+}
+
+html[data-theme="patriot"] .topbar {
+  border-bottom: 3px solid transparent;
+  border-image: linear-gradient(90deg, var(--ru-white), var(--ru-blue), var(--ru-red)) 1;
+  background:
+    linear-gradient(180deg, hsl(0 0% 100% / .92), hsl(214 35% 97% / .88));
+}
+
+html[data-theme="patriot"] .channel-header {
+  background:
+    linear-gradient(90deg, hsl(214 82% 32% / .08), transparent 60%);
+}
+
+html[data-theme="patriot"] .primary-btn {
+  background: linear-gradient(135deg, hsl(4 78% 48%), hsl(4 78% 40%));
+}
+
+html[data-theme="patriot"] .nav-icon.active {
+  background: hsl(4 72% 42%);
+  color: #fff;
+}
+
+.patriot-crest {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: radial-gradient(circle at 50% 30%, #f4d35e 0%, #c9a227 45%, #7a5b12 100%);
+  box-shadow: inset 0 0 0 1px hsl(40 60% 30% / .35), 0 6px 14px hsl(214 58% 10% / .35);
+  color: #1a2a6c;
+}
+
+.patriot-flag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+}
+
+.patriot-flag-bars {
+  width: 18px;
+  height: 12px;
+  border-radius: 2px;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  background: linear-gradient(180deg, #fff 0 33.33%, #0039a6 33.33% 66.66%, #d52b1e 66.66% 100%);
+  flex-shrink: 0;
+}
+
+.patriot-rank {
+  color: hsl(4 72% 40%);
+  font-weight: 800;
+  font-size: 0.92em;
 }
 
 @layer base {
@@ -226,6 +311,8 @@ html[data-theme="patriot"] {
 .composer textarea { min-height: 34px; max-height: 120px; flex: 1; resize: none; border: 0; outline: 0; color: hsl(var(--foreground)); background: transparent; padding: 7px 0; }
 .member-pane { width: var(--member-pane-w, 224px); flex: 0 0 var(--member-pane-w, 224px); border-left: 1px solid hsl(var(--border)); background: hsl(var(--card) / .45); padding: 25px 17px; overflow-y: auto; min-height: 0; position: relative; }
 .voice-room-layout { min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.screen-share-stage { box-shadow: 0 10px 28px hsl(225 29% 12% / .12); }
+.screen-share-video { display: block; min-height: 160px; }
 .panel-resizer { position: absolute; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 5; opacity: 0; transition: opacity .15s; }
 .panel-resizer:hover, .panel-resizer.active { opacity: 1; background: hsl(var(--primary) / .25); }
 .panel-resizer-right { right: -3px; }
