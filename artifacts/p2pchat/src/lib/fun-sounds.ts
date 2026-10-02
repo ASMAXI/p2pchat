@@ -77,7 +77,7 @@ export function playFunSound(id: FunSoundId): void {
       lastAudio = null;
     }
     const audio = new Audio(sfxUrl(id));
-    audio.volume = 0.9;
+    audio.volume = 0.45;
     lastAudio = audio;
     void audio.play().catch(() => {
       // Autoplay may be blocked until a user gesture; ignore.

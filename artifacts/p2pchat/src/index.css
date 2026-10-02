@@ -539,32 +539,32 @@ html[data-theme="gachi"] .nav-icon.active {
 html.voice-overlay-mode,
 html.voice-overlay-mode body,
 html.voice-overlay-mode #root {
-  height: 100%;
-  min-height: 100%;
+  height: auto;
+  min-height: 0;
+  min-width: 0;
   margin: 0;
+  padding: 0;
   background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  border: 0 !important;
   overflow: hidden !important;
 }
 .voice-overlay-root {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
+  display: inline-block;
   background: transparent !important;
 }
 .voice-overlay-panel {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  min-width: 168px;
-  max-width: 240px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  width: max-content;
+  min-width: 150px;
+  max-width: 230px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   font-family: var(--app-font-sans, system-ui, sans-serif);
   color: rgba(245, 247, 250, 0.96);
-  pointer-events: auto;
   -webkit-app-region: drag;
+  user-select: none;
 }
 .voice-overlay-channel {
   font-size: 10px;

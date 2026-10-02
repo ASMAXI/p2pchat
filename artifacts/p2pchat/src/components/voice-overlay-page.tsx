@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   type VoiceOverlayPayload,
   VOICE_OVERLAY_PAYLOAD_KEY,
@@ -23,27 +23,36 @@ function parsePayload(raw: string | null): VoiceOverlayPayload | null {
       typeof data.opacity === "number" && data.opacity >= 0.15 && data.opacity <= 1
         ? data.opacity
         : loadVoiceOverlayOpacity();
-    return { ...data, opacity };
+    const seen = new Set<string>();
+    const peers = data.peers.filter((peer) => {
+      const key = `${peer.id}|${peer.name}`;
+      if (seen.has(key) || seen.has(peer.name)) return false;
+      seen.add(key);
+      seen.add(peer.name);
+      return true;
+    });
+    return { ...data, opacity, peers };
   } catch {
     return null;
   }
 }
 
 function readPayload(): VoiceOverlayPayload {
-  return parsePayload(window.localStorage.getItem(VOICE_OVERLAY_PAYLOAD_KEY)) ?? {
-    ...emptyPayload,
-    opacity: loadVoiceOverlayOpacity(),
-  };
+  return (
+    parsePayload(window.localStorage.getItem(VOICE_OVERLAY_PAYLOAD_KEY)) ?? {
+      ...emptyPayload,
+      opacity: loadVoiceOverlayOpacity(),
+    }
+  );
 }
 
 export function VoiceOverlayPage() {
   const [payload, setPayload] = useState<VoiceOverlayPayload>(readPayload);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     document.documentElement.classList.add("voice-overlay-mode");
     document.body.classList.add("voice-overlay-mode");
-    document.documentElement.style.background = "transparent";
-    document.body.style.background = "transparent";
     return () => {
       document.documentElement.classList.remove("voice-overlay-mode");
       document.body.classList.remove("voice-overlay-mode");
@@ -62,7 +71,7 @@ export function VoiceOverlayPage() {
     if (isDesktopShell()) {
       void import("@tauri-apps/api/event").then(({ listen }) => {
         void listen<VoiceOverlayPayload>("voice-overlay-state", (event) => {
-          apply(event.payload);
+          apply(parsePayload(JSON.stringify(event.payload)));
         }).then((fn) => {
           unlisten = fn;
         });
@@ -77,25 +86,38 @@ export function VoiceOverlayPage() {
       if (event.key === VOICE_OVERLAY_PAYLOAD_KEY) refresh();
     };
     window.addEventListener("storage", onStorage);
-    window.addEventListener("p2pchat-voice-settings", refresh);
-    window.addEventListener("p2pchat-voice-overlay-push", refresh);
-
     const timer = window.setInterval(refresh, 800);
 
     return () => {
       unlisten?.();
       window.removeEventListener("storage", onStorage);
-      window.removeEventListener("p2pchat-voice-settings", refresh);
-      window.removeEventListener("p2pchat-voice-overlay-push", refresh);
       window.clearInterval(timer);
     };
   }, []);
+
+  // Shrink the native window to the panel so there is no empty frame around it.
+  useEffect(() => {
+    if (!isDesktopShell()) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    const width = Math.ceil(rect.width);
+    const height = Math.ceil(rect.height);
+    if (width < 40 || height < 20) return;
+    void import("@tauri-apps/api/window").then(({ getCurrentWindow, LogicalSize }) => {
+      void getCurrentWindow().setSize(new LogicalSize(width, height)).catch(() => {});
+    });
+  }, [payload]);
 
   const bgAlpha = Math.min(1, Math.max(0.15, payload.opacity));
 
   return (
     <div className="voice-overlay-root">
-      <div className="voice-overlay-panel" style={{ background: `rgba(12, 14, 18, ${bgAlpha})` }}>
+      <div
+        ref={panelRef}
+        className="voice-overlay-panel"
+        style={{ background: `rgba(12, 14, 18, ${bgAlpha})` }}
+      >
         <div className="voice-overlay-channel">{payload.channelName || "Голосовой канал"}</div>
         {payload.peers.length === 0 ? (
           <div className="voice-overlay-empty">Никого в канале</div>

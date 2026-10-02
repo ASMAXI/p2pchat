@@ -1574,6 +1574,7 @@ function Workspace() {
     const room = voiceRooms.find((item) => item.id === activeVoice);
     const channelName = room?.name ?? 'Голос';
     const selfEffectiveMuted = effectiveMicMuted(muted, pttHeld, voiceTalkMode);
+    // voiceParticipants already contains us — keep a single self row.
     const peers: VoiceOverlayPayload['peers'] = [
       {
         id: peerId,
@@ -1581,12 +1582,14 @@ function Workspace() {
         speaking: Boolean(speakingPeers[peerId]),
         muted: selfEffectiveMuted,
       },
-      ...voicePeers.map((peer) => ({
-        id: peer.id,
-        name: peer.name,
-        speaking: Boolean(speakingPeers[peer.id]),
-        muted: Boolean(peerVoiceStates[peer.id]?.muted),
-      })),
+      ...voicePeers
+        .filter((peer) => peer.id !== peerId && peer.name !== displayName)
+        .map((peer) => ({
+          id: peer.id,
+          name: peer.name,
+          speaking: Boolean(speakingPeers[peer.id]),
+          muted: Boolean(peerVoiceStates[peer.id]?.muted),
+        })),
     ];
     const payload: VoiceOverlayPayload = {
       channelName,
