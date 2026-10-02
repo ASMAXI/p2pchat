@@ -1,9 +1,9 @@
-//! Self-update: download with progress events, passive install, relaunch same app.
+//! Self-update: download with progress, wait for install after exit, relaunch.
 
 use std::{
     fs::File,
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     time::Duration,
 };
@@ -73,52 +73,74 @@ fn download(url: &str, dest: &PathBuf, app: &AppHandle) -> Result<(), String> {
         loaded += read as u64;
         emit_progress(app, loaded, total, "download");
     }
+    // Guard against truncated HTML error pages saved as .exe
+    if loaded < 500_000 {
+        let _ = std::fs::remove_file(dest);
+        return Err(format!(
+            "Файл обновления слишком маленький ({loaded} байт) — вероятно ошибка скачивания"
+        ));
+    }
     Ok(())
 }
 
-fn relaunch_exe() -> Result<PathBuf, String> {
-    std::env::current_exe().map_err(|err| err.to_string())
+fn quote_cmd(path: &Path) -> String {
+    format!("\"{}\"", path.to_string_lossy().replace('"', ""))
 }
 
-fn launch_and_exit(app: &AppHandle, dest: &PathBuf) -> Result<(), String> {
-    let exe = relaunch_exe()?;
-    let is_msi = dest
+/// After this process exits: run installer, then start Drift again from the same path.
+fn spawn_deferred_install(installer: &Path, app_exe: &Path) -> Result<(), String> {
+    let dir = std::env::temp_dir().join("drift-update");
+    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    let script = dir.join("apply-update.cmd");
+    let is_msi = installer
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("msi"));
 
-    emit_progress(app, 0, None, "install");
-
-    if is_msi {
-        // Upgrade in place; do not let msiexec restart a random shortcut.
-        Command::new("msiexec")
-            .args([
-                "/i",
-                &dest.to_string_lossy(),
-                "/passive",
-                "/norestart",
-                "REINSTALL=ALL",
-                "REINSTALLMODE=vomus",
-            ])
-            .spawn()
-            .map_err(|err| format!("Не удалось запустить установщик: {err}"))?;
-        std::thread::sleep(Duration::from_secs(2));
-        Command::new(&exe)
-            .spawn()
-            .map_err(|err| format!("Не удалось перезапустить Drift: {err}"))?;
+    let install_line = if is_msi {
+        format!(
+            "msiexec /i {} /qn /norestart REINSTALL=ALL REINSTALLMODE=vomus",
+            quote_cmd(installer)
+        )
     } else {
-        // NSIS (Tauri): passive UI + relaunch registered app after upgrade.
-        Command::new(dest)
-            .args(["/P", "/R"])
-            .spawn()
-            .map_err(|err| format!("Не удалось запустить установщик: {err}"))?;
-    }
+        // Tauri NSIS: silent in-place upgrade (no /R — we relaunch ourselves).
+        format!("{} /S", quote_cmd(installer))
+    };
 
+    let contents = format!(
+        "@echo off\r\n\
+         rem Wait until Drift.exe unlocks its files\r\n\
+         ping 127.0.0.1 -n 4 >nul\r\n\
+         {install_line}\r\n\
+         if errorlevel 1 (\r\n\
+           ping 127.0.0.1 -n 2 >nul\r\n\
+           {install_line}\r\n\
+         )\r\n\
+         ping 127.0.0.1 -n 2 >nul\r\n\
+         start \"\" {}\r\n\
+         del \"%~f0\"\r\n",
+        quote_cmd(app_exe)
+    );
+    std::fs::write(&script, contents).map_err(|err| err.to_string())?;
+
+    Command::new("cmd.exe")
+        .args(["/C", "start", "", "/MIN", &script.to_string_lossy()])
+        .spawn()
+        .map_err(|err| format!("Не удалось запланировать установку: {err}"))?;
+    Ok(())
+}
+
+fn launch_and_exit(app: &AppHandle, dest: &PathBuf) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|err| err.to_string())?;
+    emit_progress(app, 0, None, "install");
+    spawn_deferred_install(dest, &exe)?;
     emit_progress(app, 1, Some(1), "done");
+    // Give the helper a moment to start, then unlock our binary.
+    std::thread::sleep(Duration::from_millis(400));
     app.exit(0);
     Ok(())
 }
 
-/// Downloads the installer with progress events, starts it and exits the app.
+/// Downloads the installer with progress events, schedules install after exit.
 #[tauri::command]
 pub async fn install_update(app: AppHandle, url: String) -> Result<(), String> {
     if !ALLOWED_PREFIXES.iter().any(|prefix| url.starts_with(prefix)) {

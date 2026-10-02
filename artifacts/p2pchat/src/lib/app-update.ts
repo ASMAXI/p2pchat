@@ -37,7 +37,7 @@ export async function currentAppVersion(): Promise<string> {
   } catch {
     // fall through
   }
-  return "0.8.9";
+  return "0.9.0";
 }
 
 export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
@@ -60,10 +60,12 @@ export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
   };
   const latestVersion = normalizeVersion(release.tag_name || release.name || currentVersion);
   const assets = release.assets ?? [];
+  // Prefer real installers; avoid portable/unsigned side artifacts.
   const installer =
     assets.find((asset) => /setup\.exe$/i.test(asset.name)) ||
-    assets.find((asset) => /\.exe$/i.test(asset.name)) ||
-    assets.find((asset) => /\.msi$/i.test(asset.name));
+    assets.find((asset) => /\.msi$/i.test(asset.name)) ||
+    assets.find((asset) => /drift.*\.exe$/i.test(asset.name) && !/portable/i.test(asset.name)) ||
+    assets.find((asset) => /\.exe$/i.test(asset.name) && !/portable/i.test(asset.name));
   const upToDate = compareSemver(currentVersion, latestVersion) >= 0;
   return {
     upToDate,

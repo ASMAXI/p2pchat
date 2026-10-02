@@ -58,7 +58,7 @@ const DEFAULT_MIC: MicProcessing = {
   echoCancellation: true,
   noiseSuppression: true,
   autoGainControl: true,
-  enhancedNoise: true,
+  enhancedNoise: false,
 };
 
 /** Discord-like user-volume boost: 0..2 (200%). */

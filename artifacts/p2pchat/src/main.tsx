@@ -5,6 +5,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { debugLog, installDebugLogHooks } from "@/lib/debug-log";
 
 import { initTheme } from "@/lib/theme";
+import { playStartupSound } from "@/lib/ui-sounds";
 
 import "./index.css";
 
@@ -12,6 +13,7 @@ initTheme();
 
 installDebugLogHooks();
 debugLog("boot", "app start", { desktop: "__TAURI_INTERNALS__" in window });
+playStartupSound();
 
 createRoot(document.getElementById("root")!, {
   // Keeps caught errors off reportError(), which would raise the dev overlay.

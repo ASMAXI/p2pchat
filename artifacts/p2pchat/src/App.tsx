@@ -36,6 +36,8 @@ import {
   ImageIcon,
   Monitor,
   MonitorOff,
+  PanelRightClose,
+  PanelRightOpen,
 } from 'lucide-react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
@@ -99,6 +101,9 @@ import {
   encodePin,
   foldChatMessages,
   extractMentions,
+  mentionSuggestions,
+  applyMentionSuggestion,
+  splitMentionSpans,
   fileToChatAttachment,
   parseWireText,
   IMAGE_MESSAGE_PREFIX,
@@ -110,7 +115,9 @@ import { APP_THEMES, loadTheme, saveTheme, useAppTheme, type AppThemeId } from '
 import { rfRankFor } from '@/lib/patriot-ranks';
 import {
   loadChannelPaneWidth,
+  loadMemberPaneCollapsed,
   loadMemberPaneWidth,
+  saveMemberPaneCollapsed,
   saveChannelPaneWidth,
   saveMemberPaneWidth,
 } from '@/lib/layout-settings';
@@ -178,6 +185,20 @@ const readStore = <T,>(key: string, fallback: T): T => {
   }
 };
 const writeStore = (key: string, value: unknown) => localStorage.setItem(key, JSON.stringify(value));
+
+const inviteLooksLocal = (invite?: string): boolean => {
+  const haystack = `${invite ?? ''} ${getBootstrapOrigin()}`;
+  if (isLocalhostOrigin(haystack)) return true;
+  return /192\.168\.|(^|[^\d])10\.|172\.(1[6-9]|2\d|3[01])\./.test(haystack);
+};
+
+const mergeChannelUnread = (prev: Channel[], incoming: Channel[]): Channel[] => {
+  const unreadById = new Map(prev.map((channel) => [channel.id, channel.unreadCount]));
+  return incoming.map((channel) => ({
+    ...channel,
+    unreadCount: unreadById.get(channel.id) ?? channel.unreadCount ?? 0,
+  }));
+};
 
 const roomStateToClientState = (state: ApiRoomState, peerId: string, invite?: string) => {
   const onlineMembers = state.members.filter((member) => member.online);
@@ -388,15 +409,41 @@ function Home() {
             <div className="mt-5 flex items-center gap-1"><div className="h-5 w-5 rounded-md bg-[#d8fa67]"/><div className="h-5 w-5 rounded-md bg-[#f28262]"/><div className="h-5 w-5 rounded-md bg-[#f5f0df]/20"/><span className="ml-1 text-[9px] text-[#f5f0df]/50">18 здесь</span></div>
           </div>
         </section>
-        <section className="flex items-center px-6 py-10 sm:px-12 lg:px-20">
+        <section className="flex max-h-[100dvh] items-start overflow-y-auto px-6 py-10 sm:px-12 lg:px-20">
           <div className="mx-auto w-full max-w-[440px] animate-rise">
-            <div className="mb-10 flex items-center justify-between lg:hidden"><LogoMark small /><span className="font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--muted-foreground))]">приватная комната</span></div>
-            <div className="mb-10"><p className="font-mono text-[10px] uppercase tracking-[.18em] text-[hsl(var(--muted-foreground))]">Вход в пространство</p><h2 className="font-display mt-3 text-4xl font-bold tracking-[-.06em]">Где собираемся?</h2><p className="mt-3 text-sm leading-6 text-[hsl(var(--muted-foreground))]">Комната синхронизируется между приглашёнными участниками. Никаких аккаунтов и лишних шагов.</p></div>
+            <div className="mb-8 flex items-center justify-between lg:hidden"><LogoMark small /><span className="font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--muted-foreground))]">приватная комната</span></div>
+            <div className="mb-8"><p className="font-mono text-[10px] uppercase tracking-[.18em] text-[hsl(var(--muted-foreground))]">Вход в пространство</p><h2 className="font-display mt-3 text-4xl font-bold tracking-[-.06em]">Где собираемся?</h2><p className="mt-3 text-sm leading-6 text-[hsl(var(--muted-foreground))]">Комната синхронизируется между приглашёнными участниками. Никаких аккаунтов и лишних шагов.</p></div>
+
+            <div className="mb-5">
+              <label className="field-label" htmlFor="display-name">Ваше имя</label>
+              <input id="display-name" className="field-input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Например, Миша" data-testid="input-display-name" />
+            </div>
+
+            <div className="mb-7 grid grid-cols-2 rounded-xl bg-[hsl(var(--muted))] p-1" role="tablist">
+              <button className={`rounded-[9px] px-3 py-2.5 text-sm font-bold transition ${mode === 'create' ? 'bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`} onClick={() => setMode('create')} data-testid="tab-create-server">Создать сервер</button>
+              <button className={`rounded-[9px] px-3 py-2.5 text-sm font-bold transition ${mode === 'join' ? 'bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`} onClick={() => setMode('join')} data-testid="tab-join-server">Войти по ссылке</button>
+            </div>
+
+            {mode === 'create' ? (
+              <form onSubmit={createServer} className="animate-rise" data-testid="form-create-server">
+                <label className="field-label" htmlFor="server-name">Название сервера</label>
+                <input id="server-name" className="field-input" value={name} onChange={(event) => setName(event.target.value)} placeholder="Например, «Наши выходные»" data-testid="input-server-name" autoFocus />
+                <div className="mt-4 flex items-start gap-2 rounded-xl bg-[hsl(var(--muted))] p-3.5 text-xs leading-5 text-[hsl(var(--muted-foreground))]"><LockKeyhole size={15} className="mt-0.5 shrink-0 text-[hsl(var(--secondary))]" /> Только вы решаете, кто получает приглашение. Сервер будет готов через секунду.</div>
+                <button className="primary-btn mt-6 w-full" type="submit" disabled={busy} data-testid="button-create-server">{busy ? 'Подключаем комнату…' : 'Создать приватный сервер'} {!busy && <ArrowRight size={16} />}</button>
+              </form>
+            ) : (
+              <form onSubmit={joinServer} className="animate-rise" data-testid="form-join-server">
+                <label className="field-label" htmlFor="invite-code">Ссылка или код приглашения</label>
+                <div className="relative"><Link2 size={17} className="absolute left-3.5 top-3.5 text-[hsl(var(--muted-foreground))]" /><input id="invite-code" className="field-input pl-10" value={invite} onChange={(event) => setInvite(event.target.value)} placeholder="p2pchat://join?..." data-testid="input-invite-code" autoFocus /></div>
+                <p className="mt-3 text-xs leading-5 text-[hsl(var(--muted-foreground))]">Попросите свежую ссылку у владельца (после перезапуска приложения туннель меняется). Уже заходили — откройте сервер из списка ниже.</p>
+                <button className="primary-btn mt-6 w-full" type="submit" disabled={busy} data-testid="button-join-server">{busy ? 'Проверяем приглашение…' : 'Войти в комнату'} {!busy && <ArrowRight size={16} />}</button>
+              </form>
+            )}
 
             {savedServers.length > 0 && (
-              <div className="mb-8" data-testid="saved-servers">
+              <div className="mt-10" data-testid="saved-servers">
                 <div className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[hsl(var(--muted-foreground))]">Ваши серверы</div>
-                <div className="space-y-2">
+                <div className="max-h-[min(280px,36vh)] space-y-2 overflow-y-auto pr-1 scrollbar-thin">
                   {savedServers.map((server) => (
                     <div key={server.roomId} className="flex items-center gap-2 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.4)] p-2.5">
                       <button
@@ -419,36 +466,16 @@ function Home() {
               </div>
             )}
 
-            <div className="mb-7 grid grid-cols-2 rounded-xl bg-[hsl(var(--muted))] p-1" role="tablist">
-              <button className={`rounded-[9px] px-3 py-2.5 text-sm font-bold transition ${mode === 'create' ? 'bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`} onClick={() => setMode('create')} data-testid="tab-create-server">Создать сервер</button>
-              <button className={`rounded-[9px] px-3 py-2.5 text-sm font-bold transition ${mode === 'join' ? 'bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`} onClick={() => setMode('join')} data-testid="tab-join-server">Войти по ссылке</button>
-            </div>
-             <div className="mb-5">
-               <label className="field-label" htmlFor="display-name">Ваше имя</label>
-               <input id="display-name" className="field-input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Например, Миша" data-testid="input-display-name" />
-             </div>
-              {isDesktopShell() && <div className="mb-5">
+            {isDesktopShell() && (
+              <div className="mt-10 border-t border-[hsl(var(--border))] pt-6">
                 <label className="field-label" htmlFor="api-origin">Резервный bootstrap (необязательно)</label>
                 <input id="api-origin" className="field-input" value={apiOrigin} onChange={(event) => setApiOriginState(event.target.value)} placeholder="http://192.168.0.10:5000" data-testid="input-api-origin" />
                 <p className="mt-2 text-xs leading-5 text-[hsl(var(--muted-foreground))]">При создании комнаты coordinator запускается на этом компьютере автоматически. Укажите адрес только если подключаетесь через интернет или к чужому узлу.</p>
-              </div>}
-             {mode === 'create' ? (
-              <form onSubmit={createServer} className="animate-rise" data-testid="form-create-server">
-                <label className="field-label" htmlFor="server-name">Название сервера</label>
-                <input id="server-name" className="field-input" value={name} onChange={(event) => setName(event.target.value)} placeholder="Например, «Наши выходные»" data-testid="input-server-name" autoFocus />
-                <div className="mt-4 flex items-start gap-2 rounded-xl bg-[hsl(var(--muted))] p-3.5 text-xs leading-5 text-[hsl(var(--muted-foreground))]"><LockKeyhole size={15} className="mt-0.5 shrink-0 text-[hsl(var(--secondary))]" /> Только вы решаете, кто получает приглашение. Сервер будет готов через секунду.</div>
-                 <button className="primary-btn mt-6 w-full" type="submit" disabled={busy} data-testid="button-create-server">{busy ? 'Подключаем комнату…' : 'Создать приватный сервер'} {!busy && <ArrowRight size={16} />}</button>
-              </form>
-            ) : (
-              <form onSubmit={joinServer} className="animate-rise" data-testid="form-join-server">
-                <label className="field-label" htmlFor="invite-code">Ссылка или код приглашения</label>
-                <div className="relative"><Link2 size={17} className="absolute left-3.5 top-3.5 text-[hsl(var(--muted-foreground))]" /><input id="invite-code" className="field-input pl-10" value={invite} onChange={(event) => setInvite(event.target.value)} placeholder="p2pchat://join?..." data-testid="input-invite-code" autoFocus /></div>
-                <p className="mt-3 text-xs leading-5 text-[hsl(var(--muted-foreground))]">Попросите свежую ссылку у владельца (после перезапуска приложения туннель меняется). Уже заходили — откройте сервер из списка выше.</p>
-                 <button className="primary-btn mt-6 w-full" type="submit" disabled={busy} data-testid="button-join-server">{busy ? 'Проверяем приглашение…' : 'Войти в комнату'} {!busy && <ArrowRight size={16} />}</button>
-              </form>
+              </div>
             )}
-             <div className="mt-12 flex items-center gap-2 text-[11px] text-[hsl(var(--muted-foreground))]"><ShieldCheck size={14} /> Защищённая комната · без аккаунта</div>
-             <CreatorCredit className="mt-3 block text-[hsl(var(--muted-foreground))]" />
+
+            <div className="mt-10 flex items-center gap-2 text-[11px] text-[hsl(var(--muted-foreground))]"><ShieldCheck size={14} /> Защищённая комната · без аккаунта</div>
+            <CreatorCredit className="mt-3 block text-[hsl(var(--muted-foreground))]" />
           </div>
         </section>
       </div>
@@ -457,13 +484,90 @@ function Home() {
   );
 }
 
-function WorkspaceNav({ onDiagnostics, onSettings }: { onDiagnostics: () => void; onSettings: () => void }) {
+function ConnectionStatusChips({
+  connectionStatus,
+  isCoordinator,
+  invite,
+}: {
+  connectionStatus: SessionStatus;
+  isCoordinator: boolean;
+  invite?: string;
+}) {
+  if (connectionStatus !== 'connected') {
+    const offline = connectionStatus === 'offline';
+    const dotColor = offline ? 'hsl(var(--muted-foreground))' : 'hsl(var(--accent))';
+    return (
+      <span className="connection-chip text-[hsl(var(--muted-foreground))]" data-testid="chip-connection-status">
+        <span className="connection-dot" style={{ background: dotColor }} />
+        {statusLabel(connectionStatus)}
+      </span>
+    );
+  }
+  const lanLocal = inviteLooksLocal(invite);
+  const publicUrl = getPublicUrl();
+  const turnOk = isTurnConfigured();
+  const chips: Array<{ key: string; label: string; dot: string; muted?: boolean }> = [
+    {
+      key: 'lan',
+      label: lanLocal ? 'LAN' : 'LAN?',
+      dot: lanLocal ? 'hsl(var(--primary))' : 'hsl(var(--muted-foreground))',
+      muted: !lanLocal,
+    },
+    isCoordinator
+      ? {
+          key: 'tunnel',
+          label: publicUrl ? 'Туннель' : 'нет туннеля',
+          dot: publicUrl ? 'hsl(var(--primary))' : 'hsl(var(--accent))',
+          muted: !publicUrl,
+        }
+      : {
+          key: 'tunnel',
+          label: lanLocal ? 'локально' : 'удалённый',
+          dot: lanLocal ? 'hsl(var(--primary))' : 'hsl(var(--muted-foreground))',
+          muted: !lanLocal,
+        },
+    {
+      key: 'turn',
+      label: turnOk ? 'TURN' : 'TURN?',
+      dot: turnOk ? 'hsl(var(--primary))' : 'hsl(var(--accent))',
+      muted: !turnOk,
+    },
+  ];
+  return (
+    <div className="hidden items-center gap-1.5 sm:flex" data-testid="connection-chips">
+      {chips.map((chip) => (
+        <span
+          key={chip.key}
+          className={`connection-chip ${chip.muted ? 'text-[hsl(var(--muted-foreground))]' : 'text-[hsl(var(--foreground))]'}`}
+          data-testid={`chip-connection-${chip.key}`}
+        >
+          <span className="connection-dot" style={{ background: chip.dot }} />
+          {chip.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function WorkspaceNav({
+  unreadTotal,
+  onDiagnostics,
+  onSettings,
+}: {
+  unreadTotal: number;
+  onDiagnostics: () => void;
+  onSettings: () => void;
+}) {
   const [location, setLocation] = useLocation();
   const theme = useAppTheme();
   const isPatriot = theme === 'patriot';
+  const unreadLabel = unreadTotal > 99 ? '99+' : String(unreadTotal);
   return (
     <aside className="workspace-nav" aria-label="Навигация">
-      <Link href="/server" className={isPatriot ? 'patriot-crest' : 'server-mark'} aria-label="Drift · создатель ASMAXI" title="Drift · создатель ASMAXI" data-testid="link-server-home">
+      <Link href="/server" className={`relative ${isPatriot ? 'patriot-crest' : 'server-mark'}`} aria-label="Drift · создатель ASMAXI" title="Drift · создатель ASMAXI" data-testid="link-server-home">
+        {unreadTotal > 0 && (
+          <span className="nav-unread-badge" data-testid="badge-nav-unread">{unreadLabel}</span>
+        )}
         {isPatriot ? (
           <svg viewBox="0 0 64 64" width="26" height="26" aria-hidden="true">
             <ellipse cx="32" cy="34" rx="18" ry="20" fill="#1a2a6c" opacity=".9" />
@@ -704,7 +808,7 @@ function ChannelPane({
               <button className={`ghost-btn !h-8 !px-2 text-[10px] ${echoCancellation ? '' : 'opacity-50'}`} onClick={onToggleEcho} data-testid="button-toggle-echo">Эхо {echoCancellation ? 'вкл' : 'выкл'}</button>
             )}
             {onToggleEnhancedNoise && (
-              <button className={`ghost-btn !h-8 !px-2 text-[10px] ${enhancedNoise ? '' : 'opacity-50'}`} onClick={onToggleEnhancedNoise} data-testid="button-toggle-enhanced-noise">Шумодав+ {enhancedNoise ? 'вкл' : 'выкл'}</button>
+              <button className={`ghost-btn !h-8 !px-2 text-[10px] ${enhancedNoise ? '' : 'opacity-50'}`} onClick={onToggleEnhancedNoise} title="Мягкий доп. фильтр (может чуть «съедать» тихую речь)" data-testid="button-toggle-enhanced-noise">Шумодав+ {enhancedNoise ? 'вкл' : 'выкл'}</button>
             )}
           </div>
           {onMicVolume && micVolume !== undefined && (
@@ -782,8 +886,24 @@ function messagePreview(content: string): string {
   return content.slice(0, 120);
 }
 
+function renderMessageBody(content: string, memberNames: string[], deleted?: boolean) {
+  const spans = splitMentionSpans(content, memberNames);
+  return (
+    <p className={`mt-1 text-[14px] leading-6 ${deleted ? 'italic text-[hsl(var(--muted-foreground))]' : 'text-[hsl(var(--foreground)/.82)]'}`}>
+      {spans.map((part, index) =>
+        part.mention ? (
+          <span key={index} className="mention-chip">{part.text}</span>
+        ) : (
+          <span key={index}>{part.text}</span>
+        ),
+      )}
+    </p>
+  );
+}
+
 function MessageList({
   messages,
+  memberNames,
   onReply,
   onReact,
   onEdit,
@@ -791,6 +911,7 @@ function MessageList({
   onPin,
 }: {
   messages: Message[];
+  memberNames: string[];
   onReply: (id: string) => void;
   onReact: (targetId: string, emoji: string) => void;
   onEdit: (targetId: string, body: string) => void;
@@ -865,7 +986,7 @@ function MessageList({
                   <Download size={14} /> {message.file.name}
                 </a>
               ) : (
-                <p className={`mt-1 text-[14px] leading-6 ${message.deleted ? 'italic text-[hsl(var(--muted-foreground))]' : 'text-[hsl(var(--foreground)/.82)]'}`}>{message.content}</p>
+                renderMessageBody(message.content, memberNames, message.deleted)
               )}
               {message.reactions && Object.keys(message.reactions).length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1" data-testid={`message-reactions-${message.id}`}>
@@ -913,7 +1034,9 @@ function ScreenShareStage({
   videoMuted: boolean;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
-  const [viewMode, setViewMode] = useState<'window' | 'fullscreen'>('window');
+  const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const [viewMode, setViewMode] = useState<'docked' | 'pip' | 'fullscreen'>('docked');
+  const [pipPos, setPipPos] = useState({ x: 24, y: 96 });
 
   const enterFullscreen = async () => {
     setViewMode('fullscreen');
@@ -929,7 +1052,7 @@ function ScreenShareStage({
   };
 
   const exitFullscreen = async () => {
-    setViewMode('window');
+    setViewMode('docked');
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
     } catch {
@@ -937,15 +1060,107 @@ function ScreenShareStage({
     }
   };
 
+  const setDocked = () => {
+    void exitFullscreen();
+    setViewMode('docked');
+  };
+
+  const setPip = () => {
+    void (async () => {
+      try {
+        if (document.fullscreenElement) await document.exitFullscreen();
+      } catch {
+        /* ignore */
+      }
+      setViewMode('pip');
+    })();
+  };
+
   useEffect(() => {
     const onFsChange = () => {
-      if (!document.fullscreenElement && viewMode === 'fullscreen') setViewMode('window');
+      if (!document.fullscreenElement && viewMode === 'fullscreen') setViewMode('docked');
     };
     document.addEventListener('fullscreenchange', onFsChange);
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, [viewMode]);
 
+  useEffect(() => {
+    if (viewMode !== 'pip') return;
+    const onMove = (event: MouseEvent) => {
+      if (!dragRef.current) return;
+      const dx = event.clientX - dragRef.current.startX;
+      const dy = event.clientY - dragRef.current.startY;
+      setPipPos({
+        x: Math.max(8, dragRef.current.originX + dx),
+        y: Math.max(8, dragRef.current.originY + dy),
+      });
+    };
+    const onUp = () => {
+      dragRef.current = null;
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [viewMode]);
+
+  const onPipHeaderMouseDown = (event: ReactMouseEvent) => {
+    if (viewMode !== 'pip') return;
+    event.preventDefault();
+    dragRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: pipPos.x,
+      originY: pipPos.y,
+    };
+  };
+
   const isFullscreen = viewMode === 'fullscreen';
+  const isPip = viewMode === 'pip';
+  const isDocked = viewMode === 'docked';
+
+  const modeButtons = (
+    <div className="flex flex-wrap items-center gap-1">
+      <button type="button" className={`ghost-btn !h-8 !px-2 text-[10px] ${isDocked ? 'border-[hsl(var(--primary))]' : ''}`} onClick={setDocked} data-testid="button-screen-share-window-mode">В окне</button>
+      <button type="button" className={`ghost-btn !h-8 !px-2 text-[10px] ${isPip ? 'border-[hsl(var(--primary))]' : ''}`} onClick={setPip} data-testid="button-screen-share-pip-mode">Мини</button>
+      <button type="button" className={`ghost-btn !h-8 !px-2 text-[10px] ${isFullscreen ? 'border-[hsl(var(--primary))]' : ''}`} onClick={() => void enterFullscreen()} data-testid="button-screen-share-fullscreen-mode">На весь экран</button>
+      {sharingScreen && (
+        <button type="button" className="ghost-btn !h-8 !px-2 text-[10px]" onClick={onStopShare} data-testid="button-screen-share-stop-inline">Остановить</button>
+      )}
+      {isFullscreen && (
+        <button type="button" className="icon-btn" onClick={() => void setDocked()} aria-label="Закрыть полноэкранный режим" data-testid="button-screen-share-close-fullscreen"><X size={16} /></button>
+      )}
+    </div>
+  );
+
+  const videoEl = (
+    <video
+      ref={videoRef}
+      className={`screen-share-video w-full bg-black object-contain ${isFullscreen ? 'min-h-0 flex-1' : isPip ? 'max-h-[180px]' : 'max-h-[42vh]'}`}
+      autoPlay
+      playsInline
+      muted={videoMuted}
+      data-testid="screen-share-video"
+    />
+  );
+
+  if (isPip) {
+    return (
+      <div
+        className="screen-share-pip"
+        style={{ left: pipPos.x, top: pipPos.y }}
+        data-testid="screen-share-stage"
+      >
+        <div className="screen-share-pip-header" onMouseDown={onPipHeaderMouseDown}>
+          <span className="flex min-w-0 items-center gap-2 truncate text-xs font-semibold"><Monitor size={14} className="shrink-0 text-[hsl(var(--primary))]" /> {label}</span>
+          {modeButtons}
+        </div>
+        {videoEl}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -959,31 +1174,16 @@ function ScreenShareStage({
     >
       <div className="flex items-center justify-between gap-2 border-b border-[hsl(var(--border))] px-3 py-2">
         <span className="flex items-center gap-2 text-xs font-semibold"><Monitor size={14} className="text-[hsl(var(--primary))]" /> {label}</span>
-        <div className="flex items-center gap-1">
-          <button type="button" className={`ghost-btn !h-8 !px-2 text-[10px] ${!isFullscreen ? 'border-[hsl(var(--primary))]' : ''}`} onClick={() => void exitFullscreen()} data-testid="button-screen-share-window-mode">В окне</button>
-          <button type="button" className={`ghost-btn !h-8 !px-2 text-[10px] ${isFullscreen ? 'border-[hsl(var(--primary))]' : ''}`} onClick={() => void enterFullscreen()} data-testid="button-screen-share-fullscreen-mode">На весь экран</button>
-          {sharingScreen && (
-            <button type="button" className="ghost-btn !h-8 !px-2 text-[10px]" onClick={onStopShare} data-testid="button-screen-share-stop-inline">Остановить</button>
-          )}
-          {isFullscreen && (
-            <button type="button" className="icon-btn" onClick={() => void exitFullscreen()} aria-label="Закрыть полноэкранный режим" data-testid="button-screen-share-close-fullscreen"><X size={16} /></button>
-          )}
-        </div>
+        {modeButtons}
       </div>
-      <video
-        ref={videoRef}
-        className={`screen-share-video w-full bg-black object-contain ${isFullscreen ? 'min-h-0 flex-1' : 'max-h-[42vh]'}`}
-        autoPlay
-        playsInline
-        muted={videoMuted}
-        data-testid="screen-share-video"
-      />
+      {videoEl}
     </div>
   );
 }
 
 function ChatComposer({
   draft,
+  memberNames,
   onDraftChange,
   onKeyDown,
   onSend,
@@ -998,6 +1198,7 @@ function ChatComposer({
   attachTestId,
 }: {
   draft: string;
+  memberNames: string[];
   onDraftChange: (value: string) => void;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onSend: () => void;
@@ -1011,8 +1212,53 @@ function ChatComposer({
   fileInputTestId: string;
   attachTestId: string;
 }) {
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  const mentionState = mentionSuggestions(draft, memberNames);
+  const showMentionMenu = Boolean(mentionState && mentionState.matches.length > 0 && !mentionDismissed);
+
+  useEffect(() => {
+    setMentionDismissed(false);
+  }, [draft]);
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showMentionMenu && mentionState?.matches[0]) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMentionDismissed(true);
+        return;
+      }
+      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+        event.preventDefault();
+        onDraftChange(applyMentionSuggestion(draft, mentionState.matches[0]));
+        setMentionDismissed(true);
+        return;
+      }
+    }
+    onKeyDown(event);
+  };
+
   return (
-    <div className="composer">
+    <div className="composer relative">
+      {showMentionMenu && mentionState && (
+        <div className="mention-menu" role="listbox" aria-label="Упоминания" data-testid="mention-menu">
+          {mentionState.matches.map((name) => (
+            <button
+              key={name}
+              type="button"
+              role="option"
+              className="flex w-full px-3 py-2 text-left text-sm font-semibold hover:bg-[hsl(var(--muted)/.55)]"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                onDraftChange(applyMentionSuggestion(draft, name));
+                setMentionDismissed(true);
+              }}
+              data-testid={`mention-option-${name}`}
+            >
+              @{name}
+            </button>
+          ))}
+        </div>
+      )}
       {outboxCount > 0 && (
         <div className="mb-2 rounded-lg border border-[hsl(var(--accent)/.35)] bg-[hsl(var(--accent)/.08)] px-3 py-2 text-xs" data-testid="banner-outbox">
           В очереди: {outboxCount} {outboxCount === 1 ? 'сообщение' : outboxCount < 5 ? 'сообщения' : 'сообщений'} — уйдут при связи
@@ -1027,7 +1273,7 @@ function ChatComposer({
       <input ref={fileInputRef} type="file" accept="image/*,application/pdf,application/zip,.pdf,.zip" className="hidden" onChange={(e) => { void onPickFile(e.target.files?.[0]); }} data-testid={fileInputTestId} />
       <div className="composer-inner">
         <button type="button" className="icon-btn shrink-0" onClick={() => fileInputRef.current?.click()} aria-label="Прикрепить файл" data-testid={attachTestId}><ImageIcon size={18} /></button>
-        <textarea value={draft} onChange={(event) => onDraftChange(event.target.value)} onKeyDown={onKeyDown} placeholder={placeholder} aria-label="Новое сообщение" data-testid="input-message" rows={1} />
+        <textarea value={draft} onChange={(event) => onDraftChange(event.target.value)} onKeyDown={handleKeyDown} placeholder={placeholder} aria-label="Новое сообщение" data-testid="input-message" rows={1} />
         <button className="primary-btn !h-9 !w-9 !p-0" onClick={onSend} aria-label="Отправить сообщение" data-testid="button-send-message"><Send size={15} /></button>
       </div>
       <div className="mt-2 flex items-center gap-1.5 px-1 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]"><LockKeyhole size={10} /> {footerHint} <span className="ml-auto">enter — отправить</span></div>
@@ -1053,7 +1299,7 @@ function Workspace() {
   const [micVolume, setMicVolume] = useState(1);
   const [noiseSuppression, setNoiseSuppression] = useState(true);
   const [echoCancellation, setEchoCancellation] = useState(true);
-  const [enhancedNoise, setEnhancedNoise] = useState(true);
+  const [enhancedNoise, setEnhancedNoise] = useState(false);
   const [replyToId, setReplyToId] = useState<string | null>(null);
   const [peerVolumes, setPeerVolumes] = useState<Record<string, number>>({});
   const [speakingPeers, setSpeakingPeers] = useState<Record<string, boolean>>({});
@@ -1074,6 +1320,7 @@ function Workspace() {
   const [voicePeerStatus, setVoicePeerStatus] = useState<VoicePeerStatus | null>(null);
   const [channelPaneWidth, setChannelPaneWidth] = useState(loadChannelPaneWidth);
   const [memberPaneWidth, setMemberPaneWidth] = useState(loadMemberPaneWidth);
+  const [memberPaneCollapsed, setMemberPaneCollapsed] = useState(loadMemberPaneCollapsed);
   const [peerVolumeMenu, setPeerVolumeMenu] = useState<PeerVolumeMenuState | null>(null);
   const layoutDragRef = useRef<'channel' | 'member' | null>(null);
   const channelWidthRef = useRef(channelPaneWidth);
@@ -1083,6 +1330,7 @@ function Workspace() {
   const sessionRef = useRef<RoomSession | null>(null);
   const voiceMeshRef = useRef<VoiceMesh | null>(null);
   const voiceChannelRef = useRef<string | null>(null);
+  const selectedIdRef = useRef(selectedId);
   const knownMemberIdsRef = useRef<Set<string> | null>(null);
   const knownMessageIdsRef = useRef<Set<string> | null>(null);
   const deafenedRef = useRef(false);
@@ -1091,7 +1339,11 @@ function Workspace() {
   const selectedChannel = channels.find((channel) => channel.id === selectedId) ?? channels[0];
   const channelMessages = messages.filter((message) => message.channelId === selectedId || (!message.channelId && selectedId === 'general'));
   const outboxCount = channelMessages.filter((message) => message.delivery === 'queued' || message.delivery === 'sent').length;
-  const memberNames = useMemo(() => members.map((member) => member.name), [members]);
+  const memberNames = useMemo(
+    () => [...new Set([displayName, ...members.map((member) => member.name)].filter(Boolean))],
+    [displayName, members],
+  );
+  const unreadTotal = useMemo(() => channels.reduce((sum, channel) => sum + channel.unreadCount, 0), [channels]);
   const replyToPreview = replyToId
     ? (() => {
         const raw = messages.find((message) => message.id === replyToId);
@@ -1099,6 +1351,10 @@ function Workspace() {
       })()
     : null;
   const selectedVoice = voiceRooms.find((room) => room.id === selectedId);
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
 
   useEffect(() => { writeStore(SERVER_KEY, server); }, [server]);
   useEffect(() => { writeStore(CHANNELS_KEY, channels); }, [channels]);
@@ -1179,7 +1435,7 @@ function Workspace() {
             inviteToken: current.inviteToken ?? next.server.inviteToken,
             roomKey: current.roomKey ?? next.server.roomKey,
           }));
-          setChannels(next.channels);
+          setChannels((prev) => mergeChannelUnread(prev, next.channels as Channel[]));
           setVoiceRooms(next.voiceRooms);
           const nextMembers = view.state.members;
           if (knownMemberIdsRef.current === null) {
@@ -1241,6 +1497,27 @@ function Workspace() {
         const namesForMentions = [
           ...new Set([displayName, ...(view.state?.members ?? []).map((member) => member.name)]),
         ];
+        if (knownMessageIdsRef.current !== null) {
+          const unreadBumps = new Map<string, number>();
+          for (const message of mappedMessages) {
+            if (knownMessageIdsRef.current.has(message.id) || message.isCurrentUser) continue;
+            const parsed = parseWireText(message.content);
+            if (parsed.kind === 'react' || parsed.kind === 'edit' || parsed.kind === 'delete' || parsed.kind === 'pin' || parsed.kind === 'unknown') {
+              continue;
+            }
+            const channelId = message.channelId ?? 'general';
+            if (channelId === selectedIdRef.current) continue;
+            unreadBumps.set(channelId, (unreadBumps.get(channelId) ?? 0) + 1);
+          }
+          if (unreadBumps.size > 0) {
+            setChannels((current) =>
+              current.map((channel) => {
+                const add = unreadBumps.get(channel.id);
+                return add ? { ...channel, unreadCount: channel.unreadCount + add } : channel;
+              }),
+            );
+          }
+        }
         if (knownMessageIdsRef.current === null) {
           knownMessageIdsRef.current = new Set(mappedMessages.map((message) => message.id));
         } else if (!deafenedRef.current) {
@@ -1253,8 +1530,15 @@ function Workspace() {
             const preview = messagePreview(message.content);
             void notifyDesktop('message', message.author, preview);
             if (parsed.kind === 'text') {
-              const mentioned = extractMentions(parsed.body, namesForMentions);
-              if (mentioned.some((name) => name.toLowerCase() === displayName.toLowerCase())) {
+              const selfName = displayName.trim().toLowerCase();
+              const mentionedNames = [
+                ...(parsed.mentions ?? []),
+                ...extractMentions(parsed.body, namesForMentions),
+              ];
+              const isMentioned =
+                Boolean(selfName) &&
+                mentionedNames.some((name) => name.trim().toLowerCase() === selfName);
+              if (isMentioned) {
                 playUiSound('mention');
                 void notifyDesktop('mention', message.author, preview);
               } else {
@@ -1387,6 +1671,7 @@ function Workspace() {
   };
   const messageListProps = {
     messages: channelMessages,
+    memberNames,
     onReply: onMessageReply,
     onReact: onMessageReact,
     onEdit: onMessageEdit,
@@ -1576,7 +1861,7 @@ function Workspace() {
   } as CSSProperties;
 
   return <div className="noise workspace-shell" style={shellStyle}>
-    <WorkspaceNav onDiagnostics={() => setOverlay('diagnostics')} onSettings={() => setOverlay('settings')} />
+    <WorkspaceNav unreadTotal={unreadTotal} onDiagnostics={() => setOverlay('diagnostics')} onSettings={() => setOverlay('settings')} />
     <ChannelPane
       server={server}
       channels={channels}
@@ -1613,7 +1898,26 @@ function Workspace() {
     <main className="content-pane">
       <header className="topbar">
         <div className="flex min-w-0 items-center gap-3"><button className="icon-btn mobile-channel-chip" aria-label="Открыть список каналов" data-testid="button-open-channels"><Menu size={18} /></button><div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]">{selectedChannel?.type === 'voice' ? <Volume2 size={16} /> : <Hash size={16} />}</div><div className="min-w-0"><h1 className="truncate font-display text-[16px] font-bold tracking-[-.03em]">{selectedChannel?.name ?? 'общий'}</h1><p className="topbar-subtitle truncate text-[10px] text-[hsl(var(--muted-foreground))]">{selectedChannel?.type === 'voice' ? 'Голосовая комната' : connectionHint}</p></div></div>
-        <div className="flex items-center gap-2"><button className="ghost-btn hidden sm:inline-flex" onClick={() => setShowInviteDialog(true)} data-testid="button-top-invite"><UserPlus size={15} /> <span>Пригласить</span></button><button className="icon-btn" onClick={() => setOverlay('diagnostics')} aria-label="Открыть диагностику" data-testid="button-open-diagnostics"><Activity size={17} /></button></div>
+        <div className="flex items-center gap-2">
+          <ConnectionStatusChips connectionStatus={connectionStatus} isCoordinator={isCoordinator} invite={server.invite} />
+          <button
+            type="button"
+            className="icon-btn hidden sm:inline-flex"
+            onClick={() => {
+              setMemberPaneCollapsed((value) => {
+                const next = !value;
+                saveMemberPaneCollapsed(next);
+                return next;
+              });
+            }}
+            aria-label={memberPaneCollapsed ? 'Показать участников' : 'Свернуть участников'}
+            data-testid="button-toggle-member-pane"
+          >
+            {memberPaneCollapsed ? <PanelRightOpen size={17} /> : <PanelRightClose size={17} />}
+          </button>
+          <button className="ghost-btn hidden sm:inline-flex" onClick={() => setShowInviteDialog(true)} data-testid="button-top-invite"><UserPlus size={15} /> <span>Пригласить</span></button>
+          <button className="icon-btn" onClick={() => setOverlay('diagnostics')} aria-label="Открыть диагностику" data-testid="button-open-diagnostics"><Activity size={17} /></button>
+        </div>
       </header>
       {needsPublicUrlBanner && (
         <div className="mx-4 mt-3 rounded-xl border border-[hsl(var(--accent)/.45)] bg-[hsl(var(--accent)/.12)] px-4 py-3 text-sm" data-testid="banner-public-url">
@@ -1704,6 +2008,7 @@ function Workspace() {
               <div className="message-scroll scrollbar-thin min-h-0 flex-1"><MessageList {...messageListProps} /></div>
               <ChatComposer
                 draft={draft}
+                memberNames={memberNames}
                 onDraftChange={setDraft}
                 onKeyDown={onComposerKeyDown}
                 onSend={sendMessage}
@@ -1725,6 +2030,7 @@ function Workspace() {
           <div className="message-scroll scrollbar-thin"><MessageList {...messageListProps} /></div>
           <ChatComposer
             draft={draft}
+            memberNames={memberNames}
             onDraftChange={setDraft}
             onKeyDown={onComposerKeyDown}
             onSend={sendMessage}
@@ -1741,15 +2047,17 @@ function Workspace() {
         </div>
       )}
     </main>
-    <aside className="member-pane scrollbar-thin relative">
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Изменить ширину панели участников"
-        className="panel-resizer panel-resizer-left"
-        onMouseDown={(event) => { event.preventDefault(); layoutDragRef.current = 'member'; }}
-        data-testid="resizer-member-pane"
-      />
+    <aside className={`member-pane scrollbar-thin relative ${memberPaneCollapsed ? 'collapsed' : ''}`}>
+      {!memberPaneCollapsed && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Изменить ширину панели участников"
+          className="panel-resizer panel-resizer-left"
+          onMouseDown={(event) => { event.preventDefault(); layoutDragRef.current = 'member'; }}
+          data-testid="resizer-member-pane"
+        />
+      )}
       <div className="mb-7"><div className="flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Комната</span><span className="h-2 w-2 rounded-full bg-[hsl(var(--primary))]" /></div><div className="mt-4 flex items-center gap-2"><div className="grid h-8 w-8 place-items-center rounded-lg text-xs font-extrabold" style={avatarColors(server.name)}>{avatarInitials(server.name)}</div><div><div className="text-xs font-bold">{server.name}</div><div className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">координатор: {server.hostName}</div></div></div></div>
       <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.length === 0 ? <p className="text-xs text-[hsl(var(--muted-foreground))]">{connectionStatus === 'connected' ? 'Пока только вы' : 'Ждём подключения…'}</p> : visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={avatarColors(member.name)}>{avatarInitials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="min-w-0 truncate text-xs font-semibold"><PatriotName name={member.name} seed={member.id} /></span>{member.name === server.hostName && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">координатор</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
     </aside>

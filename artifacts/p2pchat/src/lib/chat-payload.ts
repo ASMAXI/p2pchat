@@ -131,12 +131,49 @@ export function parseWireText(text: string | null | undefined): ParsedWireText {
 
 export function extractMentions(text: string, memberNames: string[]): string[] {
   const found = new Set<string>();
-  for (const name of memberNames) {
-    if (!name.trim()) continue;
-    const re = new RegExp(`(^|\\s)@${escapeRegExp(name)}(?=$|\\s|[.,!?])`, "i");
+  // Prefer longer names first so "@Иван Петров" wins over "@Иван"
+  const sorted = [...memberNames].filter((n) => n.trim()).sort((a, b) => b.length - a.length);
+  for (const name of sorted) {
+    const re = new RegExp(`(^|\\s)@${escapeRegExp(name)}(?=$|\\s|[.,!?;:])`, "i");
     if (re.test(text)) found.add(name);
   }
   return [...found];
+}
+
+/** Names that match the current `@query` token for autocomplete. */
+export function mentionSuggestions(draft: string, memberNames: string[]): { query: string; matches: string[] } | null {
+  const match = draft.match(/(^|[\s])@([^\s@]*)$/);
+  if (!match) return null;
+  const query = match[2] ?? "";
+  const q = query.toLowerCase();
+  const matches = memberNames
+    .filter((name) => name.trim() && name.toLowerCase().includes(q))
+    .filter((name, index, arr) => arr.findIndex((item) => item.toLowerCase() === name.toLowerCase()) === index)
+    .slice(0, 6);
+  return { query, matches };
+}
+
+/** Replace trailing `@query` with `@Name `. */
+export function applyMentionSuggestion(draft: string, name: string): string {
+  return draft.replace(/@([^\s@]*)$/, `@${name} `);
+}
+
+/** Split text into plain / mention spans for highlighting. */
+export function splitMentionSpans(text: string, memberNames: string[]): Array<{ text: string; mention: boolean }> {
+  if (!text) return [];
+  const sorted = [...memberNames].filter((n) => n.trim()).sort((a, b) => b.length - a.length);
+  if (!sorted.length) return [{ text, mention: false }];
+  const pattern = new RegExp(`(@(?:${sorted.map(escapeRegExp).join("|")}))(?=$|\\s|[.,!?;:])`, "gi");
+  const parts: Array<{ text: string; mention: boolean }> = [];
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > last) parts.push({ text: text.slice(last, index), mention: false });
+    parts.push({ text: match[0]!, mention: true });
+    last = index + match[0]!.length;
+  }
+  if (last < text.length) parts.push({ text: text.slice(last), mention: false });
+  return parts.length ? parts : [{ text, mention: false }];
 }
 
 function escapeRegExp(value: string): string {

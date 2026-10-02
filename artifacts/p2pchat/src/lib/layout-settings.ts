@@ -1,5 +1,6 @@
 const CHANNEL_W = "p2pchat-layout-channel-w";
 const MEMBER_W = "p2pchat-layout-member-w";
+const MEMBER_COLLAPSED = "p2pchat-layout-member-collapsed";
 
 export function loadChannelPaneWidth(): number {
   const n = Number(window.localStorage.getItem(CHANNEL_W));
@@ -17,4 +18,12 @@ export function saveChannelPaneWidth(px: number): void {
 
 export function saveMemberPaneWidth(px: number): void {
   window.localStorage.setItem(MEMBER_W, String(Math.round(px)));
+}
+
+export function loadMemberPaneCollapsed(): boolean {
+  return window.localStorage.getItem(MEMBER_COLLAPSED) === "1";
+}
+
+export function saveMemberPaneCollapsed(collapsed: boolean): void {
+  window.localStorage.setItem(MEMBER_COLLAPSED, collapsed ? "1" : "0");
 }
