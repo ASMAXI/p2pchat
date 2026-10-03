@@ -86,6 +86,6 @@
     "zod": "catalog:"
   },
   "dependencies": {
-    "@tauri-apps/plugin-deep-link": "2.4.5"
+    "@tauri-apps/plugin-deep-link": "2.6.1"
   }
 }

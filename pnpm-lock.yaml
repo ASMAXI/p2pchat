@@ -423,8 +423,8 @@ importers:
   artifacts/p2pchat:
     dependencies:
       '@tauri-apps/plugin-deep-link':
-        specifier: 2.4.5
-        version: 2.4.5
+        specifier: 2.6.1
+        version: 2.6.1
     devDependencies:
       '@hookform/resolvers':
         specifier: ^3.10.0
@@ -1777,8 +1777,8 @@ packages:
     engines: {node: '>= 10'}
     hasBin: true
 
-  '@tauri-apps/plugin-deep-link@2.4.5':
-    resolution: {integrity: sha512-Zf2RTj1D9IQQ45/jqW8XTKvql24HqlPjcpv0mV/O2jHQkNe11HOTZBVj6IK37qs+MWV7xZzcmazx/QVZnhAwaQ==}
+  '@tauri-apps/plugin-deep-link@2.6.1':
+    resolution: {integrity: sha512-yomIOIoiiDwXW3Bgy/V5c4frWo9sfWM9WZQew2s7vr7hXtDdbLDCLzvytIMCjMxbnln9O0oJsTI3XdDd2T9XlA==}
 
   '@tauri-apps/plugin-notification@2.5.1':
     resolution: {integrity: sha512-i0nD48YsLov18siENevC3X7SmJpQE1cImq+JUsjrUPdu73J8cTIOyNIS8H0qxftFAc1k2w6s1E74DoFE02Jirw==}
@@ -4476,7 +4476,7 @@ snapshots:
       '@tauri-apps/cli-win32-ia32-msvc': 2.12.1
       '@tauri-apps/cli-win32-x64-msvc': 2.12.1
 
-  '@tauri-apps/plugin-deep-link@2.4.5':
+  '@tauri-apps/plugin-deep-link@2.6.1':
     dependencies:
       '@tauri-apps/api': 2.12.1
 

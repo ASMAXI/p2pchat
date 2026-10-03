@@ -30,8 +30,8 @@ sha2 = "0.10"
 base64 = "0.22"
 hex = "0.4"
 ureq = { version = "2", default-features = false, features = ["tls"] }
-tauri-plugin-deep-link = "2.4.5"
-tauri-plugin-single-instance = { version = "2.3.6", features = ["deep-link"] }
+tauri-plugin-deep-link = "=2.6.1"
+tauri-plugin-single-instance = { version = "=2.5.2", features = ["deep-link"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
