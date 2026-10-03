@@ -35,7 +35,8 @@
     "icon": ["icons/icon.png", "icons/icon.ico"],
     "windows": {
       "nsis": {
-        "installMode": "perMachine"
+        "installMode": "perMachine",
+        "installerHooks": "./windows/hooks.nsh"
       }
     }
   },

@@ -33,6 +33,11 @@
 - Настройки → **Проверить обновления** → установка в один клик (с 0.3.0; текущий релиз **0.9.9**)
 - Голосовой канал → **Поделиться экраном** (тот же WebRTC mesh, video-трек + renegotiation)
 
+## Удаление (Windows)
+
+NSIS-деинсталлятор при полном удалении (не при обновлении) чистит только данные Drift:
+`%AppData%\com.p2pchat.desktop`, `%LocalAppData%\com.p2pchat.desktop`, кэш `%TEMP%\drift-update`, автозапуск и схемы `drift://` / `p2pchat://`. Чужие папки не трогает.
+
 ## Запуск для друзей (desktop)
 
 1. Установить сборку Windows (Actions → installer).
