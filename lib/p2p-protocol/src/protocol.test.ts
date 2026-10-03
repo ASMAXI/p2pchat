@@ -11,7 +11,7 @@ describe("invite", () => {
       origins: ["http://192.168.1.5:47821/", "http://10.0.0.2:47821/api"],
     };
     const httpsInvite = buildInvite(fields);
-    assert.match(httpsInvite, /^https:\/\//);
+    assert.match(httpsInvite, /^https:\/\/asmaxi\.github\.io\/p2pchat\/join\//);
     assert.match(httpsInvite, /[?&]d=/);
     assert.deepEqual(parseInvite(httpsInvite), {
       roomId: "r1",

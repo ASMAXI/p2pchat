@@ -178,11 +178,11 @@ export type Invite = {
 export const INVITE_SCHEME = "drift";
 
 /**
- * HTTPS landing that Steam/Discord make clickable; page redirects into drift://.
- * Served from docs/join via jsDelivr (works after push to main, no Pages setup).
+ * HTTPS landing that Steam/Discord make clickable; page opens drift://.
+ * Must be text/html (jsDelivr serves this file as text/plain — broken).
+ * Deployed from /docs via GitHub Pages workflow.
  */
-export const INVITE_LANDING_BASE =
-  "https://cdn.jsdelivr.net/gh/ASMAXI/p2pchat@main/docs/join/index.html";
+export const INVITE_LANDING_BASE = "https://asmaxi.github.io/p2pchat/join/";
 
 const INVITE_FIELD_SEP = "\u001f";
 

@@ -26,7 +26,7 @@
       }
       main {
         width: min(440px, 100%);
-        background: color-mix(in srgb, var(--card) 92%, black);
+        background: #1c2329;
         border: 1px solid #2e3942;
         border-radius: 20px;
         padding: 28px 24px;
@@ -52,8 +52,9 @@
         cursor: pointer;
         background: var(--accent);
         color: #12161a;
+        font-size: 1rem;
       }
-      button.secondary {
+      button.secondary, a.secondary {
         background: transparent;
         color: var(--fg);
         border: 1px solid #3a4650;
@@ -70,18 +71,20 @@
       }
       .ok { color: var(--accent); }
       .err { color: #f28262; }
+      .steps { margin: 12px 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.85rem; line-height: 1.45; }
     </style>
   </head>
   <body>
     <main>
       <h1>Drift</h1>
-      <p id="status">Открываем приложение…</p>
+      <p id="status">Нажмите кнопку, чтобы открыть приложение с приглашением.</p>
       <a class="btn" id="open" href="#">Открыть Drift</a>
       <button class="btn secondary" id="copy" type="button">Скопировать drift:// ссылку</button>
-      <p style="margin-top:16px;font-size:0.85rem">
-        Если ничего не произошло — установите Drift и нажмите кнопку ещё раз.
-        В Steam и чатах работает именно эта https-ссылка.
-      </p>
+      <ol class="steps">
+        <li>Должен быть установлен Drift (Windows).</li>
+        <li>Если браузер спросит — разрешите открыть приложение.</li>
+        <li>Нет Drift — установите и нажмите кнопку снова.</li>
+      </ol>
       <code id="deep"></code>
     </main>
     <script>
@@ -108,29 +111,49 @@
         deepEl.textContent = deep;
         openBtn.href = deep;
 
-        function launch() {
+        function launch(fromUser) {
           status.className = "ok";
-          status.textContent = "Запускаем Drift…";
-          // location.replace is the most reliable custom-scheme kick on desktop.
-          location.href = deep;
+          status.textContent = fromUser
+            ? "Запускаем Drift… Разрешите открытие приложения, если браузер спросит."
+            : "Пробуем открыть Drift… Если не вышло — нажмите зелёную кнопку.";
+          try {
+            var iframe = document.createElement("iframe");
+            iframe.style.display = "none";
+            iframe.src = deep;
+            document.body.appendChild(iframe);
+            setTimeout(function () {
+              try { document.body.removeChild(iframe); } catch (e) {}
+            }, 1500);
+          } catch (e) {}
+          // Keep page alive; full navigation away often fails silently when scheme is blocked.
+          try {
+            window.location.href = deep;
+          } catch (e2) {}
         }
+
+        openBtn.addEventListener("click", function (event) {
+          // Keep default <a href="drift://…"> navigation; also kick iframe fallback.
+          launch(true);
+        });
 
         copyBtn.addEventListener("click", function () {
           if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(deep).then(
               function () {
                 status.className = "ok";
-                status.textContent = "Ссылка drift:// скопирована";
+                status.textContent = "Ссылка drift:// скопирована — вставьте в Drift вручную";
               },
               function () {
                 status.textContent = "Не удалось скопировать — выделите код ниже";
               },
             );
+          } else {
+            status.textContent = "Выделите код ниже и скопируйте вручную";
           }
         });
 
-        // Auto-open shortly after load (Steam → browser → Drift).
-        setTimeout(launch, 120);
+        // Soft auto-try (many browsers block this without a click — button is the real path).
+        setTimeout(function () { launch(false); }, 250);
       })();
     </script>
   </body>

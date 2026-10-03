@@ -294,7 +294,7 @@ export type CreatedRoom = {
 
 export async function createLocalRoom(input: {
   name: string;
-  displayName: string;
+    displayName: string;
   bootstrapOrigin?: string;
 }): Promise<CreatedRoom> {
   const identity = loadOrCreateIdentity(input.displayName.trim() || readProfileDisplayName() || "Участник");
