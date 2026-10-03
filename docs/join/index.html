@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Drift — открыть приглашение</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #12161a;
+        --fg: #f5f0df;
+        --muted: #9aa3a8;
+        --accent: #d8fa67;
+        --card: #1c2329;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: radial-gradient(circle at 20% 10%, #243038, var(--bg) 55%);
+        color: var(--fg);
+      }
+      main {
+        width: min(440px, 100%);
+        background: color-mix(in srgb, var(--card) 92%, black);
+        border: 1px solid #2e3942;
+        border-radius: 20px;
+        padding: 28px 24px;
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 1.55rem;
+        letter-spacing: -0.04em;
+      }
+      p { margin: 0 0 14px; color: var(--muted); line-height: 1.5; font-size: 0.95rem; }
+      a.btn, button.btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        margin-top: 8px;
+        border: 0;
+        border-radius: 12px;
+        padding: 12px 16px;
+        font-weight: 700;
+        text-decoration: none;
+        cursor: pointer;
+        background: var(--accent);
+        color: #12161a;
+      }
+      button.secondary {
+        background: transparent;
+        color: var(--fg);
+        border: 1px solid #3a4650;
+      }
+      code {
+        display: block;
+        margin-top: 14px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: #0d1114;
+        color: #c9d1d9;
+        font-size: 0.72rem;
+        word-break: break-all;
+      }
+      .ok { color: var(--accent); }
+      .err { color: #f28262; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Drift</h1>
+      <p id="status">Открываем приложение…</p>
+      <a class="btn" id="open" href="#">Открыть Drift</a>
+      <button class="btn secondary" id="copy" type="button">Скопировать drift:// ссылку</button>
+      <p style="margin-top:16px;font-size:0.85rem">
+        Если ничего не произошло — установите Drift и нажмите кнопку ещё раз.
+        В Steam и чатах работает именно эта https-ссылка.
+      </p>
+      <code id="deep"></code>
+    </main>
+    <script>
+      (function () {
+        var params = new URLSearchParams(location.search);
+        var payload = (params.get("d") || params.get("payload") || "").trim();
+        if (!payload && location.hash) {
+          payload = location.hash.replace(/^#/, "").replace(/^d=/i, "").trim();
+        }
+        var status = document.getElementById("status");
+        var openBtn = document.getElementById("open");
+        var copyBtn = document.getElementById("copy");
+        var deepEl = document.getElementById("deep");
+
+        if (!payload) {
+          status.className = "err";
+          status.textContent = "В ссылке нет приглашения. Попросите свежую ссылку из Drift.";
+          openBtn.style.display = "none";
+          copyBtn.style.display = "none";
+          return;
+        }
+
+        var deep = "drift://j/" + decodeURIComponent(payload);
+        deepEl.textContent = deep;
+        openBtn.href = deep;
+
+        function launch() {
+          status.className = "ok";
+          status.textContent = "Запускаем Drift…";
+          // location.replace is the most reliable custom-scheme kick on desktop.
+          location.href = deep;
+        }
+
+        copyBtn.addEventListener("click", function () {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(deep).then(
+              function () {
+                status.className = "ok";
+                status.textContent = "Ссылка drift:// скопирована";
+              },
+              function () {
+                status.textContent = "Не удалось скопировать — выделите код ниже";
+              },
+            );
+          }
+        });
+
+        // Auto-open shortly after load (Steam → browser → Drift).
+        setTimeout(launch, 120);
+      })();
+    </script>
+  </body>
+</html>

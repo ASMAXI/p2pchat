@@ -1,17 +1,28 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildInvite, parseInvite } from "./index";
+import { buildInvite, buildInviteDeepLink, parseInvite } from "./index";
 
 describe("invite", () => {
-  it("round-trips room, token, key and several endpoints in compact form", () => {
-    const invite = buildInvite({
+  it("round-trips via HTTPS landing (Steam-friendly) and deep link", () => {
+    const fields = {
       roomId: "r1",
       inviteToken: "t/+=",
       roomKey: "k",
       origins: ["http://192.168.1.5:47821/", "http://10.0.0.2:47821/api"],
+    };
+    const httpsInvite = buildInvite(fields);
+    assert.match(httpsInvite, /^https:\/\//);
+    assert.match(httpsInvite, /[?&]d=/);
+    assert.deepEqual(parseInvite(httpsInvite), {
+      roomId: "r1",
+      inviteToken: "t/+=",
+      roomKey: "k",
+      origins: ["http://192.168.1.5:47821", "http://10.0.0.2:47821"],
     });
-    assert.match(invite, /^drift:\/\/j\/[A-Za-z0-9_-]+$/);
-    assert.deepEqual(parseInvite(invite), {
+
+    const deep = buildInviteDeepLink(fields);
+    assert.match(deep, /^drift:\/\/j\/[A-Za-z0-9_-]+$/);
+    assert.deepEqual(parseInvite(deep), {
       roomId: "r1",
       inviteToken: "t/+=",
       roomKey: "k",

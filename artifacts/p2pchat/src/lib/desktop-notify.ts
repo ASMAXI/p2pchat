@@ -1,6 +1,6 @@
 import { debugLog } from "@/lib/debug-log";
 
-export type NotifyKind = "message" | "voice-join" | "mention";
+export type NotifyKind = "message" | "voice-join" | "voice-leave" | "mention";
 
 function isDesktop(): boolean {
   return "__TAURI_INTERNALS__" in window;

@@ -177,6 +177,13 @@ export type Invite = {
 /** Primary custom scheme — registered by the desktop installer / deep-link plugin. */
 export const INVITE_SCHEME = "drift";
 
+/**
+ * HTTPS landing that Steam/Discord make clickable; page redirects into drift://.
+ * Served from docs/join via jsDelivr (works after push to main, no Pages setup).
+ */
+export const INVITE_LANDING_BASE =
+  "https://cdn.jsdelivr.net/gh/ASMAXI/p2pchat@main/docs/join/index.html";
+
 const INVITE_FIELD_SEP = "\u001f";
 
 function toBase64Url(bytes: Uint8Array): string {
@@ -198,12 +205,24 @@ export function normalizeOrigin(origin: string): string {
   return origin.trim().replace(/\/api\/?$/, "").replace(/\/$/, "");
 }
 
-/** Compact clickable invite: `drift://j/<payload>`. Old `p2pchat://join?...` still parses. */
-export function buildInvite(invite: Invite): string {
+export function packInvitePayload(invite: Invite): string {
   const origins = invite.origins.map(normalizeOrigin).filter(Boolean);
   const packed = [invite.roomId, invite.inviteToken, invite.roomKey ?? "", ...origins].join(INVITE_FIELD_SEP);
-  const payload = toBase64Url(new TextEncoder().encode(packed));
-  return `${INVITE_SCHEME}://j/${payload}`;
+  return toBase64Url(new TextEncoder().encode(packed));
+}
+
+/** Native app deep link (browser / already-installed Drift). */
+export function buildInviteDeepLink(invite: Invite): string {
+  return `${INVITE_SCHEME}://j/${packInvitePayload(invite)}`;
+}
+
+/**
+ * Shareable invite: HTTPS so Steam/chat apps linkify it; landing opens drift://.
+ * Old `drift://j/…` and `p2pchat://join?…` still parse.
+ */
+export function buildInvite(invite: Invite): string {
+  const payload = packInvitePayload(invite);
+  return `${INVITE_LANDING_BASE}?d=${encodeURIComponent(payload)}`;
 }
 
 function parseCompactInvite(payload: string): Invite | null {
@@ -217,6 +236,25 @@ function parseCompactInvite(payload: string): Invite | null {
       roomKey: roomKey || undefined,
       origins: origins.map(normalizeOrigin).filter(Boolean),
     };
+  } catch {
+    return null;
+  }
+}
+
+function parseLandingInvite(input: string): Invite | null {
+  try {
+    const url = new URL(input.includes("://") ? input : `https://${input}`);
+    const fromQuery = url.searchParams.get("d") ?? url.searchParams.get("payload");
+    const fromHash = url.hash.replace(/^#/, "").replace(/^d=/i, "");
+    const payload = (fromQuery || fromHash || "").trim();
+    if (!payload) return null;
+    const path = `${url.pathname}${url.search}`;
+    const looksLikeLanding =
+      /\/join(\/|\/index\.html)?/i.test(path) ||
+      url.hostname.includes("jsdelivr.net") ||
+      url.hostname.endsWith("github.io");
+    if (!looksLikeLanding && !fromQuery) return null;
+    return parseCompactInvite(decodeURIComponent(payload));
   } catch {
     return null;
   }
@@ -255,6 +293,9 @@ export function parseInvite(value: string): Invite | null {
     const parsed = parseCompactInvite(input);
     if (parsed) return parsed;
   }
+
+  const landing = parseLandingInvite(input);
+  if (landing) return landing;
 
   return parseQueryInvite(input);
 }

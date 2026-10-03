@@ -7,6 +7,7 @@ export type UiSoundId =
   | "startup"
   | "member-join"
   | "voice-join"
+  | "voice-leave"
   | "chat-text"
   | "chat-image"
   | "mention";
@@ -172,6 +173,12 @@ export function playUiSound(id: UiSoundId): void {
     case "voice-join":
       tone(ctx, { freq: 440, start: t, duration: 0.16, type: "sine", gain: 0.07, slideTo: 660 });
       tone(ctx, { freq: 330, start: t + 0.05, duration: 0.12, type: "triangle", gain: 0.04 });
+      break;
+    case "voice-leave":
+      // Sad falling minor motif when someone leaves the voice channel.
+      tone(ctx, { freq: 523.25, start: t, duration: 0.2, type: "triangle", gain: 0.07, slideTo: 415.3 });
+      tone(ctx, { freq: 392.0, start: t + 0.14, duration: 0.24, type: "sine", gain: 0.055, slideTo: 293.66 });
+      tone(ctx, { freq: 246.94, start: t + 0.34, duration: 0.42, type: "triangle", gain: 0.045, slideTo: 174.61 });
       break;
     case "chat-text":
       tone(ctx, { freq: 880, start: t, duration: 0.06, type: "square", gain: 0.035 });

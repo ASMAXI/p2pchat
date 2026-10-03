@@ -558,8 +558,8 @@ function Home() {
             ) : (
               <form onSubmit={joinServer} className="animate-rise" data-testid="form-join-server">
                 <label className="field-label" htmlFor="invite-code">Ссылка приглашения</label>
-                <div className="relative"><Link2 size={17} className="absolute left-3.5 top-3.5 text-[hsl(var(--muted-foreground))]" /><input id="invite-code" className="field-input pl-10" value={invite} onChange={(event) => setInvite(event.target.value)} placeholder="drift://j/…" data-testid="input-invite-code" autoFocus /></div>
-                <p className="mt-3 text-xs leading-5 text-[hsl(var(--muted-foreground))]">Клик по ссылке открывает Drift и подставляет приглашение. После перезапуска хоста попросите свежую ссылку — меняется адрес туннеля.</p>
+                <div className="relative"><Link2 size={17} className="absolute left-3.5 top-3.5 text-[hsl(var(--muted-foreground))]" /><input id="invite-code" className="field-input pl-10" value={invite} onChange={(event) => setInvite(event.target.value)} placeholder="https://… или drift://j/…" data-testid="input-invite-code" autoFocus /></div>
+                <p className="mt-3 text-xs leading-5 text-[hsl(var(--muted-foreground))]">В Steam шлите https-ссылку из «Пригласить» — она кликабельна. После перезапуска хоста попросите свежую: меняется адрес туннеля.</p>
                 <button className="primary-btn mt-6 w-full" type="submit" disabled={busy || !nameOk || !invite.trim()} data-testid="button-join-server">{busy ? 'Проверяем приглашение…' : 'Войти в комнату'} {!busy && <ArrowRight size={16} />}</button>
               </form>
             )}
@@ -761,7 +761,7 @@ function InviteDialog({ server, onClose, onNotify }: { server: Server; onClose: 
   };
   return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="dialog-card">
     <div className="mb-6 flex items-start justify-between"><div><div className="font-mono text-[10px] uppercase tracking-[.18em] text-[hsl(var(--muted-foreground))]">Доступ в комнату</div><h3 className="font-display mt-2 text-2xl font-bold tracking-[-.05em]">Позвать своих</h3></div><button className="icon-btn" onClick={onClose} aria-label="Закрыть" data-testid="button-close-invite-dialog"><X size={18} /></button></div>
-    <p className="text-sm leading-6 text-[hsl(var(--muted-foreground))]">Короткая ссылка <span className="font-mono text-[11px]">drift://j/…</span> открывает приложение и начинает вход. У друга должно быть установлено Drift. После перезапуска хоста или смены туннеля скопируйте свежую ссылку.</p>
+    <p className="text-sm leading-6 text-[hsl(var(--muted-foreground))]">Ссылка <span className="font-mono text-[11px]">https://…</span> кликабельна в Steam и мессенджерах: откроет страницу → Drift. У друга должно быть установлено приложение. После перезапуска хоста или смены туннеля скопируйте свежую ссылку.</p>
     {isLocal && <div className="mt-4 rounded-xl border border-[hsl(var(--accent))]/30 bg-[hsl(var(--accent)/.08)] p-3 text-xs leading-5 text-[hsl(var(--accent))]">
       <strong>Внимание:</strong> в ссылке только localhost. Друзья в другой сети не подключатся.
       <div className="mt-2 font-mono text-[10px]">В одной Wi‑Fi приглашение должно содержать LAN-адрес (его подставит desktop-клиент). Между сетями нужен публичный bootstrap или туннель.</div>
@@ -1923,6 +1923,10 @@ function Workspace() {
             setToast(error instanceof Error ? error.message : 'Не удалось подключить голосовой канал');
           });
         } else {
+          if (event.peerId !== peerId && !deafenedRef.current) {
+            playUiSound('voice-leave');
+            void notifyDesktop('voice-leave', event.displayName, 'Вышел из голосового канала');
+          }
           if (event.peerId !== peerId) triggerPatriotPopup();
           voiceMeshRef.current?.removePeer(event.peerId);
         }
