@@ -1,4 +1,5 @@
 import { normalizeOrigin } from "@workspace/p2p-protocol";
+import { debugLog } from "@/lib/debug-log";
 
 const ICE_KEY = "p2pchat-ice-servers";
 const PUBLIC_URL_KEY = "p2pchat-public-url";
@@ -159,6 +160,30 @@ export function clearIceCache(): void {
   window.localStorage.removeItem(ICE_CACHE_KEY);
 }
 
+function summarizeIceServerCounts(servers: RTCIceServer[]): {
+  stun: number;
+  turn: number;
+  turns: number;
+  urls: string[];
+} {
+  let stun = 0;
+  let turn = 0;
+  let turns = 0;
+  const urls: string[] = [];
+  for (const server of servers) {
+    const list = Array.isArray(server.urls) ? server.urls : [server.urls];
+    for (const raw of list) {
+      if (!raw) continue;
+      const u = String(raw);
+      urls.push((u.split("?")[0] ?? u).slice(0, 120));
+      if (u.startsWith("turns:")) turns += 1;
+      else if (u.startsWith("turn:")) turn += 1;
+      else if (u.startsWith("stun:")) stun += 1;
+    }
+  }
+  return { stun, turn, turns, urls: urls.slice(0, 12) };
+}
+
 /**
  * Prefer: custom TURN → Metered REST (settings or VITE_METERED_API_KEY) → static openrelay fallback.
  * Static openrelayproject credentials are often non-functional; Metered API key is required for
@@ -166,19 +191,35 @@ export function clearIceCache(): void {
  */
 export async function warmIceServers(): Promise<RTCIceServer[]> {
   const settings = loadIceSettings();
+  const hasMeteredKey = Boolean(resolveMeteredApiKey(settings));
+  const appName = resolveMeteredAppName(settings);
+
+  const finish = (servers: RTCIceServer[], note?: string): RTCIceServer[] => {
+    const counts = summarizeIceServerCounts(servers);
+    debugLog("ice", "warmIceServers", {
+      source: lastIceSource,
+      hasMeteredKey,
+      meteredAppName: appName,
+      customTurn: isCustomTurnConfigured(settings),
+      serverCount: servers.length,
+      ...counts,
+      note,
+    });
+    return servers;
+  };
+
   if (isCustomTurnConfigured(settings)) {
     lastIceSource = "custom-turn";
-    return buildIceServers(settings);
+    return finish(buildIceServers(settings));
   }
 
   const cached = readIceCache();
   if (cached?.length) {
     lastIceSource = "cache";
-    return cached;
+    return finish(cached, "from-cache");
   }
 
   const apiKey = resolveMeteredApiKey(settings);
-  const appName = resolveMeteredAppName(settings);
   if (apiKey) {
     try {
       const response = await fetch(
@@ -189,16 +230,26 @@ export async function warmIceServers(): Promise<RTCIceServer[]> {
         if (Array.isArray(iceServers) && iceServers.length > 0) {
           writeIceCache(iceServers);
           lastIceSource = "metered-api";
-          return iceServers;
+          return finish(iceServers);
         }
+        debugLog("ice", "metered empty response", { status: response.status, appName }, "warn");
+      } else {
+        debugLog(
+          "ice",
+          "metered credentials failed",
+          { status: response.status, appName },
+          "warn",
+        );
       }
-    } catch {
-      // Fall through to defaults.
+    } catch (error) {
+      debugLog("ice", "metered fetch error", error, "warn");
     }
+  } else {
+    debugLog("ice", "no Metered API key — using static openrelay fallback", { appName }, "warn");
   }
 
   lastIceSource = "static-openrelay";
-  return staticOpenRelayServers(DEFAULT_FREE_TURN);
+  return finish(staticOpenRelayServers(DEFAULT_FREE_TURN), "openrelay-fallback");
 }
 
 export function getPublicUrl(): string {

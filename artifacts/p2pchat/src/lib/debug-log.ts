@@ -92,7 +92,20 @@ export function subscribeDebugLogs(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
+let reportEnricher: (() => Record<string, unknown>) | null = null;
+
+/** Register extra header fields (e.g. voice NAT) without circular imports. */
+export function setDebugReportEnricher(fn: (() => Record<string, unknown>) | null): void {
+  reportEnricher = fn;
+}
+
 export function formatDebugReport(extra?: Record<string, unknown>): string {
+  let enriched: Record<string, unknown> = {};
+  try {
+    enriched = reportEnricher?.() ?? {};
+  } catch {
+    enriched = {};
+  }
   const header = {
     generatedAt: new Date().toISOString(),
     userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
@@ -128,6 +141,7 @@ export function formatDebugReport(extra?: Record<string, unknown>): string {
     iceConfigured: Boolean(window.localStorage.getItem("p2pchat-ice-servers")),
     iceCache: Boolean(window.localStorage.getItem("p2pchat-ice-cache")),
     connection: window.localStorage.getItem("p2pchat-connection-status"),
+    ...enriched,
     ...extra,
   };
 

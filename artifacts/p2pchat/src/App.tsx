@@ -74,6 +74,7 @@ import {
   setPublicUrl,
   statusLabel,
   VoiceMesh,
+  getActiveVoiceMesh,
   warmIceServers,
   type AppUpdateInfo,
   type RoomMember as ApiRoomMember,
@@ -81,6 +82,7 @@ import {
   type SavedServer,
   type VoicePeerStatus,
 } from '@/lib/p2p-client';
+import { getLastVoiceNatReport, iceConfigFlags } from '@/lib/voice-diagnostics';
 import type { RoomSession } from '@workspace/p2p-room';
 import type { SessionStatus } from '@workspace/p2p-room';
 import {
@@ -2387,43 +2389,75 @@ function Diagnostics({ onClose }: { onClose?: () => void }) {
   const [lastChecked, setLastChecked] = useState('только что');
   const [logTick, setLogTick] = useState(0);
   const [logAction, setLogAction] = useState('');
+  const [natBusy, setNatBusy] = useState(false);
+  const [natSummary, setNatSummary] = useState(() => getLastVoiceNatReport()?.summary ?? '');
   const server = readStore<Server>(SERVER_KEY, seedServer);
   const connectionStatus = readStore<SessionStatus>(CONNECTION_KEY, 'offline');
   const connectionLabel = connectionStatus === 'connected' ? 'Стабильно' : connectionStatus === 'reconnecting' ? 'Переподключение' : connectionStatus === 'connecting' ? 'Подключение' : 'Офлайн';
   const turnOk = isTurnConfigured();
   const customTurn = isCustomTurnConfigured();
+  const iceFlags = iceConfigFlags();
   const publicUrl = getPublicUrl();
   const logs = getDebugLogs();
+  const iceLabel = customTurn
+    ? 'Свой TURN'
+    : iceFlags.meteredConfigured
+      ? 'Metered'
+      : iceFlags.iceSource === 'static-openrelay'
+        ? 'OpenRelay?'
+        : iceFlags.iceSource;
   const diagnostics = [
-    ['Control plane / Signaling', connectionStatus === 'connected' ? 'OK' : connectionLabel, 'Текст и WebRTC signaling через peer-узел. Публичный доступ — авто Cloudflare Tunnel.'],
-    ['ICE / TURN', customTurn ? 'Свой TURN' : 'Free TURN', customTurn ? 'Кастомный relay из настроек (Pro-путь).' : 'Встроенный Open Relay; позже можно заменить на свой VPS.'],
+    ['Control plane / Signaling', connectionStatus === 'connected' ? 'OK' : connectionLabel, 'Текст и WebRTC signaling через peer-узел. Публичный доступ — туннель (чат ≠ голос).'],
+    ['ICE / TURN', iceLabel, customTurn ? 'Кастомный relay из настроек.' : iceFlags.meteredConfigured ? `Metered (${iceFlags.meteredAppName || 'app'}), source=${iceFlags.iceSource}.` : 'Нет Metered key — в разных NAT голос часто молчит. Ключ в настройках сети.'],
     ['Публичный URL', publicUrl ? 'Авто/задан' : 'Нет', publicUrl ? publicUrl : 'Туннель не поднялся — повторите в настройках.'],
     ['Переезд координатора', 'Защищён', 'При уходе хоста пиры идут на endpoints преемника (сначала публичный URL).'],
   ];
   useEffect(() => subscribeDebugLogs(() => setLogTick((n) => n + 1)), []);
   const check = () => { setChecking(true); window.setTimeout(() => { setChecking(false); setLastChecked('только что'); }, 1000); };
+  const reportExtra = () => ({
+    serverRole: server.role,
+    hostName: server.hostName,
+    roomId: server.roomId,
+    connectionStatus,
+    logCount: logs.length,
+    iceFlags: iceConfigFlags(),
+    voiceNat: getLastVoiceNatReport(),
+  });
   const copyLogs = async () => {
-    const ok = await copyDebugReport({
-      serverRole: server.role,
-      hostName: server.hostName,
-      roomId: server.roomId,
-      connectionStatus,
-      logCount: logs.length,
-      logTick,
-    });
+    const ok = await copyDebugReport({ ...reportExtra(), logTick });
     setLogAction(ok ? 'Лог скопирован в буфер — отправьте в чат/мне' : 'Не удалось скопировать — скачайте файл');
     debugLog('diagnostics', ok ? 'report copied' : 'copy failed');
   };
   const downloadLogs = () => {
-    downloadDebugReport({
-      serverRole: server.role,
-      hostName: server.hostName,
-      roomId: server.roomId,
-      connectionStatus,
-      logCount: logs.length,
-    });
+    downloadDebugReport(reportExtra());
     setLogAction('Файл p2pchat-debug-….txt скачан — перешлите его');
     debugLog('diagnostics', 'report downloaded');
+  };
+  const snapshotNat = async () => {
+    setNatBusy(true);
+    try {
+      const mesh = getActiveVoiceMesh();
+      if (mesh) {
+        const report = await mesh.collectNatReport();
+        setNatSummary(report.summary);
+        setLogAction(
+          report.peers.length
+            ? `NAT-снимок: ${report.summary}. Теперь «Скачать .txt» и пришлите.`
+            : 'Вы в голосе, но пиров нет — зайдите в канал с другом и повторите.',
+        );
+      } else {
+        const last = getLastVoiceNatReport();
+        setNatSummary(last?.summary ?? '');
+        setLogAction(
+          last
+            ? `Нет активного голоса. Последний снимок: ${last.summary}. Скачайте .txt.`
+            : 'Сначала зайдите в голосовой канал (лучше когда «не слышно»), затем снова «Снимок NAT».',
+        );
+        debugLog('voice-nat', 'no active mesh', { hadLast: Boolean(last), iceFlags: iceConfigFlags() });
+      }
+    } finally {
+      setNatBusy(false);
+    }
   };
   return <div className="noise min-h-[100dvh] app-grid" style={{ background: 'hsl(var(--background))' }}>
     <header className="flex h-[76px] items-center justify-between border-b border-[hsl(var(--border))] bg-[hsl(var(--card)/.72)] px-5 backdrop-blur-md sm:px-10"><Link href="/server" className="flex items-center gap-3" data-testid="link-diagnostics-back" onClick={(event) => { if (onClose) { event.preventDefault(); onClose(); } }}><div className="server-mark" style={{ width: 35, height: 35, borderRadius: 10 }}><Signal size={17} /></div><BrandName className="text-lg" /></Link><button className="ghost-btn" onClick={goBack} data-testid="button-back-to-server"><ArrowRight size={15} className="rotate-180" /> Вернуться в комнату</button></header>
@@ -2447,9 +2481,10 @@ function Diagnostics({ onClose }: { onClose?: () => void }) {
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[hsl(var(--border))] px-5 py-5 sm:px-7">
           <div>
             <h2 className="font-display text-xl font-bold tracking-[-.04em]">Временные логи (тест с друзьями)</h2>
-            <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Туннель, session, голос/ICE. Записей: {logs.length}</p>
+            <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Туннель, session, голос/ICE/NAT. Записей: {logs.length}{natSummary ? ` · NAT: ${natSummary}` : ''}</p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <button className="ghost-btn" onClick={() => void snapshotNat()} disabled={natBusy} data-testid="button-nat-snapshot"><Activity size={15} /> {natBusy ? 'Снимок…' : 'Снимок NAT/голос'}</button>
             <button className="ghost-btn" onClick={() => void copyLogs()} data-testid="button-copy-debug-log"><Clipboard size={15} /> Копировать</button>
             <button className="ghost-btn" onClick={downloadLogs} data-testid="button-download-debug-log"><Download size={15} /> Скачать .txt</button>
             <button className="ghost-btn" onClick={() => { clearDebugLogs(); setLogAction('Лог очищен'); }} data-testid="button-clear-debug-log"><Trash2 size={15} /> Очистить</button>
@@ -2458,7 +2493,7 @@ function Diagnostics({ onClose }: { onClose?: () => void }) {
         {logAction && <p className="px-5 pt-3 text-xs text-[hsl(var(--primary))] sm:px-7" data-testid="text-log-action">{logAction}</p>}
         <pre className="max-h-[320px] overflow-auto px-5 py-4 font-mono text-[10px] leading-5 text-[hsl(var(--muted-foreground))] sm:px-7" data-testid="pre-debug-log">
           {logs.length === 0
-            ? 'Пока пусто — создайте/зайдите в комнату, напишите, зайдите в голос, затем скопируйте лог.'
+            ? 'Пока пусто — зайдите в комнату, напишите в чат, зайдите в голос (когда «не слышно»), нажмите «Снимок NAT/голос», затем скачайте лог.'
             : logs.slice(-120).map((entry) => `${entry.ts.slice(11, 19)} ${entry.level[0]} [${entry.scope}] ${entry.message}`).join('\n')}
         </pre>
         <p className="border-t border-[hsl(var(--border))] px-5 py-3 text-xs leading-5 text-[hsl(var(--muted-foreground))] sm:px-7">
@@ -2467,7 +2502,7 @@ function Diagnostics({ onClose }: { onClose?: () => void }) {
         </p>
       </section>
 
-      <div className="mt-7 flex items-start gap-3 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card)/.55)] p-4 text-xs leading-5 text-[hsl(var(--muted-foreground))]"><LockKeyhole size={15} className="mt-0.5 shrink-0 text-[hsl(var(--secondary))]" /><span><strong className="text-[hsl(var(--foreground))]">Как сдать баг:</strong> после теста → Диагностика → «Скачать .txt» или «Копировать» → прислать на <a href="mailto:maximrus96@gmail.com" className="font-semibold text-[hsl(var(--foreground))] underline">maximrus96@gmail.com</a>. В логе нет текста чата, только сеть и голос.</span></div>
+      <div className="mt-7 flex items-start gap-3 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card)/.55)] p-4 text-xs leading-5 text-[hsl(var(--muted-foreground))]"><LockKeyhole size={15} className="mt-0.5 shrink-0 text-[hsl(var(--secondary))]" /><span><strong className="text-[hsl(var(--foreground))]">Голос не слышно, чат работает:</strong> останьтесь в голосовом канале → Диагностика → «Снимок NAT/голос» → «Скачать .txt» → на <a href="mailto:maximrus96@gmail.com" className="font-semibold text-[hsl(var(--foreground))] underline">maximrus96@gmail.com</a>. В отчёте коды вроде <span className="font-mono text-[hsl(var(--foreground))]">NO_RELAY_NO_METERED</span> / <span className="font-mono text-[hsl(var(--foreground))]">CONNECTED_NO_AUDIO_BYTES</span>, без текста чата и без IP.</span></div>
     </main>
   </div>;
 }

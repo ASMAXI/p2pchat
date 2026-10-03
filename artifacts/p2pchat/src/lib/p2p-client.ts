@@ -26,7 +26,13 @@ import {
   warmIceServers,
 } from "@/lib/network-settings";
 
-export { VoiceMesh, type VoiceMeshOptions, type VoicePeerStatus, type MicProcessing } from "@/lib/voice-mesh";
+export {
+  VoiceMesh,
+  getActiveVoiceMesh,
+  type VoiceMeshOptions,
+  type VoicePeerStatus,
+  type MicProcessing,
+} from "@/lib/voice-mesh";
 export {
   buildIceServers,
   DEFAULT_FREE_TURN,

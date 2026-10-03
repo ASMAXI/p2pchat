@@ -9,6 +9,14 @@ import {
   warmIceServers,
 } from "@/lib/network-settings";
 import { debugLog } from "@/lib/debug-log";
+import {
+  buildVoiceNatReport,
+  rememberIceServerSummary,
+  snapshotPeerConnection,
+  summarizeCandidate,
+  summarizeIceServers,
+  type VoiceNatReport,
+} from "@/lib/voice-diagnostics";
 
 type VoiceSignal =
   | { kind: "offer"; description: RTCSessionDescriptionInit }
@@ -40,9 +48,12 @@ type PeerRuntime = {
   pendingIce: RTCIceCandidateInit[];
   remoteReady: boolean;
   failTimer?: number;
+  natTimer?: number;
   restartAttempted: boolean;
   sawRelay: boolean;
+  sawRemoteRelay: boolean;
   candidateTypes: Set<string>;
+  remoteCandidateTypes: Set<string>;
   makingOffer: boolean;
   ignoreOffer: boolean;
   gain?: GainNode;
@@ -53,6 +64,13 @@ type PeerRuntime = {
   remoteAudioStream?: MediaStream;
   remoteScreenStream?: MediaStream;
 };
+
+let activeVoiceMesh: VoiceMesh | null = null;
+
+/** Active voice mesh for Diagnostics NAT snapshot (at most one). */
+export function getActiveVoiceMesh(): VoiceMesh | null {
+  return activeVoiceMesh;
+}
 
 const DEFAULT_MIC: MicProcessing = {
   echoCancellation: true,
@@ -112,6 +130,79 @@ export class VoiceMesh {
     this.selfId = selfId;
     this.sendSignal = sendSignal;
     this.options = options;
+    activeVoiceMesh = this;
+  }
+
+  /** Full NAT/voice snapshot for beta reports (getStats + ICE types + diagnosis codes). */
+  async collectNatReport(): Promise<VoiceNatReport> {
+    const peers = await Promise.all(
+      [...this.peers.entries()].map(([peerId, runtime]) => this.snapshotRuntime(peerId, runtime)),
+    );
+    const report = buildVoiceNatReport(peers);
+    debugLog("voice-nat", "manual snapshot", {
+      summary: report.summary,
+      iceSource: report.iceSource,
+      meteredConfigured: report.meteredConfigured,
+      peerCount: peers.length,
+      peers: peers.map((p) => ({
+        peerId: p.peerId.slice(0, 8),
+        diagnosis: p.diagnosis,
+        connectionState: p.connectionState,
+        selected: p.selected,
+        audio: p.audio,
+      })),
+    });
+    return report;
+  }
+
+  private async snapshotRuntime(peerId: string, runtime: PeerRuntime) {
+    return snapshotPeerConnection(peerId, runtime.connection, {
+      localTypes: runtime.candidateTypes,
+      remoteTypes: runtime.remoteCandidateTypes,
+      sawLocalRelay: runtime.sawRelay,
+      sawRemoteRelay: runtime.sawRemoteRelay,
+      hasRemoteAudioTrack: Boolean(runtime.remoteAudioStream?.getAudioTracks().length),
+    });
+  }
+
+  private async logPeerNatSnapshot(peerId: string, reason: string): Promise<void> {
+    const runtime = this.peers.get(peerId);
+    if (!runtime) return;
+    try {
+      const peer = await this.snapshotRuntime(peerId, runtime);
+      const report = buildVoiceNatReport([peer]);
+      debugLog("voice-nat", reason, {
+        peerId: peerId.slice(0, 8),
+        diagnosis: peer.diagnosis,
+        hint: peer.hint,
+        connectionState: peer.connectionState,
+        iceConnectionState: peer.iceConnectionState,
+        localTypes: peer.localTypes,
+        remoteTypes: peer.remoteTypes,
+        sawLocalRelay: peer.sawLocalRelay,
+        sawRemoteRelay: peer.sawRemoteRelay,
+        selected: peer.selected,
+        audio: peer.audio,
+        iceSource: report.iceSource,
+        meteredConfigured: report.meteredConfigured,
+        iceServerSummary: report.iceServerSummary,
+      });
+    } catch (error) {
+      debugLog("voice-nat", "snapshot failed", { peerId, reason, error }, "warn");
+    }
+  }
+
+  private noteRemoteCandidate(runtime: PeerRuntime, candidate: RTCIceCandidateInit): void {
+    const summary = summarizeCandidate(candidate);
+    if (!summary) return;
+    runtime.remoteCandidateTypes.add(summary.type);
+    if (summary.type === "relay") runtime.sawRemoteRelay = true;
+    debugLog("voice", "remote ice", {
+      type: summary.type,
+      protocol: summary.protocol,
+      family: summary.family,
+      scope: summary.scope,
+    });
   }
 
   hasTurn(): boolean {
@@ -488,12 +579,15 @@ export class VoiceMesh {
     if (peerId === this.selfId || this.peers.has(peerId)) return;
     if (!this.outboundStream) await this.start();
     const iceServers = await warmIceServers();
+    const iceSummary = summarizeIceServers(iceServers.length > 0 ? iceServers : buildIceServers());
+    rememberIceServerSummary(iceSummary);
     debugLog("voice", "addPeer", {
       peerId,
       initiator,
       turn: this.hasTurn(),
       iceSource: getLastIceSource(),
       iceServers: iceServers.length,
+      iceSummary,
       volume: this.getPeerVolume(peerId),
     });
 
@@ -507,7 +601,9 @@ export class VoiceMesh {
       remoteReady: false,
       restartAttempted: false,
       sawRelay: false,
+      sawRemoteRelay: false,
       candidateTypes: new Set(),
+      remoteCandidateTypes: new Set(),
       makingOffer: false,
       ignoreOffer: false,
       speaking: false,
@@ -525,10 +621,18 @@ export class VoiceMesh {
 
     connection.onicecandidate = (event) => {
       if (!event.candidate) return;
-      const type = event.candidate.type || "unknown";
+      const summary = summarizeCandidate(event.candidate);
+      const type = summary?.type || event.candidate.type || "unknown";
       runtime.candidateTypes.add(type);
       if (type === "relay") runtime.sawRelay = true;
-      debugLog("voice", "local ice", { peerId, type, protocol: event.candidate.protocol });
+      debugLog("voice", "local ice", {
+        peerId,
+        type,
+        protocol: summary?.protocol || event.candidate.protocol,
+        family: summary?.family,
+        scope: summary?.scope,
+        tcpType: summary?.tcpType,
+      });
       this.sendSignal(peerId, { kind: "ice", candidate: event.candidate.toJSON() });
     };
 
@@ -536,9 +640,12 @@ export class VoiceMesh {
       if (connection.iceGatheringState !== "complete") return;
       debugLog("voice", "ice gathering complete", {
         peerId,
-        types: [...runtime.candidateTypes],
-        sawRelay: runtime.sawRelay,
+        localTypes: [...runtime.candidateTypes],
+        remoteTypes: [...runtime.remoteCandidateTypes],
+        sawLocalRelay: runtime.sawRelay,
+        sawRemoteRelay: runtime.sawRemoteRelay,
         iceSource: getLastIceSource(),
+        iceSummary,
       });
     };
 
@@ -546,6 +653,8 @@ export class VoiceMesh {
       debugLog("voice", "iceConnectionState", {
         peerId,
         state: connection.iceConnectionState,
+        sawLocalRelay: runtime.sawRelay,
+        sawRemoteRelay: runtime.sawRemoteRelay,
       });
     };
 
@@ -556,6 +665,9 @@ export class VoiceMesh {
         peerId,
         kind: track.kind,
         streams: event.streams.length,
+        muted: track.muted,
+        enabled: track.enabled,
+        readyState: track.readyState,
       });
       if (track.kind === "video") {
         const videoStream = stream ?? new MediaStream([track]);
@@ -582,12 +694,24 @@ export class VoiceMesh {
 
     connection.onconnectionstatechange = () => {
       const state = connection.connectionState;
-      debugLog("voice", "connectionState", { peerId, state });
+      debugLog("voice", "connectionState", {
+        peerId,
+        state,
+        sawLocalRelay: runtime.sawRelay,
+        sawRemoteRelay: runtime.sawRemoteRelay,
+        localTypes: [...runtime.candidateTypes],
+        remoteTypes: [...runtime.remoteCandidateTypes],
+      });
       if (state === "connected") {
         if (runtime.failTimer) window.clearTimeout(runtime.failTimer);
         runtime.failTimer = undefined;
         this.options.onPeerStatus?.(peerId, "connected");
         this.sendSignal(peerId, { kind: "voice-state", muted: this.muted, deafened: this.deafened });
+        // Delayed getStats so inbound audio bytes can accumulate (chat OK / media silent).
+        if (runtime.natTimer) window.clearTimeout(runtime.natTimer);
+        runtime.natTimer = window.setTimeout(() => {
+          void this.logPeerNatSnapshot(peerId, "connected-stats");
+        }, 2500);
         return;
       }
       if (state === "failed") {
@@ -633,6 +757,7 @@ export class VoiceMesh {
       }
     }
 
+    await this.logPeerNatSnapshot(peerId, "failed-stats");
     const detail = failHint(runtime);
     this.options.onPeerStatus?.(peerId, "failed", detail);
     this.removePeer(peerId);
@@ -687,6 +812,7 @@ export class VoiceMesh {
         debugLog("voice", "setRemoteDescription answer failed", error, "warn");
       }
     } else if (signal.kind === "ice" && signal.candidate) {
+      this.noteRemoteCandidate(runtime, signal.candidate);
       if (!runtime.remoteReady) {
         runtime.pendingIce.push(signal.candidate);
         return;
@@ -735,6 +861,7 @@ export class VoiceMesh {
   removePeer(peerId: string): void {
     const runtime = this.peers.get(peerId);
     if (runtime?.failTimer) window.clearTimeout(runtime.failTimer);
+    if (runtime?.natTimer) window.clearTimeout(runtime.natTimer);
     if (runtime?.speakTimer) window.clearInterval(runtime.speakTimer);
     runtime?.source?.disconnect();
     runtime?.analyser?.disconnect();
@@ -772,5 +899,6 @@ export class VoiceMesh {
     void this.audioContext?.close();
     this.audioContext = null;
     this.micGain = null;
+    if (activeVoiceMesh === this) activeVoiceMesh = null;
   }
 }
