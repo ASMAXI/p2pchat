@@ -174,34 +174,87 @@ export type Invite = {
   origins: string[];
 };
 
+/** Primary custom scheme — registered by the desktop installer / deep-link plugin. */
+export const INVITE_SCHEME = "drift";
+
+const INVITE_FIELD_SEP = "\u001f";
+
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromBase64Url(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
 export function normalizeOrigin(origin: string): string {
   return origin.trim().replace(/\/api\/?$/, "").replace(/\/$/, "");
 }
 
+/** Compact clickable invite: `drift://j/<payload>`. Old `p2pchat://join?...` still parses. */
 export function buildInvite(invite: Invite): string {
-  const params = new URLSearchParams();
-  params.set("room", invite.roomId);
-  params.set("token", invite.inviteToken);
-  if (invite.roomKey) params.set("key", invite.roomKey);
-  for (const origin of invite.origins) params.append("api", normalizeOrigin(origin));
-  return `p2pchat://join?${params.toString()}`;
+  const origins = invite.origins.map(normalizeOrigin).filter(Boolean);
+  const packed = [invite.roomId, invite.inviteToken, invite.roomKey ?? "", ...origins].join(INVITE_FIELD_SEP);
+  const payload = toBase64Url(new TextEncoder().encode(packed));
+  return `${INVITE_SCHEME}://j/${payload}`;
+}
+
+function parseCompactInvite(payload: string): Invite | null {
+  try {
+    const packed = new TextDecoder().decode(fromBase64Url(payload));
+    const [roomId, inviteToken, roomKey = "", ...origins] = packed.split(INVITE_FIELD_SEP);
+    if (!roomId || !inviteToken) return null;
+    return {
+      roomId,
+      inviteToken,
+      roomKey: roomKey || undefined,
+      origins: origins.map(normalizeOrigin).filter(Boolean),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseQueryInvite(input: string): Invite | null {
+  try {
+    const url = new URL(input.includes("://") ? input : `https://${input}`);
+    const roomId = url.searchParams.get("room") ?? url.searchParams.get("r");
+    const inviteToken = url.searchParams.get("token") ?? url.searchParams.get("t");
+    if (!roomId || !inviteToken) return null;
+    const roomKey = url.searchParams.get("key") ?? url.searchParams.get("k") ?? undefined;
+    const origins = [...url.searchParams.getAll("api"), ...url.searchParams.getAll("a")]
+      .map(normalizeOrigin)
+      .filter(Boolean);
+    return {
+      roomId,
+      inviteToken,
+      roomKey: roomKey || undefined,
+      origins,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function parseInvite(value: string): Invite | null {
   const input = value.trim();
   if (!input) return null;
-  try {
-    const url = new URL(input.includes("://") ? input : `https://${input}`);
-    const roomId = url.searchParams.get("room");
-    const inviteToken = url.searchParams.get("token");
-    if (!roomId || !inviteToken) return null;
-    return {
-      roomId,
-      inviteToken,
-      roomKey: url.searchParams.get("key") ?? undefined,
-      origins: url.searchParams.getAll("api").map(normalizeOrigin).filter(Boolean),
-    };
-  } catch {
-    return null;
+
+  const compact = input.match(/^(?:drift|p2pchat):\/\/j\/([A-Za-z0-9_-]+)$/i);
+  if (compact?.[1]) return parseCompactInvite(compact[1]);
+
+  // Bare compact payload (copied without scheme)
+  if (/^[A-Za-z0-9_-]{24,}$/.test(input) && !input.includes("://")) {
+    const parsed = parseCompactInvite(input);
+    if (parsed) return parsed;
   }
+
+  return parseQueryInvite(input);
 }

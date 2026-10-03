@@ -84,5 +84,8 @@
     "vite": "catalog:",
     "wouter": "^3.3.5",
     "zod": "catalog:"
+  },
+  "dependencies": {
+    "@tauri-apps/plugin-deep-link": "2.4.5"
   }
 }

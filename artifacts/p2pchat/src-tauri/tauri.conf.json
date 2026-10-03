@@ -38,5 +38,12 @@
         "installMode": "perMachine"
       }
     }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["drift", "p2pchat"]
+      }
+    }
   }
 }

@@ -94,6 +94,14 @@ import {
   subscribeDebugLogs,
 } from '@/lib/debug-log';
 import {
+  emitPendingInvite,
+  installInviteDeepLinkHandler,
+  isValidDisplayName,
+  normalizeDisplayName,
+  PENDING_INVITE_EVENT,
+  takePendingInvite,
+} from '@/lib/invite-deep-link';
+import {
   avatarColors,
   avatarInitials,
   fileToChatImageDataUrl,
@@ -336,10 +344,22 @@ function Home() {
   const [toast, setToast] = useState('');
   const [busy, setBusy] = useState(false);
   const [savedServers, setSavedServers] = useState<SavedServer[]>(() => loadSavedServers());
+  const nameOk = isValidDisplayName(displayName);
+
+  const requireName = (): string | null => {
+    const memberName = normalizeDisplayName(displayName);
+    if (!isValidDisplayName(memberName)) {
+      setToast('Сначала укажите имя (минимум 2 символа) — без него на сервер не пустим');
+      return null;
+    }
+    return memberName;
+  };
 
   const openSaved = (server: SavedServer) => {
+    const memberName = requireName();
+    if (!memberName) return;
     const meta = activateSavedServer(server);
-    writeStore(PROFILE_NAME_KEY, displayName.trim() || readStore(PROFILE_NAME_KEY, 'Вы'));
+    writeStore(PROFILE_NAME_KEY, memberName);
     writeStore(SERVER_KEY, {
       id: meta.roomId,
       roomId: meta.roomId,
@@ -366,7 +386,8 @@ function Home() {
 
   const createServer = async (event: FormEvent) => {
     event.preventDefault();
-    const memberName = displayName.trim() || 'Вы';
+    const memberName = requireName();
+    if (!memberName) return;
     setBusy(true);
     try {
       if (apiOrigin.trim()) setBootstrapOrigin(apiOrigin);
@@ -391,12 +412,18 @@ function Home() {
       setBusy(false);
     }
   };
-  const joinServer = async (event: FormEvent) => {
-    event.preventDefault();
-    const memberName = displayName.trim() || 'Вы';
-    const parsed = parseInvite(invite);
+
+  const joinWithInvite = async (rawInvite: string, nameOverride?: string) => {
+    const memberName = normalizeDisplayName(nameOverride ?? displayName);
+    if (!isValidDisplayName(memberName)) {
+      setMode('join');
+      setInvite(rawInvite);
+      setToast('Сначала укажите имя (минимум 2 символа) — без него на сервер не пустим');
+      return;
+    }
+    const parsed = parseInvite(rawInvite);
     if (!parsed) {
-      setToast('Вставьте полную ссылку приглашения из комнаты');
+      setToast('Вставьте ссылку приглашения Drift (drift://j/…)');
       return;
     }
     if (parsed.origins.every((origin) => isLocalhostOrigin(origin)) && parsed.origins.length > 0) {
@@ -406,7 +433,7 @@ function Home() {
     try {
       if (apiOrigin.trim()) setBootstrapOrigin(apiOrigin);
       const prepared = await prepareJoin({
-        invite,
+        invite: rawInvite,
         displayName: memberName,
         bootstrapOrigin: apiOrigin.trim() || undefined,
       });
@@ -435,6 +462,38 @@ function Home() {
       setBusy(false);
     }
   };
+
+  const joinServer = async (event: FormEvent) => {
+    event.preventDefault();
+    await joinWithInvite(invite);
+  };
+
+  useEffect(() => {
+    const applyInvite = (raw: string) => {
+      setMode('join');
+      setInvite(raw);
+      const stored = normalizeDisplayName(readStore(PROFILE_NAME_KEY, ''));
+      if (isValidDisplayName(stored)) {
+        setDisplayName(stored);
+        void joinWithInvite(raw, stored);
+      } else {
+        setToast('Ссылка получена — укажите имя и нажмите «Войти в комнату»');
+      }
+    };
+    const pending = takePendingInvite();
+    if (pending) applyInvite(pending);
+    const onPending = (event: Event) => {
+      const detail = (event as CustomEvent<string>).detail;
+      if (typeof detail === 'string' && detail) {
+        takePendingInvite();
+        applyInvite(detail);
+      }
+    };
+    window.addEventListener(PENDING_INVITE_EVENT, onPending);
+    return () => window.removeEventListener(PENDING_INVITE_EVENT, onPending);
+    // Mount + deep-link events only; join uses name from PROFILE_NAME_KEY.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   return (
     <main className="noise min-h-[100dvh] overflow-hidden app-grid" style={{ background: 'hsl(var(--background))' }}>
       <div className="mx-auto grid min-h-[100dvh] max-w-[1500px] grid-cols-1 lg:grid-cols-[1.05fr_.95fr]">
@@ -465,8 +524,23 @@ function Home() {
             <div className="mb-8"><p className="font-mono text-[10px] uppercase tracking-[.18em] text-[hsl(var(--muted-foreground))]">Вход в пространство</p><h2 className="font-display mt-3 text-4xl font-bold tracking-[-.06em]">Где собираемся?</h2><p className="mt-3 text-sm leading-6 text-[hsl(var(--muted-foreground))]">Комната синхронизируется между приглашёнными участниками. Никаких аккаунтов и лишних шагов.</p></div>
 
             <div className="mb-5">
-              <label className="field-label" htmlFor="display-name">Ваше имя</label>
-              <input id="display-name" className="field-input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Например, Миша" data-testid="input-display-name" />
+              <label className="field-label" htmlFor="display-name">Ваше имя / логин</label>
+              <input
+                id="display-name"
+                className="field-input"
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                placeholder="Например, Миша"
+                data-testid="input-display-name"
+                required
+                minLength={2}
+                maxLength={32}
+              />
+              {!nameOk && (
+                <p className="mt-2 text-xs text-[hsl(var(--accent))]" data-testid="text-name-required">
+                  Без имени создать сервер или войти по ссылке нельзя.
+                </p>
+              )}
             </div>
 
             <div className="mb-7 grid grid-cols-2 rounded-xl bg-[hsl(var(--muted))] p-1" role="tablist">
@@ -479,14 +553,14 @@ function Home() {
                 <label className="field-label" htmlFor="server-name">Название сервера</label>
                 <input id="server-name" className="field-input" value={name} onChange={(event) => setName(event.target.value)} placeholder="Например, «Наши выходные»" data-testid="input-server-name" autoFocus />
                 <div className="mt-4 flex items-start gap-2 rounded-xl bg-[hsl(var(--muted))] p-3.5 text-xs leading-5 text-[hsl(var(--muted-foreground))]"><LockKeyhole size={15} className="mt-0.5 shrink-0 text-[hsl(var(--secondary))]" /> Только вы решаете, кто получает приглашение. Сервер будет готов через секунду.</div>
-                <button className="primary-btn mt-6 w-full" type="submit" disabled={busy} data-testid="button-create-server">{busy ? 'Подключаем комнату…' : 'Создать приватный сервер'} {!busy && <ArrowRight size={16} />}</button>
+                <button className="primary-btn mt-6 w-full" type="submit" disabled={busy || !nameOk} data-testid="button-create-server">{busy ? 'Подключаем комнату…' : 'Создать приватный сервер'} {!busy && <ArrowRight size={16} />}</button>
               </form>
             ) : (
               <form onSubmit={joinServer} className="animate-rise" data-testid="form-join-server">
-                <label className="field-label" htmlFor="invite-code">Ссылка или код приглашения</label>
-                <div className="relative"><Link2 size={17} className="absolute left-3.5 top-3.5 text-[hsl(var(--muted-foreground))]" /><input id="invite-code" className="field-input pl-10" value={invite} onChange={(event) => setInvite(event.target.value)} placeholder="p2pchat://join?..." data-testid="input-invite-code" autoFocus /></div>
-                <p className="mt-3 text-xs leading-5 text-[hsl(var(--muted-foreground))]">Попросите свежую ссылку у владельца (после перезапуска приложения туннель меняется). Уже заходили — откройте сервер из списка ниже.</p>
-                <button className="primary-btn mt-6 w-full" type="submit" disabled={busy} data-testid="button-join-server">{busy ? 'Проверяем приглашение…' : 'Войти в комнату'} {!busy && <ArrowRight size={16} />}</button>
+                <label className="field-label" htmlFor="invite-code">Ссылка приглашения</label>
+                <div className="relative"><Link2 size={17} className="absolute left-3.5 top-3.5 text-[hsl(var(--muted-foreground))]" /><input id="invite-code" className="field-input pl-10" value={invite} onChange={(event) => setInvite(event.target.value)} placeholder="drift://j/…" data-testid="input-invite-code" autoFocus /></div>
+                <p className="mt-3 text-xs leading-5 text-[hsl(var(--muted-foreground))]">Клик по ссылке открывает Drift и подставляет приглашение. После перезапуска хоста попросите свежую ссылку — меняется адрес туннеля.</p>
+                <button className="primary-btn mt-6 w-full" type="submit" disabled={busy || !nameOk || !invite.trim()} data-testid="button-join-server">{busy ? 'Проверяем приглашение…' : 'Войти в комнату'} {!busy && <ArrowRight size={16} />}</button>
               </form>
             )}
 
@@ -674,21 +748,25 @@ function CreateChannelDialog({ onClose, onCreate }: { onClose: () => void; onCre
 }
 
 function InviteDialog({ server, onClose, onNotify }: { server: Server; onClose: () => void; onNotify: (text: string) => void }) {
-  const link = server.invite ?? `p2p.chat/join/room/${server.id.slice(-6).toUpperCase()}`;
+  const link = server.invite ?? '';
   const isLocal = isLocalhostOrigin(server.invite ?? '');
   const copy = async () => {
+    if (!link) {
+      onNotify('Ссылка ещё не готова — подождите туннель');
+      return;
+    }
     try { await navigator.clipboard.writeText(link); } catch { /* clipboard can be unavailable in local previews */ }
-    onNotify('Ссылка скопирована в буфер обмена');
+    onNotify('Ссылка скопирована — друг может нажать её и открыть Drift');
     onClose();
   };
   return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="dialog-card">
     <div className="mb-6 flex items-start justify-between"><div><div className="font-mono text-[10px] uppercase tracking-[.18em] text-[hsl(var(--muted-foreground))]">Доступ в комнату</div><h3 className="font-display mt-2 text-2xl font-bold tracking-[-.05em]">Позвать своих</h3></div><button className="icon-btn" onClick={onClose} aria-label="Закрыть" data-testid="button-close-invite-dialog"><X size={18} /></button></div>
-    <p className="text-sm leading-6 text-[hsl(var(--muted-foreground))]">Отправьте ссылку друзьям — комната и токен в ней постоянные для этой сессии. Меняются только адреса <span className="font-mono text-[11px]">api=</span> (bootstrap / туннель): после перезапуска desktop или смены Cloudflare-туннеля скопируйте свежую ссылку из меню сервера.</p>
+    <p className="text-sm leading-6 text-[hsl(var(--muted-foreground))]">Короткая ссылка <span className="font-mono text-[11px]">drift://j/…</span> открывает приложение и начинает вход. У друга должно быть установлено Drift. После перезапуска хоста или смены туннеля скопируйте свежую ссылку.</p>
     {isLocal && <div className="mt-4 rounded-xl border border-[hsl(var(--accent))]/30 bg-[hsl(var(--accent)/.08)] p-3 text-xs leading-5 text-[hsl(var(--accent))]">
       <strong>Внимание:</strong> в ссылке только localhost. Друзья в другой сети не подключатся.
       <div className="mt-2 font-mono text-[10px]">В одной Wi‑Fi приглашение должно содержать LAN-адрес (его подставит desktop-клиент). Между сетями нужен публичный bootstrap или туннель.</div>
     </div>}
-    <div className="mt-5 max-h-40 overflow-auto rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.55)] p-3"><div className="break-all font-mono text-[11px] leading-5 tracking-tight text-[hsl(var(--foreground))]" data-testid="text-invite-link">{link}</div></div>
+    <div className="mt-5 max-h-40 overflow-auto rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.55)] p-3"><div className="break-all font-mono text-[11px] leading-5 tracking-tight text-[hsl(var(--foreground))]" data-testid="text-invite-link">{link || 'Ссылка появится после поднятия туннеля'}</div></div>
     <button className="primary-btn mt-5 w-full" onClick={copy} data-testid="button-copy-invite"><Copy size={16} /> Скопировать ссылку</button>
   </div></div>;
 }
@@ -3204,7 +3282,26 @@ function voiceOverlayRouteActive(): boolean {
 }
 
 function Router() {
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
+
+  useEffect(() => {
+    if (voiceOverlayRouteActive()) return;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void installInviteDeepLinkHandler((url) => {
+      if (cancelled) return;
+      emitPendingInvite(url);
+      setLocation('/');
+    }).then((stop) => {
+      if (cancelled) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [setLocation]);
+
   if (voiceOverlayRouteActive()) {
     return (
       <ErrorBoundary resetKey={location}>

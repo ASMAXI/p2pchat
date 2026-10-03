@@ -3,14 +3,26 @@ import { describe, it } from "node:test";
 import { buildInvite, parseInvite } from "./index";
 
 describe("invite", () => {
-  it("round-trips room, token, key and several endpoints", () => {
+  it("round-trips room, token, key and several endpoints in compact form", () => {
     const invite = buildInvite({
       roomId: "r1",
       inviteToken: "t/+=",
       roomKey: "k",
       origins: ["http://192.168.1.5:47821/", "http://10.0.0.2:47821/api"],
     });
+    assert.match(invite, /^drift:\/\/j\/[A-Za-z0-9_-]+$/);
     assert.deepEqual(parseInvite(invite), {
+      roomId: "r1",
+      inviteToken: "t/+=",
+      roomKey: "k",
+      origins: ["http://192.168.1.5:47821", "http://10.0.0.2:47821"],
+    });
+  });
+
+  it("still parses legacy p2pchat query invites", () => {
+    const legacy =
+      "p2pchat://join?room=r1&token=t%2F%2B%3D&key=k&api=http%3A%2F%2F192.168.1.5%3A47821%2F&api=http%3A%2F%2F10.0.0.2%3A47821%2Fapi";
+    assert.deepEqual(parseInvite(legacy), {
       roomId: "r1",
       inviteToken: "t/+=",
       roomKey: "k",
@@ -25,6 +37,7 @@ describe("invite", () => {
 
   it("rejects incomplete invites", () => {
     assert.equal(parseInvite("p2pchat://join?room=r1"), null);
+    assert.equal(parseInvite("drift://j/"), null);
     assert.equal(parseInvite(""), null);
   });
 });
