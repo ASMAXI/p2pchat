@@ -171,8 +171,10 @@ import {
   TUNNEL_PROVIDER_OPTIONS,
   loadNgrokAuthToken,
   loadTunnelProvider,
+  loadZrokToken,
   saveNgrokAuthToken,
   saveTunnelProvider,
+  saveZrokToken,
   type TunnelProviderId,
 } from '@/lib/tunnel-settings';
 
@@ -2573,6 +2575,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [updateProgress, setUpdateProgress] = useState<{ loaded: number; total: number | null; phase: string } | null>(null);
   const [tunnelProvider, setTunnelProvider] = useState<TunnelProviderId>(() => loadTunnelProvider());
   const [ngrokToken, setNgrokToken] = useState(() => loadNgrokAuthToken());
+  const [zrokToken, setZrokToken] = useState(() => loadZrokToken());
 
   const toggleSection = (id: SettingsSectionId) => {
     setOpenSection((current) => (current === id ? null : id));
@@ -2620,6 +2623,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
     setTunnelMsg('');
     saveTunnelProvider(tunnelProvider);
     saveNgrokAuthToken(ngrokToken);
+    saveZrokToken(zrokToken);
     try {
       const info = await restartPublicTunnel();
       if (info?.publicOrigin) {
@@ -2692,6 +2696,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
     });
     saveTunnelProvider(tunnelProvider);
     saveNgrokAuthToken(ngrokToken);
+    saveZrokToken(zrokToken);
     void warmIceServers();
     void refreshCoordinatorInvite().then((next) => {
       if (next) {
@@ -3081,6 +3086,22 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
                   }}
                   placeholder="из dashboard.ngrok.com → Your Authtoken"
                   data-testid="input-ngrok-token"
+                />
+              </div>
+            )}
+            {tunnelProvider === 'zrok' && (
+              <div className="mt-3">
+                <label className="field-label" htmlFor="zrok-token">zrok account token</label>
+                <input
+                  id="zrok-token"
+                  className="field-input"
+                  value={zrokToken}
+                  onChange={(e) => {
+                    setZrokToken(e.target.value);
+                    saveZrokToken(e.target.value);
+                  }}
+                  placeholder="из zrok.io → Enable Your Environment"
+                  data-testid="input-zrok-token"
                 />
               </div>
             )}

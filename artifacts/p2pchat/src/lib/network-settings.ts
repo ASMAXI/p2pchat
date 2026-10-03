@@ -262,7 +262,9 @@ export function orderInviteOrigins(origins: string[]): string[] {
   const lan = unique.filter((origin) => !publicOnes.includes(origin) && isPublicHttpOrigin(origin));
   const rest = unique.filter((origin) => !publicOnes.includes(origin) && !lan.includes(origin));
   const tunnels = unique.filter((origin) =>
-    /ngrok|trycloudflare|cloudflare|loca\.lt|serveo|localhost\.run/i.test(origin),
+    /ngrok|trycloudflare|cloudflare|loca\.lt|serveo|localhost\.run|pinggy|bore\.pub|zrok\.io/i.test(
+      origin,
+    ),
   );
   return [...new Set([...publicOnes, ...tunnels, ...lan, ...rest])];
 }

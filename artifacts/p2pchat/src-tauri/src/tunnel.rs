@@ -1,5 +1,5 @@
 //! Public tunnels for the control plane (chat + signaling).
-//! Providers: Cloudflare Quick Tunnel, ngrok, localhost.run.
+//! Providers: Cloudflare, ngrok, localhost.run, Pinggy, Bore, zrok.
 
 use std::{
     fs::File,
@@ -22,6 +22,9 @@ pub enum TunnelProvider {
     Ngrok,
     #[serde(rename = "localhostRun", alias = "localhost")]
     LocalhostRun,
+    Pinggy,
+    Bore,
+    Zrok,
 }
 
 impl TunnelProvider {
@@ -29,6 +32,9 @@ impl TunnelProvider {
         match value.trim().to_ascii_lowercase().as_str() {
             "ngrok" => Self::Ngrok,
             "localhost" | "localhostrun" | "localhost_run" | "localhost.run" => Self::LocalhostRun,
+            "pinggy" => Self::Pinggy,
+            "bore" => Self::Bore,
+            "zrok" => Self::Zrok,
             _ => Self::Cloudflare,
         }
     }
@@ -38,6 +44,9 @@ impl TunnelProvider {
             Self::Cloudflare => "cloudflare",
             Self::Ngrok => "ngrok",
             Self::LocalhostRun => "localhostRun",
+            Self::Pinggy => "pinggy",
+            Self::Bore => "bore",
+            Self::Zrok => "zrok",
         }
     }
 }
@@ -74,25 +83,34 @@ struct TunnelPrefs {
     provider: String,
     #[serde(default)]
     ngrok_auth_token: String,
+    #[serde(default)]
+    zrok_token: String,
 }
 
-pub fn save_tunnel_prefs(app_data: &Path, provider: TunnelProvider, ngrok_auth_token: &str) {
+pub fn save_tunnel_prefs(
+    app_data: &Path,
+    provider: TunnelProvider,
+    ngrok_auth_token: &str,
+    zrok_token: &str,
+) {
     let _ = std::fs::create_dir_all(app_data);
     let prefs = TunnelPrefs {
         provider: provider.as_str().to_string(),
         ngrok_auth_token: ngrok_auth_token.to_string(),
+        zrok_token: zrok_token.to_string(),
     };
     if let Ok(raw) = serde_json::to_string_pretty(&prefs) {
         let _ = std::fs::write(prefs_path(app_data), raw);
     }
 }
 
-pub fn load_tunnel_prefs(app_data: &Path) -> (TunnelProvider, String) {
+pub fn load_tunnel_prefs(app_data: &Path) -> (TunnelProvider, String, String) {
     let raw = std::fs::read_to_string(prefs_path(app_data)).unwrap_or_default();
     let prefs: TunnelPrefs = serde_json::from_str(&raw).unwrap_or_default();
     (
         TunnelProvider::parse(&prefs.provider),
         prefs.ngrok_auth_token,
+        prefs.zrok_token,
     )
 }
 
@@ -105,24 +123,35 @@ fn hide_window(command: &mut Command) {
     }
 }
 
-fn extract_https_url(line: &str, host_hint: &str) -> Option<String> {
-    let marker = "https://";
-    let start = line.find(marker)?;
-    let rest = &line[start..];
-    let end = rest
-        .find(|c: char| c.is_whitespace() || c == '|' || c == '"' || c == '\'' || c == ']')
-        .unwrap_or(rest.len());
-    let candidate = rest[..end].trim_end_matches(['.', ',', ';', ')', ']']);
-    if candidate.contains(host_hint) {
-        Some(candidate.trim_end_matches('/').to_string())
-    } else {
-        None
+fn extract_url_line(line: &str, host_hints: &[String]) -> Option<String> {
+    for scheme in ["https://", "http://"] {
+        if let Some(start) = line.find(scheme) {
+            let rest = &line[start..];
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == '|' || c == '"' || c == '\'' || c == ']')
+                .unwrap_or(rest.len());
+            let candidate = rest[..end].trim_end_matches(['.', ',', ';', ')', ']']);
+            if host_hints.iter().any(|hint| candidate.contains(hint.as_str())) {
+                return Some(candidate.trim_end_matches('/').to_string());
+            }
+        }
     }
+    // bore.pub:12345 → http://bore.pub:12345
+    if host_hints.iter().any(|h| h.contains("bore.pub")) {
+        if let Some(idx) = line.find("bore.pub:") {
+            let after = &line[idx + "bore.pub:".len()..];
+            let port: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !port.is_empty() {
+                return Some(format!("http://bore.pub:{port}"));
+            }
+        }
+    }
+    None
 }
 
 fn wait_for_url_from_child(
     child: &mut Child,
-    host_hint: &str,
+    host_hints: &[&str],
     timeout: Duration,
 ) -> Result<String, String> {
     let stderr = child
@@ -131,14 +160,15 @@ fn wait_for_url_from_child(
         .ok_or_else(|| "tunnel stderr unavailable".to_string())?;
     let stdout = child.stdout.take();
     let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
-    let hint = host_hint.to_string();
-    let hint2 = hint.clone();
+    let hints: Vec<String> = host_hints.iter().map(|s| (*s).to_string()).collect();
+    let hints2 = hints.clone();
+    let label = host_hints.first().copied().unwrap_or("tunnel");
     let tx2 = tx.clone();
 
     thread::spawn(move || {
         let reader = BufReader::new(stderr);
         for line in reader.lines().flatten() {
-            if let Some(url) = extract_https_url(&line, &hint) {
+            if let Some(url) = extract_url_line(&line, &hints) {
                 let _ = tx.send(Ok(url));
             }
         }
@@ -148,7 +178,7 @@ fn wait_for_url_from_child(
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines().flatten() {
-                if let Some(url) = extract_https_url(&line, &hint2) {
+                if let Some(url) = extract_url_line(&line, &hints2) {
                     let _ = tx2.send(Ok(url));
                 }
             }
@@ -161,9 +191,7 @@ fn wait_for_url_from_child(
         if remaining.is_zero() {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!(
-                "Таймаут: туннель ({host_hint}) не выдал публичный URL"
-            ));
+            return Err(format!("Таймаут: туннель ({label}) не выдал публичный URL"));
         }
         match rx.recv_timeout(remaining) {
             Ok(Ok(url)) => return Ok(url),
@@ -175,9 +203,7 @@ fn wait_for_url_from_child(
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
-                    "Таймаут: туннель ({host_hint}) не выдал публичный URL"
-                ));
+                return Err(format!("Таймаут: туннель ({label}) не выдал публичный URL"));
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = child.kill();
@@ -258,7 +284,7 @@ fn start_cloudflare(app_data: &Path, local_port: u16) -> Result<(TunnelHandle, T
     let mut child = command
         .spawn()
         .map_err(|err| format!("Не удалось запустить cloudflared: {err}"))?;
-    let public = wait_for_url_from_child(&mut child, "trycloudflare.com", Duration::from_secs(45))?;
+    let public = wait_for_url_from_child(&mut child, &["trycloudflare.com"], Duration::from_secs(45))?;
     Ok(wrap_handle(child, public, TunnelProvider::Cloudflare))
 }
 
@@ -439,7 +465,7 @@ fn start_ngrok(
     let api_result = poll_ngrok_api(Duration::from_secs(40));
     let public = match api_result {
         Ok(url) => url,
-        Err(api_err) => match wait_for_url_from_child(&mut child, "ngrok", Duration::from_secs(10))
+        Err(api_err) => match wait_for_url_from_child(&mut child, &["ngrok"], Duration::from_secs(10))
         {
             Ok(url) => url,
             Err(_) => {
@@ -473,14 +499,37 @@ fn find_ssh() -> Result<PathBuf, String> {
         }
     }
     Err(
-        "Не найден OpenSSH (ssh). Установите «OpenSSH Client» в Параметры Windows → Приложения → Доп. компоненты, либо выберите Cloudflare/ngrok"
+        "Не найден OpenSSH (ssh). Установите «OpenSSH Client» в Параметры Windows → Приложения → Доп. компоненты, либо выберите Cloudflare / ngrok / Bore"
             .into(),
     )
 }
 
+fn ssh_base_command(ssh: &Path, local_port: u16) -> Command {
+    let known_hosts = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let mut command = Command::new(ssh);
+    command
+        .arg("-o")
+        .arg("StrictHostKeyChecking=accept-new")
+        .arg("-o")
+        .arg(format!("UserKnownHostsFile={known_hosts}"))
+        .arg("-o")
+        .arg("ServerAliveInterval=30")
+        .arg("-o")
+        .arg("ExitOnForwardFailure=yes")
+        .arg("-o")
+        .arg("NumberOfPasswordPrompts=0")
+        .arg("-T")
+        .arg("-R")
+        .arg(format!("0:127.0.0.1:{local_port}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_window(&mut command);
+    command
+}
+
 fn start_localhost_run(local_port: u16) -> Result<(TunnelHandle, TunnelInfo), String> {
     let ssh = find_ssh()?;
-    let remote = format!("80:127.0.0.1:{local_port}");
     let known_hosts = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let mut command = Command::new(&ssh);
     command
@@ -494,7 +543,7 @@ fn start_localhost_run(local_port: u16) -> Result<(TunnelHandle, TunnelInfo), St
         .arg("ExitOnForwardFailure=yes")
         .arg("-T")
         .arg("-R")
-        .arg(&remote)
+        .arg(format!("80:127.0.0.1:{local_port}"))
         .arg("nokey@localhost.run")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -504,14 +553,239 @@ fn start_localhost_run(local_port: u16) -> Result<(TunnelHandle, TunnelInfo), St
         .spawn()
         .map_err(|err| format!("Не удалось запустить ssh (localhost.run): {err}"))?;
     let public =
-        wait_for_url_from_child(&mut child, "localhost.run", Duration::from_secs(50))?;
+        wait_for_url_from_child(&mut child, &["localhost.run"], Duration::from_secs(50))?;
     Ok(wrap_handle(child, public, TunnelProvider::LocalhostRun))
+}
+
+fn start_pinggy(local_port: u16) -> Result<(TunnelHandle, TunnelInfo), String> {
+    let ssh = find_ssh()?;
+    let mut command = ssh_base_command(&ssh, local_port);
+    command.arg("-p").arg("443").arg("free.pinggy.io");
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("Не удалось запустить ssh (Pinggy): {err}"))?;
+    let public = wait_for_url_from_child(
+        &mut child,
+        &["pinggy", "pinggy.io", "pinggy-free.link", "a.free.pinggy.io"],
+        Duration::from_secs(55),
+    )?;
+    Ok(wrap_handle(child, public, TunnelProvider::Pinggy))
+}
+
+// --- Bore -----------------------------------------------------------------
+
+fn ensure_bore(bin_dir: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(bin_dir).map_err(|err| err.to_string())?;
+    let dest = bin_dir.join(if cfg!(windows) { "bore.exe" } else { "bore" });
+    if dest.exists() {
+        return Ok(dest);
+    }
+    let url = github_release_asset_url("ekzhang/bore", &["windows", "msvc", ".zip"])
+        .or_else(|_| github_release_asset_url("ekzhang/bore", &["windows", ".zip"]))?;
+    let zip_path = bin_dir.join("bore.zip");
+    download_file(&url, &zip_path)?;
+    extract_zip_windows(&zip_path, bin_dir)?;
+    let _ = std::fs::remove_file(&zip_path);
+    // GitHub zips often nest the binary in a folder — search.
+    if !dest.exists() {
+        if let Some(found) = find_file_named(bin_dir, "bore.exe").or_else(|| find_file_named(bin_dir, "bore")) {
+            let _ = std::fs::copy(&found, &dest);
+        }
+    }
+    if !dest.exists() {
+        return Err("bore скачан, но бинарник не найден после распаковки".into());
+    }
+    #[cfg(unix)]
+    set_executable(&dest)?;
+    Ok(dest)
+}
+
+fn start_bore(app_data: &Path, local_port: u16) -> Result<(TunnelHandle, TunnelInfo), String> {
+    let bin = ensure_bore(&app_data.join("bin"))?;
+    let mut command = Command::new(&bin);
+    command
+        .arg("local")
+        .arg(local_port.to_string())
+        .arg("--to")
+        .arg("bore.pub")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_window(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("Не удалось запустить bore: {err}"))?;
+    let public = wait_for_url_from_child(&mut child, &["bore.pub"], Duration::from_secs(40))?;
+    Ok(wrap_handle(child, public, TunnelProvider::Bore))
+}
+
+// --- zrok -----------------------------------------------------------------
+
+fn ensure_zrok(bin_dir: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(bin_dir).map_err(|err| err.to_string())?;
+    let dest = bin_dir.join(if cfg!(windows) { "zrok.exe" } else { "zrok" });
+    if dest.exists() {
+        return Ok(dest);
+    }
+    let url = github_release_asset_url("openziti/zrok", &["windows", "amd64"])
+        .or_else(|_| github_release_asset_url("openziti/zrok", &["windows"]))?;
+    let archive = if url.contains(".zip") {
+        bin_dir.join("zrok.zip")
+    } else {
+        bin_dir.join("zrok.tgz")
+    };
+    download_file(&url, &archive)?;
+    if url.contains(".zip") {
+        extract_zip_windows(&archive, bin_dir)?;
+    } else {
+        extract_tar_gz(&archive, bin_dir)?;
+    }
+    let _ = std::fs::remove_file(&archive);
+    if !dest.exists() {
+        if let Some(found) =
+            find_file_named(bin_dir, "zrok.exe").or_else(|| find_file_named(bin_dir, "zrok"))
+        {
+            let _ = std::fs::copy(&found, &dest);
+        }
+    }
+    if !dest.exists() {
+        return Err("zrok скачан, но бинарник не найден".into());
+    }
+    #[cfg(unix)]
+    set_executable(&dest)?;
+    Ok(dest)
+}
+
+fn extract_tar_gz(archive: &Path, dest_dir: &Path) -> Result<(), String> {
+    let mut cmd = Command::new("tar");
+    cmd.args([
+        "-xf",
+        &archive.to_string_lossy(),
+        "-C",
+        &dest_dir.to_string_lossy(),
+    ]);
+    hide_window(&mut cmd);
+    let status = cmd
+        .status()
+        .map_err(|err| format!("tar: {err}. Установите zrok вручную с GitHub Releases."))?;
+    if !status.success() {
+        return Err("Не удалось распаковать zrok (tar)".into());
+    }
+    Ok(())
+}
+
+fn ensure_zrok_enabled(bin: &Path, token: &str) -> Result<(), String> {
+    let mut command = Command::new(bin);
+    command
+        .arg("enable")
+        .arg(token)
+        .arg("--headless")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_window(&mut command);
+    let output = command
+        .output()
+        .map_err(|err| format!("zrok enable: {err}"))?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if output.status.success()
+        || combined.to_ascii_lowercase().contains("already enabled")
+        || combined.to_ascii_lowercase().contains("enabled")
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "zrok enable не удался. Проверьте токен с zrok.io. {}",
+        combined.chars().take(240).collect::<String>()
+    ))
+}
+
+fn start_zrok(
+    app_data: &Path,
+    local_port: u16,
+    token: &str,
+) -> Result<(TunnelHandle, TunnelInfo), String> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(
+            "Для zrok нужен account token: zrok.io → Enable Your Environment → вставьте в настройки Drift"
+                .into(),
+        );
+    }
+    let bin = ensure_zrok(&app_data.join("bin"))?;
+    ensure_zrok_enabled(&bin, token)?;
+    let target = format!("http://127.0.0.1:{local_port}");
+    let mut command = Command::new(&bin);
+    command
+        .arg("share")
+        .arg("public")
+        .arg(&target)
+        .arg("--headless")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_window(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("Не удалось запустить zrok share: {err}"))?;
+    let public = wait_for_url_from_child(
+        &mut child,
+        &["zrok.io", "share.zrok.io"],
+        Duration::from_secs(55),
+    )?;
+    Ok(wrap_handle(child, public, TunnelProvider::Zrok))
 }
 
 // --- shared ---------------------------------------------------------------
 
+fn find_file_named(root: &Path, name: &str) -> Option<PathBuf> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().is_some_and(|n| n == name) {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn github_release_asset_url(repo: &str, name_parts: &[&str]) -> Result<String, String> {
+    let api = format!("https://api.github.com/repos/{repo}/releases/latest");
+    let response = ureq::get(&api)
+        .set("User-Agent", "Drift-p2pchat")
+        .set("Accept", "application/vnd.github+json")
+        .timeout(Duration::from_secs(30))
+        .call()
+        .map_err(|err| format!("GitHub releases {repo}: {err}"))?;
+    let body = response.into_string().map_err(|err| err.to_string())?;
+    // crude scan for browser_download_url matching all name_parts
+    for chunk in body.split("\"browser_download_url\"") {
+        let Some(start) = chunk.find("https://") else {
+            continue;
+        };
+        let rest = &chunk[start..];
+        let end = rest.find('"').unwrap_or(rest.len());
+        let url = &rest[..end];
+        let lower = url.to_ascii_lowercase();
+        if name_parts.iter().all(|part| lower.contains(&part.to_ascii_lowercase())) {
+            return Ok(url.to_string());
+        }
+    }
+    Err(format!("В релизе {repo} не найден asset ({})", name_parts.join("+")))
+}
+
 fn download_file(url: &str, dest: &Path) -> Result<(), String> {
     let response = ureq::get(url)
+        .set("User-Agent", "Drift-p2pchat")
         .timeout(Duration::from_secs(180))
         .call()
         .map_err(|err| format!("Не удалось скачать {url}: {err}"))?;
@@ -538,11 +812,15 @@ pub fn start_tunnel(
     local_port: u16,
     provider: TunnelProvider,
     ngrok_auth_token: &str,
+    zrok_token: &str,
 ) -> Result<(TunnelHandle, TunnelInfo), String> {
-    save_tunnel_prefs(app_data, provider, ngrok_auth_token);
+    save_tunnel_prefs(app_data, provider, ngrok_auth_token, zrok_token);
     match provider {
         TunnelProvider::Cloudflare => start_cloudflare(app_data, local_port),
         TunnelProvider::Ngrok => start_ngrok(app_data, local_port, ngrok_auth_token),
         TunnelProvider::LocalhostRun => start_localhost_run(local_port),
+        TunnelProvider::Pinggy => start_pinggy(local_port),
+        TunnelProvider::Bore => start_bore(app_data, local_port),
+        TunnelProvider::Zrok => start_zrok(app_data, local_port, zrok_token),
     }
 }

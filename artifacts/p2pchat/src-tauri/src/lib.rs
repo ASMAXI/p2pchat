@@ -37,6 +37,7 @@ async fn ensure_node_and_tunnel(
     force_restart_tunnel: bool,
     provider: Option<String>,
     ngrok_auth_token: Option<String>,
+    zrok_token: Option<String>,
 ) -> Result<LocalNodeInfoDto, String> {
     let mut handle = state.handle.lock().await;
     if handle.is_none() {
@@ -51,12 +52,13 @@ async fn ensure_node_and_tunnel(
     let lan_origins = local_hub::lan_origins(port);
 
     let dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
-    let (stored_provider, stored_token) = tunnel::load_tunnel_prefs(&dir);
+    let (stored_provider, stored_ngrok, stored_zrok) = tunnel::load_tunnel_prefs(&dir);
     let provider = provider
         .as_deref()
         .map(tunnel::TunnelProvider::parse)
         .unwrap_or(stored_provider);
-    let token = ngrok_auth_token.unwrap_or(stored_token);
+    let ngrok_token = ngrok_auth_token.unwrap_or(stored_ngrok);
+    let zrok = zrok_token.unwrap_or(stored_zrok);
 
     let active = *state.active_provider.lock().await;
     let existing = state.public_origin.lock().await.clone();
@@ -80,7 +82,7 @@ async fn ensure_node_and_tunnel(
     }
 
     let started = tokio::task::spawn_blocking(move || {
-        tunnel::start_tunnel(&dir, port, provider, &token)
+        tunnel::start_tunnel(&dir, port, provider, &ngrok_token, &zrok)
     })
     .await;
 
@@ -119,6 +121,9 @@ fn provider_matches_url(provider: tunnel::TunnelProvider, url: &str) -> bool {
         }
         tunnel::TunnelProvider::Ngrok => lower.contains("ngrok"),
         tunnel::TunnelProvider::LocalhostRun => lower.contains("localhost.run"),
+        tunnel::TunnelProvider::Pinggy => lower.contains("pinggy"),
+        tunnel::TunnelProvider::Bore => lower.contains("bore.pub"),
+        tunnel::TunnelProvider::Zrok => lower.contains("zrok.io"),
     }
 }
 
@@ -129,8 +134,9 @@ async fn start_local_sync_server(
     state: tauri::State<'_, LocalNodeState>,
     provider: Option<String>,
     ngrok_auth_token: Option<String>,
+    zrok_token: Option<String>,
 ) -> Result<LocalNodeInfoDto, String> {
-    ensure_node_and_tunnel(&app, &state, false, provider, ngrok_auth_token).await
+    ensure_node_and_tunnel(&app, &state, false, provider, ngrok_auth_token, zrok_token).await
 }
 
 /// Restarts the public tunnel with the selected provider.
@@ -140,8 +146,9 @@ async fn restart_public_tunnel(
     state: tauri::State<'_, LocalNodeState>,
     provider: Option<String>,
     ngrok_auth_token: Option<String>,
+    zrok_token: Option<String>,
 ) -> Result<LocalNodeInfoDto, String> {
-    ensure_node_and_tunnel(&app, &state, true, provider, ngrok_auth_token).await
+    ensure_node_and_tunnel(&app, &state, true, provider, ngrok_auth_token, zrok_token).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
