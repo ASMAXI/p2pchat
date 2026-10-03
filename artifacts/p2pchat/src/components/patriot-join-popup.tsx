@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { loadTheme, useAppTheme } from "@/lib/theme";
 
-const POPUP_MS = 10_000;
+const POPUP_MS = 2_000;
+const FADE_MS = 400;
 const POPUP_SRC = "/themes/patriot-popup.png";
 
 /** Fire from join/leave handlers — no-op unless patriot theme is active. */
@@ -10,7 +11,7 @@ export function shouldShowPatriotPopup(): boolean {
 }
 
 type Props = {
-  /** Increment to show / restart the 10s timer. */
+  /** Increment to show / restart the timer. */
   token: number;
 };
 
@@ -28,7 +29,7 @@ export function PatriotJoinPopup({ token }: Props) {
     setFadeOut(false);
     setVisible(true);
     setProgressKey((n) => n + 1);
-    const fadeTimer = window.setTimeout(() => setFadeOut(true), POPUP_MS - 700);
+    const fadeTimer = window.setTimeout(() => setFadeOut(true), Math.max(0, POPUP_MS - FADE_MS));
     const hideTimer = window.setTimeout(() => setVisible(false), POPUP_MS);
     return () => {
       window.clearTimeout(fadeTimer);

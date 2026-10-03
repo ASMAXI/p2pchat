@@ -1,8 +1,8 @@
-//! Self-update: download with progress, wait for install after exit, relaunch.
+//! Self-update: download, then an elevated NSIS install (`/P /UPDATE /R`).
 //!
-//! Hidden PowerShell helper (no ping/find CMD windows).
-//! Crucially: only relaunches AFTER a successful install, into the same folder,
-//! and prefers the newest Drift.exe so an old copy is not started by mistake.
+//! The installer is per-machine (`C:\Program Files\Drift`). It must be started
+//! via ShellExecute so UAC can write that folder. `/S` without elevation left
+//! the desktop shortcut on the old `p2pchat.exe`.
 
 use std::{
     fs::File,
@@ -96,7 +96,11 @@ fn ps_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-/// After this process exits: silent install into the same folder, then relaunch ONLY on success.
+/// After this process exits: elevated NSIS `/P /UPDATE /R` into Program Files, then the installer relaunches.
+///
+/// Previous builds used `/S` without elevation (`UseShellExecute=false`), so a current-user
+/// installer could not overwrite `C:\Program Files\Drift\p2pchat.exe` and the desktop shortcut
+/// kept starting the old binary.
 fn spawn_deferred_install(installer: &Path, app_exe: &Path) -> Result<(), String> {
     let dir = std::env::temp_dir().join("drift-update");
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
@@ -111,7 +115,6 @@ fn spawn_deferred_install(installer: &Path, app_exe: &Path) -> Result<(), String
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("msi"));
 
-    // Capture pre-install file time so we can detect a real overwrite.
     let contents = format!(
         r#"
 $ErrorActionPreference = "Continue"
@@ -126,12 +129,18 @@ $isMsi = {is_msi}
 
 function Log($msg) {{ "$msg" | Add-Content $log }}
 
+function Relaunch-Old {{
+  if ($appExe -and (Test-Path -LiteralPath $appExe)) {{
+    Log "relaunch_old $appExe"
+    Start-Process -FilePath $appExe
+  }}
+}}
+
 try {{ Wait-Process -Id $pidToWait -Timeout 180 -ErrorAction SilentlyContinue }} catch {{}}
 Start-Sleep -Seconds 2
 
-# Make sure no leftover Drift / overlay / cloudflared holds the EXE lock.
 Get-Process -Name "Drift","p2pchat","cloudflared","ngrok" -ErrorAction SilentlyContinue |
-  Where-Object {{ $_.Id -ne $pidToWait }} |
+  Where-Object {{ $_.Id -ne $PID }} |
   ForEach-Object {{
     try {{ Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue; Log "killed $($_.ProcessName) $($_.Id)" }} catch {{}}
   }}
@@ -139,7 +148,7 @@ Start-Sleep -Seconds 1
 
 for ($i = 0; $i -lt 90; $i++) {{
   try {{
-    if (Test-Path $appExe) {{
+    if (Test-Path -LiteralPath $appExe) {{
       $fs = [System.IO.File]::Open($appExe, "Open", "ReadWrite", "None")
       $fs.Close()
       break
@@ -148,104 +157,62 @@ for ($i = 0; $i -lt 90; $i++) {{
     Start-Sleep -Milliseconds 500
   }}
 }}
-Log "file unlocked (or missing), running installer"
+Log "file unlocked, running installer (UAC)"
 
-$beforeTime = $null
-if (Test-Path $appExe) {{
-  $beforeTime = (Get-Item -LiteralPath $appExe).LastWriteTimeUtc
-  Log "before_mtime=$beforeTime"
+$beforeVer = $null
+if (Test-Path -LiteralPath $appExe) {{
+  $beforeVer = (Get-Item -LiteralPath $appExe).VersionInfo.ProductVersion
+  Log "before_version=$beforeVer"
 }}
 
-function Run-Installer {{
+# ShellExecute (default) so RequestExecutionLevel admin can show UAC.
+# /P = passive UI, /UPDATE = in-place upgrade, /R = installer starts the new exe.
+# /D= MUST be last and unquoted — installs into the folder of the running exe
+# (Program Files, custom path, etc.), not a hard-coded default.
+try {{
   if ($isMsi) {{
-    $msiArgs = @("/i", $installer, "/qn", "/norestart", "REINSTALL=ALL", "REINSTALLMODE=vomus")
+    $msiArgs = @("/i", $installer, "/passive", "/norestart")
     if ($installDir) {{ $msiArgs += "TARGETDIR=$installDir" }}
-    $p = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru -WindowStyle Hidden
-    return $p
-  }}
-  # NSIS: /D= MUST be last and the path must NOT be quoted (even with spaces).
-  # Use ProcessStartInfo so PowerShell does not split the path on spaces.
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = $installer
-  if ($installDir) {{
-    $psi.Arguments = "/S /D=$installDir"
+    Log "msi_args=$($msiArgs -join ' ')"
+    $p = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru
   }} else {{
-    $psi.Arguments = "/S"
+    # Build one argument string so /D=path with spaces stays intact for NSIS.
+    $nsisArgs = "/P /UPDATE /R"
+    if ($installDir) {{ $nsisArgs = "/P /UPDATE /R /D=$installDir" }}
+    Log "nsis_args=$nsisArgs"
+    $p = Start-Process -FilePath $installer -ArgumentList $nsisArgs -Wait -PassThru
   }}
-  $psi.UseShellExecute = $false
-  $psi.CreateNoWindow = $true
-  Log "nsis_args=$($psi.Arguments)"
-  $p = [System.Diagnostics.Process]::Start($psi)
-  if (-not $p) {{ return $null }}
-  $p.WaitForExit()
-  return $p
-}}
-
-$p = Run-Installer
-$code = if ($p) {{ $p.ExitCode }} else {{ -1 }}
-Log "installer_exit=$code"
-
-if ($code -ne 0) {{
-  Start-Sleep -Seconds 2
-  $p = Run-Installer
   $code = if ($p) {{ $p.ExitCode }} else {{ -1 }}
-  Log "installer_retry_exit=$code"
+  Log "installer_exit=$code"
+}} catch {{
+  Log "installer_start_fail $_"
+  Relaunch-Old
+  exit 1
 }}
 
 if ($code -ne 0) {{
-  Log "INSTALL_FAILED — not relaunching (keep old binary untouched in UI terms)"
+  Log "INSTALL_FAILED code=$code"
+  Relaunch-Old
   exit 1
 }}
 
 Start-Sleep -Seconds 2
-
-$candidates = @(
-  (Join-Path $installDir "Drift.exe"),
-  (Join-Path $installDir "p2pchat.exe"),
-  $appExe,
-  (Join-Path $env:LOCALAPPDATA "Drift\Drift.exe"),
-  (Join-Path $env:LOCALAPPDATA "p2pchat\p2pchat.exe")
-) | Where-Object {{ $_ -and (Test-Path $_) }} | Select-Object -Unique
-
-# Prefer the newest file (freshly written by the installer).
-$best = $candidates |
-  ForEach-Object {{ Get-Item -LiteralPath $_ }} |
-  Sort-Object LastWriteTimeUtc -Descending |
-  Select-Object -First 1
-
-if (-not $best) {{
-  Log "no_exe_to_relaunch"
-  exit 1
+$target = Join-Path $installDir "p2pchat.exe"
+if (-not (Test-Path -LiteralPath $target)) {{ $target = $appExe }}
+$afterVer = $null
+if (Test-Path -LiteralPath $target) {{
+  $afterVer = (Get-Item -LiteralPath $target).VersionInfo.ProductVersion
 }}
+Log "after_version=$afterVer path=$target"
 
-if ($beforeTime -and $best.LastWriteTimeUtc -le $beforeTime) {{
-  Log "WARN exe_mtime_not_newer before=$beforeTime after=$($best.LastWriteTimeUtc) path=$($best.FullName)"
-  # Still try default install locations in case /D= was ignored.
-  $fallback = @(
-    (Join-Path $env:LOCALAPPDATA "Drift\Drift.exe"),
-    (Join-Path $env:LOCALAPPDATA "p2pchat\Drift.exe")
-  ) | Where-Object {{ Test-Path $_ }} |
-    ForEach-Object {{ Get-Item -LiteralPath $_ }} |
-    Where-Object {{ $_.LastWriteTimeUtc -gt $beforeTime }} |
-    Sort-Object LastWriteTimeUtc -Descending |
-    Select-Object -First 1
-  if ($fallback) {{
-    $best = $fallback
-    Log "using_newer_fallback $($best.FullName)"
+$running = Get-Process -Name "p2pchat","Drift" -ErrorAction SilentlyContinue
+if (-not $running) {{
+  if ($target -and (Test-Path -LiteralPath $target)) {{
+    Log "installer did not relaunch, starting $target"
+    Start-Process -FilePath $target
   }} else {{
-    Log "INSTALL_MAY_HAVE_FAILED_SILENTLY — relaunching anyway but version may be old"
+    Relaunch-Old
   }}
-}}
-
-$ver = $best.VersionInfo.ProductVersion
-if (-not $ver) {{ $ver = $best.VersionInfo.FileVersion }}
-Log "relaunch $($best.FullName) version=$ver mtime=$($best.LastWriteTimeUtc)"
-
-try {{
-  Start-Process -FilePath $best.FullName
-}} catch {{
-  Log "relaunch_fail $_"
-  exit 1
 }}
 
 Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue

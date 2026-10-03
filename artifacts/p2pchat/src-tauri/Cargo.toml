@@ -1,6 +1,6 @@
 [package]
 name = "p2pchat"
-version = "0.9.7"
+version = "0.9.8"
 description = "Drift — private peer-to-peer messenger with a drifting host"
 authors = ["ASMAXI"]
 edition = "2021"

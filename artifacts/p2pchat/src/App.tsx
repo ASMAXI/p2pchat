@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { useEffect, useRef, useState, useMemo, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { Route, Switch, Link, useLocation, Router as WouterRouter } from 'wouter';
 import {
   Activity,
@@ -152,12 +152,14 @@ import {
 import {
   loadPttKeyCode,
   loadVoiceOverlayEnabled,
+  loadVoiceOverlayInteractive,
   loadVoiceOverlayOpacity,
   loadVoiceTalkMode,
   pttVkForCode,
   PTT_KEY_OPTIONS,
   savePttKeyCode,
   saveVoiceOverlayEnabled,
+  saveVoiceOverlayInteractive,
   saveVoiceOverlayOpacity,
   saveVoiceTalkMode,
   VOICE_OVERLAY_PAYLOAD_KEY,
@@ -1424,6 +1426,7 @@ function Workspace() {
   const userMutedRef = useRef(false);
   const [voiceOverlayEnabled, setVoiceOverlayEnabled] = useState(() => loadVoiceOverlayEnabled());
   const [voiceOverlayOpacity, setVoiceOverlayOpacity] = useState(() => loadVoiceOverlayOpacity());
+  const [voiceOverlayInteractive, setVoiceOverlayInteractive] = useState(() => loadVoiceOverlayInteractive());
   const [patriotPopupToken, setPatriotPopupToken] = useState(0);
   const triggerPatriotPopup = () => {
     if (shouldShowPatriotPopup()) setPatriotPopupToken((n) => n + 1);
@@ -1472,6 +1475,7 @@ function Workspace() {
       setPttKeyCode(key);
       setVoiceOverlayEnabled(loadVoiceOverlayEnabled());
       setVoiceOverlayOpacity(loadVoiceOverlayOpacity());
+      setVoiceOverlayInteractive(loadVoiceOverlayInteractive());
       if (activeVoice) applyEffectiveMicMute(userMutedRef.current, pttHeldRef.current, mode);
     };
     window.addEventListener('p2pchat-voice-settings', onVoiceSettings);
@@ -1607,6 +1611,7 @@ function Workspace() {
     const payload: VoiceOverlayPayload = {
       channelName,
       opacity: voiceOverlayOpacity,
+      interactive: voiceOverlayInteractive,
       peers,
     };
     try {
@@ -1617,7 +1622,7 @@ function Workspace() {
     void import('@tauri-apps/api/event').then(({ emit }) => {
       void emit('voice-overlay-state', payload);
     });
-  }, [activeVoice, voiceRooms, voicePeers, speakingPeers, peerVoiceStates, members, voiceOverlayOpacity, muted, pttHeld, voiceTalkMode, peerId, displayName]);
+  }, [activeVoice, voiceRooms, voicePeers, speakingPeers, peerVoiceStates, members, voiceOverlayOpacity, voiceOverlayInteractive, muted, pttHeld, voiceTalkMode, peerId, displayName]);
 
   useEffect(() => { writeStore(SERVER_KEY, server); }, [server]);
   useEffect(() => { writeStore(CHANNELS_KEY, channels); }, [channels]);
@@ -2493,6 +2498,45 @@ function PttKeyCaptureButton({ onCapture }: { onCapture: (code: PttKeyCode) => v
   );
 }
 
+type SettingsSectionId = 'appearance' | 'devices' | 'voice' | 'sounds' | 'app' | 'network' | 'advanced';
+
+function SettingsSection({
+  id,
+  title,
+  hint,
+  open,
+  onToggle,
+  children,
+  testId,
+}: {
+  id: SettingsSectionId;
+  title: string;
+  hint?: string;
+  open: boolean;
+  onToggle: (id: SettingsSectionId) => void;
+  children: ReactNode;
+  testId?: string;
+}) {
+  return (
+    <div className="mt-3 overflow-hidden rounded-xl border border-[hsl(var(--border))]" data-testid={testId}>
+      <button
+        type="button"
+        className="flex w-full items-start justify-between gap-3 px-4 py-3.5 text-left transition hover:bg-[hsl(var(--muted)/.35)]"
+        onClick={() => onToggle(id)}
+        aria-expanded={open}
+        data-testid={testId ? `${testId}-toggle` : undefined}
+      >
+        <span className="min-w-0">
+          <span className="block text-sm font-bold">{title}</span>
+          {hint && <span className="mt-0.5 block text-xs text-[hsl(var(--muted-foreground))]">{hint}</span>}
+        </span>
+        <ChevronDown size={18} className={`mt-0.5 shrink-0 text-[hsl(var(--muted-foreground))] transition ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && <div className="border-t border-[hsl(var(--border))] px-4 py-4">{children}</div>}
+    </div>
+  );
+}
+
 function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [, setLocation] = useLocation();
   const goBack = () => (onClose ? onClose() : setLocation('/server'));
@@ -2507,7 +2551,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [tunnelBusy, setTunnelBusy] = useState(false);
   const [tunnelMsg, setTunnelMsg] = useState('');
   const [saved, setSaved] = useState('');
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [openSection, setOpenSection] = useState<SettingsSectionId | null>('appearance');
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateMsg, setUpdateMsg] = useState('');
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
@@ -2525,9 +2569,32 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [pttKeyCode, setPttKeyCode] = useState<PttKeyCode>(() => loadPttKeyCode());
   const [voiceOverlayEnabled, setVoiceOverlayEnabled] = useState(() => loadVoiceOverlayEnabled());
   const [voiceOverlayOpacity, setVoiceOverlayOpacity] = useState(() => loadVoiceOverlayOpacity());
+  const [voiceOverlayInteractive, setVoiceOverlayInteractive] = useState(() => loadVoiceOverlayInteractive());
   const [updateProgress, setUpdateProgress] = useState<{ loaded: number; total: number | null; phase: string } | null>(null);
   const [tunnelProvider, setTunnelProvider] = useState<TunnelProviderId>(() => loadTunnelProvider());
   const [ngrokToken, setNgrokToken] = useState(() => loadNgrokAuthToken());
+
+  const toggleSection = (id: SettingsSectionId) => {
+    setOpenSection((current) => (current === id ? null : id));
+  };
+
+  const pushOverlayPayloadPatch = (patch: Partial<VoiceOverlayPayload>) => {
+    try {
+      const raw = window.localStorage.getItem(VOICE_OVERLAY_PAYLOAD_KEY);
+      const base: VoiceOverlayPayload = raw
+        ? (JSON.parse(raw) as VoiceOverlayPayload)
+        : { channelName: 'Голос', opacity: loadVoiceOverlayOpacity(), interactive: loadVoiceOverlayInteractive(), peers: [] };
+      const next = { ...base, ...patch };
+      window.localStorage.setItem(VOICE_OVERLAY_PAYLOAD_KEY, JSON.stringify(next));
+      void import('@tauri-apps/api/event').then(({ emit }) => {
+        void emit('voice-overlay-state', next);
+      });
+    } catch {
+      // ignore
+    }
+    window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
+    window.dispatchEvent(new CustomEvent('p2pchat-voice-overlay-push'));
+  };
 
   useEffect(() => {
     void currentAppVersion().then(setAppVersion);
@@ -2594,7 +2661,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
     }
     setUpdateBusy(true);
     setUpdateProgress({ loaded: 0, total: null, phase: 'download' });
-    setUpdateMsg(`Скачиваем Drift ${updateInfo.latestVersion}… Приложение закроется и обновится само.`);
+    setUpdateMsg(`Скачиваем Drift ${updateInfo.latestVersion}… Приложение закроется. Подтвердите запрос Windows (администратор) — иначе файлы в Program Files не заменятся.`);
     try {
       await installAppUpdate(updateInfo.downloadUrl, (loaded, total, phase) => {
         setUpdateProgress({ loaded, total, phase });
@@ -2666,370 +2733,368 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
         </Link>
         <button className="ghost-btn" onClick={goBack} data-testid="button-settings-back"><ArrowRight size={15} className="rotate-180" /> В комнату</button>
       </header>
-      <main className="mx-auto max-w-[640px] px-5 py-12 sm:px-10">
-        <h1 className="font-display text-4xl font-bold tracking-[-.06em]">Сеть и голос</h1>
-        <p className="mt-3 text-sm leading-6 text-[hsl(var(--muted-foreground))]">
-          По умолчанию desktop сам поднимает Cloudflare Tunnel и использует free TURN. Крестик окна сворачивает в трей — полный выход через ПКМ по иконке → Выход.
+      <main className="mx-auto max-w-[640px] px-5 py-10 sm:px-10">
+        <h1 className="font-display text-4xl font-bold tracking-[-.06em]">Настройки</h1>
+        <p className="mt-2 text-sm leading-6 text-[hsl(var(--muted-foreground))]">
+          Разделы ниже — раскройте нужный. Крестик окна сворачивает в трей; полный выход: ПКМ по иконке → Выход.
         </p>
 
-        <div className="mt-8 rounded-xl border border-[hsl(var(--border))] p-4">
-          <div className="text-sm font-bold">Тема интерфейса</div>
-          <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Оформление сохраняется на этом устройстве.</p>
-          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {APP_THEMES.map((theme) => (
-              <button
-                key={theme.id}
-                type="button"
-                className={`rounded-lg border px-3 py-2 text-left text-xs font-semibold transition ${themeId === theme.id ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/.12)]' : 'border-[hsl(var(--border))]'}`}
-                onClick={() => {
-                  setThemeId(theme.id);
-                  saveTheme(theme.id);
-                }}
-                data-testid={`button-theme-${theme.id}`}
-              >
-                {theme.label}
-                {theme.id === 'patriot' && (
-                  <span className="mt-1 flex items-center gap-1.5 text-[10px] font-normal text-[hsl(var(--muted-foreground))]">
-                    <span className="patriot-flag-bars" aria-hidden />
-                    флаг · звания
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-        </div>
+        <div className="mt-6">
+          <SettingsSection id="appearance" title="Внешний вид" hint="Тема интерфейса" open={openSection === 'appearance'} onToggle={toggleSection} testId="settings-section-appearance">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {APP_THEMES.map((theme) => (
+                <button
+                  key={theme.id}
+                  type="button"
+                  className={`rounded-lg border px-3 py-2 text-left text-xs font-semibold transition ${themeId === theme.id ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/.12)]' : 'border-[hsl(var(--border))]'}`}
+                  onClick={() => {
+                    setThemeId(theme.id);
+                    saveTheme(theme.id);
+                  }}
+                  data-testid={`button-theme-${theme.id}`}
+                >
+                  {theme.label}
+                  {theme.id === 'patriot' && (
+                    <span className="mt-1 flex items-center gap-1.5 text-[10px] font-normal text-[hsl(var(--muted-foreground))]">
+                      <span className="patriot-flag-bars" aria-hidden />
+                      флаг · звания
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </SettingsSection>
 
-        <div className="mt-6 rounded-xl border border-[hsl(var(--border))] p-4">
-          <div className="text-sm font-bold">Микрофон и звук</div>
-          <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Устройства применяются при следующем входе в голос (или сразу, если вы уже в комнате — перезайдите).</p>
-          <label className="field-label mt-3" htmlFor="audio-input">Вход (микрофон)</label>
-          <select
-            id="audio-input"
-            className="field-input"
-            value={audioInputId}
-            onChange={(event) => {
-              const id = event.target.value;
-              setAudioInputId(id);
-              saveAudioInputId(id);
-            }}
-            data-testid="select-audio-input"
-          >
-            <option value="">Системный по умолчанию</option>
-            {audioInputs.map((device) => (
-              <option key={device.deviceId} value={device.deviceId}>{device.label || `Микрофон ${device.deviceId.slice(0, 8)}`}</option>
-            ))}
-          </select>
-          <label className="field-label mt-3" htmlFor="audio-output">Выход (динамики)</label>
-          <select
-            id="audio-output"
-            className="field-input"
-            value={audioOutputId}
-            onChange={(event) => {
-              const id = event.target.value;
-              setAudioOutputId(id);
-              saveAudioOutputId(id);
-            }}
-            data-testid="select-audio-output"
-          >
-            <option value="">Системный по умолчанию</option>
-            {audioOutputs.map((device) => (
-              <option key={device.deviceId} value={device.deviceId}>{device.label || `Выход ${device.deviceId.slice(0, 8)}`}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="mt-6 rounded-xl border border-[hsl(var(--border))] p-4">
-          <div className="text-sm font-bold">Голос</div>
-          <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Режим микрофона и мини-оверлей поверх игр (desktop).</p>
-          <label className="field-label mt-3" htmlFor="voice-mode">Режим</label>
-          <select
-            id="voice-mode"
-            className="field-input"
-            value={voiceTalkMode}
-            onChange={(event) => {
-              const mode = event.target.value === 'ptt' ? 'ptt' : 'vad';
-              setVoiceTalkMode(mode);
-              saveVoiceTalkMode(mode);
-              window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
-            }}
-            data-testid="select-voice-mode"
-          >
-            <option value="vad">Активация голосом (по умолчанию)</option>
-            <option value="ptt">По нажатию клавиши (PTT)</option>
-          </select>
-          {voiceTalkMode === 'ptt' && (
-            <>
-              <label className="field-label mt-3" htmlFor="ptt-key">Клавиша PTT</label>
-              <select
-                id="ptt-key"
-                className="field-input"
-                value={pttKeyCode}
-                onChange={(event) => {
-                  const code = event.target.value;
-                  setPttKeyCode(code);
-                  savePttKeyCode(code);
-                  if (isDesktopShell()) {
-                    void import('@tauri-apps/api/core').then(({ invoke }) => {
-                      void invoke('set_ptt_vk', { vk: pttVkForCode(code) }).catch(() => {});
-                    });
-                  }
-                  window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
-                }}
-                data-testid="select-ptt-key"
-              >
-                {PTT_KEY_OPTIONS.map((option) => (
-                  <option key={option.code} value={option.code}>{option.label}</option>
-                ))}
-              </select>
-              <PttKeyCaptureButton
-                onCapture={(code) => {
-                  setPttKeyCode(code);
-                  savePttKeyCode(code);
-                  if (isDesktopShell()) {
-                    void import('@tauri-apps/api/core').then(({ invoke }) => {
-                      void invoke('set_ptt_vk', { vk: pttVkForCode(code) }).catch(() => {});
-                    });
-                  }
-                  window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
-                }}
-              />
-            </>
-          )}
-          <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={voiceOverlayEnabled}
-              disabled={!isDesktopShell()}
+          <SettingsSection id="devices" title="Микрофон и динамики" hint="Устройства ввода/вывода" open={openSection === 'devices'} onToggle={toggleSection} testId="settings-section-devices">
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">Применяются при следующем входе в голос (или перезайдите в комнату).</p>
+            <label className="field-label mt-3" htmlFor="audio-input">Вход (микрофон)</label>
+            <select
+              id="audio-input"
+              className="field-input"
+              value={audioInputId}
               onChange={(event) => {
-                const next = event.target.checked;
-                setVoiceOverlayEnabled(next);
-                saveVoiceOverlayEnabled(next);
-                if (isDesktopShell()) {
-                  void import('@tauri-apps/api/core').then(({ invoke }) => {
-                    if (!next) void invoke('hide_voice_overlay').catch(() => {});
-                  });
-                }
+                const id = event.target.value;
+                setAudioInputId(id);
+                saveAudioInputId(id);
+              }}
+              data-testid="select-audio-input"
+            >
+              <option value="">Системный по умолчанию</option>
+              {audioInputs.map((device) => (
+                <option key={device.deviceId} value={device.deviceId}>{device.label || `Микрофон ${device.deviceId.slice(0, 8)}`}</option>
+              ))}
+            </select>
+            <label className="field-label mt-3" htmlFor="audio-output">Выход (динамики)</label>
+            <select
+              id="audio-output"
+              className="field-input"
+              value={audioOutputId}
+              onChange={(event) => {
+                const id = event.target.value;
+                setAudioOutputId(id);
+                saveAudioOutputId(id);
+              }}
+              data-testid="select-audio-output"
+            >
+              <option value="">Системный по умолчанию</option>
+              {audioOutputs.map((device) => (
+                <option key={device.deviceId} value={device.deviceId}>{device.label || `Выход ${device.deviceId.slice(0, 8)}`}</option>
+              ))}
+            </select>
+          </SettingsSection>
+
+          <SettingsSection id="voice" title="Голос и оверлей" hint="PTT и мини-войс поверх игр" open={openSection === 'voice'} onToggle={toggleSection} testId="settings-section-voice">
+            <label className="field-label" htmlFor="voice-mode">Режим</label>
+            <select
+              id="voice-mode"
+              className="field-input"
+              value={voiceTalkMode}
+              onChange={(event) => {
+                const mode = event.target.value === 'ptt' ? 'ptt' : 'vad';
+                setVoiceTalkMode(mode);
+                saveVoiceTalkMode(mode);
                 window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
               }}
-              data-testid="checkbox-voice-overlay"
-            />
-            <span>
-              <span className="block text-xs font-bold">Мини-войс оверлей</span>
-              <span className="mt-0.5 block text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
-                Поверх игр (оконный / borderless): кто в текущем голосовом канале и кто говорит. Появляется после входа в голос.
-              </span>
-            </span>
-          </label>
-          {voiceOverlayEnabled && (
-            <div className="mt-3">
-              <label className="field-label" htmlFor="overlay-opacity">
-                Прозрачность оверлея · {Math.round(voiceOverlayOpacity * 100)}%
-              </label>
-              <input
-                id="overlay-opacity"
-                type="range"
-                min={15}
-                max={100}
-                value={Math.round(voiceOverlayOpacity * 100)}
-                onChange={(event) => {
-                  const next = Number(event.target.value) / 100;
-                  setVoiceOverlayOpacity(next);
-                  saveVoiceOverlayOpacity(next);
-                  try {
-                    const raw = window.localStorage.getItem(VOICE_OVERLAY_PAYLOAD_KEY);
-                    if (raw) {
-                      const parsed = JSON.parse(raw) as VoiceOverlayPayload;
-                      parsed.opacity = next;
-                      window.localStorage.setItem(VOICE_OVERLAY_PAYLOAD_KEY, JSON.stringify(parsed));
-                      void import('@tauri-apps/api/event').then(({ emit }) => {
-                        void emit('voice-overlay-state', parsed);
-                      });
-                    } else {
-                      const stub: VoiceOverlayPayload = { channelName: 'Голос', opacity: next, peers: [] };
-                      window.localStorage.setItem(VOICE_OVERLAY_PAYLOAD_KEY, JSON.stringify(stub));
-                      void import('@tauri-apps/api/event').then(({ emit }) => {
-                        void emit('voice-overlay-state', stub);
+              data-testid="select-voice-mode"
+            >
+              <option value="vad">Активация голосом (по умолчанию)</option>
+              <option value="ptt">По нажатию клавиши (PTT)</option>
+            </select>
+            {voiceTalkMode === 'ptt' && (
+              <>
+                <label className="field-label mt-3" htmlFor="ptt-key">Клавиша PTT</label>
+                <select
+                  id="ptt-key"
+                  className="field-input"
+                  value={pttKeyCode}
+                  onChange={(event) => {
+                    const code = event.target.value;
+                    setPttKeyCode(code);
+                    savePttKeyCode(code);
+                    if (isDesktopShell()) {
+                      void import('@tauri-apps/api/core').then(({ invoke }) => {
+                        void invoke('set_ptt_vk', { vk: pttVkForCode(code) }).catch(() => {});
                       });
                     }
-                  } catch {
-                    // ignore
+                    window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
+                  }}
+                  data-testid="select-ptt-key"
+                >
+                  {PTT_KEY_OPTIONS.map((option) => (
+                    <option key={option.code} value={option.code}>{option.label}</option>
+                  ))}
+                </select>
+                <PttKeyCaptureButton
+                  onCapture={(code) => {
+                    setPttKeyCode(code);
+                    savePttKeyCode(code);
+                    if (isDesktopShell()) {
+                      void import('@tauri-apps/api/core').then(({ invoke }) => {
+                        void invoke('set_ptt_vk', { vk: pttVkForCode(code) }).catch(() => {});
+                      });
+                    }
+                    window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
+                  }}
+                />
+              </>
+            )}
+            <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={voiceOverlayEnabled}
+                disabled={!isDesktopShell()}
+                onChange={(event) => {
+                  const next = event.target.checked;
+                  setVoiceOverlayEnabled(next);
+                  saveVoiceOverlayEnabled(next);
+                  if (isDesktopShell()) {
+                    void import('@tauri-apps/api/core').then(({ invoke }) => {
+                      if (!next) void invoke('hide_voice_overlay').catch(() => {});
+                    });
                   }
                   window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
-                  window.dispatchEvent(new CustomEvent('p2pchat-voice-overlay-push'));
                 }}
-                className="w-full"
-                data-testid="range-overlay-opacity"
+                data-testid="checkbox-voice-overlay"
               />
-            </div>
-          )}
-        </div>
-
-        <div className="mt-6 rounded-xl border border-[hsl(var(--border))] p-4">
-          <div className="text-sm font-bold">Звуки интерфейса</div>
-          <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={uiSoundsEnabled}
-              onChange={(event) => {
-                const next = event.target.checked;
-                setUiSoundsEnabled(next);
-                saveUiSoundsEnabled(next);
-                if (next) playUiSound('chat-text');
-              }}
-              data-testid="checkbox-ui-sounds"
-            />
-            <span>
-              <span className="block text-xs font-bold">Звуки событий</span>
-              <span className="mt-0.5 block text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
-                Вход на сервер, вход в голос, текст и картинка в чате (не свои действия). Не играют при «звук выкл».
-              </span>
-            </span>
-          </label>
-          <div className="mt-4 rounded-lg border border-[hsl(var(--border))] p-3" data-testid="startup-sound-picker">
-            <div className="text-xs font-bold">Звук запуска Drift</div>
-            <p className="mt-1 text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">Три варианта ~2 с. Нажмите «Слушать», выберите понравившийся.</p>
-            <div className="mt-3 space-y-2">
-              {STARTUP_SOUND_OPTIONS.map((option) => {
-                const selected = startupSoundId === option.id;
-                return (
-                  <div key={option.id} className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 ${selected ? 'border-[hsl(var(--primary)/.55)] bg-[hsl(var(--primary)/.08)]' : 'border-[hsl(var(--border))]'}`}>
-                    <button
-                      type="button"
-                      className="min-w-0 flex-1 text-left"
-                      onClick={() => {
-                        setStartupSoundId(option.id);
-                        saveStartupSoundId(option.id);
-                      }}
-                      data-testid={`button-select-startup-${option.id}`}
-                    >
-                      <span className="block text-xs font-bold">{option.label}{selected ? ' · выбран' : ''}</span>
-                      <span className="mt-0.5 block text-[10px] text-[hsl(var(--muted-foreground))]">{option.hint}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-btn !h-8 shrink-0 !px-2.5 text-[10px]"
-                      onClick={() => {
-                        setStartupSoundId(option.id);
-                        saveStartupSoundId(option.id);
-                        previewStartupSound(option.id);
-                      }}
-                      data-testid={`button-preview-startup-${option.id}`}
-                    >
-                      Слушать
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-6 rounded-xl border border-[hsl(var(--border))] p-4">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="text-sm font-bold">Автозапуск Drift с Windows</div>
-              <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Запускать приложение при входе в систему (только desktop).</p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={autostartEnabled}
-              className={`relative h-7 w-12 shrink-0 rounded-full transition ${autostartEnabled ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted))]'}`}
-              disabled={autostartBusy || !isDesktopShell()}
-              onClick={() => {
-                const next = !autostartEnabled;
-                setAutostartBusy(true);
-                void setAutostartEnabled(next)
-                  .then((ok) => {
-                    setAutostartEnabledState(ok);
-                    setSaved(next ? 'Автозапуск включён' : 'Автозапуск выключен');
-                  })
-                  .catch((error) => setSaved(error instanceof Error ? error.message : 'Не удалось изменить автозапуск'))
-                  .finally(() => setAutostartBusy(false));
-              }}
-              data-testid="toggle-autostart"
-            >
-              <span className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition ${autostartEnabled ? 'left-[22px]' : 'left-0.5'}`} />
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-6 rounded-xl border border-[hsl(var(--border))] p-4">
-          <div className="text-sm font-bold">Обновления</div>
-          <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Drift {appVersion} · создатель ASMAXI. Релизы — GitHub ASMAXI/p2pchat.</p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button type="button" className="primary-btn" disabled={updateBusy} onClick={() => void checkUpdates()} data-testid="button-check-updates">
-              {updateBusy ? 'Подождите…' : 'Проверить обновления'}
-            </button>
-            {updateInfo && !updateInfo.upToDate && (
-              <button type="button" className="ghost-btn" disabled={updateBusy} onClick={() => void installUpdate()} data-testid="button-download-update">
-                {updateInfo.downloadUrl && isDesktopShell() ? `Обновить до ${updateInfo.latestVersion}` : 'Открыть страницу релиза'}
-              </button>
-            )}
-          </div>
-          {updateMsg && <p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]" data-testid="text-update-status">{updateMsg}</p>}
-        </div>
-
-        <div className="mt-6 rounded-xl border border-[hsl(var(--border))] p-4">
-          <div className="text-sm font-bold">Публичный туннель</div>
-          <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-            Чат и signaling идут через туннель. Голос — отдельно (TURN/Metered). Если Cloudflare не пускает друзей — переключитесь на ngrok или localhost.run.
-          </p>
-          <div className="mt-3 flex flex-col gap-2">
-            {TUNNEL_PROVIDER_OPTIONS.map((opt) => (
-              <label
-                key={opt.id}
-                className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 text-sm ${
-                  tunnelProvider === opt.id
-                    ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/.08)]'
-                    : 'border-[hsl(var(--border))]'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="tunnel-provider"
-                  className="mt-1"
-                  checked={tunnelProvider === opt.id}
-                  onChange={() => setTunnelProvider(opt.id)}
-                  data-testid={`radio-tunnel-${opt.id}`}
-                />
-                <span>
-                  <span className="font-semibold">{opt.label}</span>
-                  <span className="mt-0.5 block text-xs text-[hsl(var(--muted-foreground))]">{opt.hint}</span>
+              <span>
+                <span className="block text-xs font-bold">Мини-войс оверлей</span>
+                <span className="mt-0.5 block text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
+                  Поверх игр (оконный / borderless): кто в канале и кто говорит.
                 </span>
-              </label>
-            ))}
-          </div>
-          {tunnelProvider === 'ngrok' && (
-            <div className="mt-3">
-              <label className="field-label" htmlFor="ngrok-token">ngrok Authtoken</label>
-              <input
-                id="ngrok-token"
-                className="field-input"
-                value={ngrokToken}
-                onChange={(e) => setNgrokToken(e.target.value)}
-                placeholder="из dashboard.ngrok.com → Your Authtoken"
-                data-testid="input-ngrok-token"
-              />
-            </div>
-          )}
-          <p className="mt-3 text-xs text-[hsl(var(--muted-foreground))]">
-            Текущий URL: {publicUrl || 'ещё нет — создайте комнату или нажмите «Поднять»'}
-          </p>
-          <button type="button" className="primary-btn mt-3" disabled={tunnelBusy || !isDesktopShell()} onClick={() => void retryTunnel()} data-testid="button-retry-tunnel">
-            {tunnelBusy ? 'Поднимаем…' : 'Поднять / обновить туннель'}
-          </button>
-          {tunnelMsg && <p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]" data-testid="text-tunnel-status">{tunnelMsg}</p>}
-        </div>
+              </span>
+            </label>
+            {voiceOverlayEnabled && (
+              <div className="mt-3 space-y-3">
+                <div>
+                  <label className="field-label" htmlFor="overlay-opacity">
+                    Прозрачность оверлея · {Math.round(voiceOverlayOpacity * 100)}%
+                  </label>
+                  <input
+                    id="overlay-opacity"
+                    type="range"
+                    min={15}
+                    max={100}
+                    value={Math.round(voiceOverlayOpacity * 100)}
+                    onChange={(event) => {
+                      const next = Number(event.target.value) / 100;
+                      setVoiceOverlayOpacity(next);
+                      saveVoiceOverlayOpacity(next);
+                      pushOverlayPayloadPatch({ opacity: next });
+                    }}
+                    className="w-full"
+                    data-testid="range-overlay-opacity"
+                  />
+                </div>
+                <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={voiceOverlayInteractive}
+                    disabled={!isDesktopShell()}
+                    onChange={(event) => {
+                      const next = event.target.checked;
+                      setVoiceOverlayInteractive(next);
+                      saveVoiceOverlayInteractive(next);
+                      pushOverlayPayloadPatch({ interactive: next });
+                    }}
+                    data-testid="checkbox-voice-overlay-interactive"
+                  />
+                  <span>
+                    <span className="block text-xs font-bold">Поменять расположение</span>
+                    <span className="mt-0.5 block text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
+                      Вкл — можно перетаскивать оверлей. Выкл — клики проходят сквозь него к игре/кнопкам под ним.
+                    </span>
+                  </span>
+                </label>
+              </div>
+            )}
+          </SettingsSection>
 
-        <form className="mt-6 space-y-5" onSubmit={save} data-testid="form-network-settings">
-          <button type="button" className="ghost-btn" onClick={() => setShowAdvanced((v) => !v)} data-testid="button-toggle-advanced">
-            {showAdvanced ? 'Скрыть расширенные' : 'Расширенные (TURN / Metered / URL)'}
-          </button>
-          {showAdvanced && (
-            <>
+          <SettingsSection id="sounds" title="Звуки" hint="События и звук запуска" open={openSection === 'sounds'} onToggle={toggleSection} testId="settings-section-sounds">
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={uiSoundsEnabled}
+                onChange={(event) => {
+                  const next = event.target.checked;
+                  setUiSoundsEnabled(next);
+                  saveUiSoundsEnabled(next);
+                  if (next) playUiSound('chat-text');
+                }}
+                data-testid="checkbox-ui-sounds"
+              />
+              <span>
+                <span className="block text-xs font-bold">Звуки событий</span>
+                <span className="mt-0.5 block text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
+                  Вход на сервер, голос, чат (не свои действия). Не играют при «звук выкл».
+                </span>
+              </span>
+            </label>
+            <div className="mt-4 rounded-lg border border-[hsl(var(--border))] p-3" data-testid="startup-sound-picker">
+              <div className="text-xs font-bold">Звук запуска Drift</div>
+              <p className="mt-1 text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">Три варианта ~2 с. «Слушать» — превью.</p>
+              <div className="mt-3 space-y-2">
+                {STARTUP_SOUND_OPTIONS.map((option) => {
+                  const selected = startupSoundId === option.id;
+                  return (
+                    <div key={option.id} className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 ${selected ? 'border-[hsl(var(--primary)/.55)] bg-[hsl(var(--primary)/.08)]' : 'border-[hsl(var(--border))]'}`}>
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 text-left"
+                        onClick={() => {
+                          setStartupSoundId(option.id);
+                          saveStartupSoundId(option.id);
+                        }}
+                        data-testid={`button-select-startup-${option.id}`}
+                      >
+                        <span className="block text-xs font-bold">{option.label}{selected ? ' · выбран' : ''}</span>
+                        <span className="mt-0.5 block text-[10px] text-[hsl(var(--muted-foreground))]">{option.hint}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-btn !h-8 shrink-0 !px-2.5 text-[10px]"
+                        onClick={() => {
+                          setStartupSoundId(option.id);
+                          saveStartupSoundId(option.id);
+                          previewStartupSound(option.id);
+                        }}
+                        data-testid={`button-preview-startup-${option.id}`}
+                      >
+                        Слушать
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </SettingsSection>
+
+          <SettingsSection id="app" title="Приложение" hint="Автозапуск и обновления" open={openSection === 'app'} onToggle={toggleSection} testId="settings-section-app">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-bold">Автозапуск с Windows</div>
+                <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Запускать Drift при входе в систему.</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={autostartEnabled}
+                className={`relative h-7 w-12 shrink-0 rounded-full transition ${autostartEnabled ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted))]'}`}
+                disabled={autostartBusy || !isDesktopShell()}
+                onClick={() => {
+                  const next = !autostartEnabled;
+                  setAutostartBusy(true);
+                  void setAutostartEnabled(next)
+                    .then((ok) => {
+                      setAutostartEnabledState(ok);
+                      setSaved(next ? 'Автозапуск включён' : 'Автозапуск выключен');
+                    })
+                    .catch((error) => setSaved(error instanceof Error ? error.message : 'Не удалось изменить автозапуск'))
+                    .finally(() => setAutostartBusy(false));
+                }}
+                data-testid="toggle-autostart"
+              >
+                <span className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition ${autostartEnabled ? 'left-[22px]' : 'left-0.5'}`} />
+              </button>
+            </div>
+            <div className="mt-5 border-t border-[hsl(var(--border))] pt-4">
+              <div className="text-sm font-bold">Обновления</div>
+              <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Drift {appVersion} · ASMAXI · GitHub ASMAXI/p2pchat</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" className="primary-btn" disabled={updateBusy} onClick={() => void checkUpdates()} data-testid="button-check-updates">
+                  {updateBusy ? 'Подождите…' : 'Проверить обновления'}
+                </button>
+                {updateInfo && !updateInfo.upToDate && (
+                  <button type="button" className="ghost-btn" disabled={updateBusy} onClick={() => void installUpdate()} data-testid="button-download-update">
+                    {updateInfo.downloadUrl && isDesktopShell() ? `Обновить до ${updateInfo.latestVersion}` : 'Открыть страницу релиза'}
+                  </button>
+                )}
+              </div>
+              {updateMsg && <p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]" data-testid="text-update-status">{updateMsg}</p>}
+            </div>
+          </SettingsSection>
+
+          <SettingsSection id="network" title="Сеть и туннель" hint="Cloudflare / ngrok / localhost.run" open={openSection === 'network'} onToggle={toggleSection} testId="settings-section-network">
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">
+              Чат и signaling — через туннель. Голос — отдельно (TURN/Metered).
+            </p>
+            <div className="mt-3 flex flex-col gap-2">
+              {TUNNEL_PROVIDER_OPTIONS.map((opt) => (
+                <label
+                  key={opt.id}
+                  className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 text-sm ${
+                    tunnelProvider === opt.id
+                      ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/.08)]'
+                      : 'border-[hsl(var(--border))]'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="tunnel-provider"
+                    className="mt-1"
+                    checked={tunnelProvider === opt.id}
+                    onChange={() => {
+                      setTunnelProvider(opt.id);
+                      saveTunnelProvider(opt.id);
+                    }}
+                    data-testid={`radio-tunnel-${opt.id}`}
+                  />
+                  <span>
+                    <span className="font-semibold">{opt.label}</span>
+                    <span className="mt-0.5 block text-xs text-[hsl(var(--muted-foreground))]">{opt.hint}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            {tunnelProvider === 'ngrok' && (
+              <div className="mt-3">
+                <label className="field-label" htmlFor="ngrok-token">ngrok Authtoken</label>
+                <input
+                  id="ngrok-token"
+                  className="field-input"
+                  value={ngrokToken}
+                  onChange={(e) => {
+                    setNgrokToken(e.target.value);
+                    saveNgrokAuthToken(e.target.value);
+                  }}
+                  placeholder="из dashboard.ngrok.com → Your Authtoken"
+                  data-testid="input-ngrok-token"
+                />
+              </div>
+            )}
+            <p className="mt-3 text-xs text-[hsl(var(--muted-foreground))]">
+              Текущий URL: {publicUrl || 'ещё нет — создайте комнату или нажмите «Поднять»'}
+            </p>
+            <button type="button" className="primary-btn mt-3" disabled={tunnelBusy || !isDesktopShell()} onClick={() => void retryTunnel()} data-testid="button-retry-tunnel">
+              {tunnelBusy ? 'Поднимаем…' : 'Поднять / обновить туннель'}
+            </button>
+            {tunnelMsg && <p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]" data-testid="text-tunnel-status">{tunnelMsg}</p>}
+          </SettingsSection>
+
+          <SettingsSection id="advanced" title="Расширенные" hint="TURN / Metered / URL вручную" open={openSection === 'advanced'} onToggle={toggleSection} testId="settings-section-advanced">
+            <form className="space-y-4" onSubmit={save} data-testid="form-network-settings">
               <div>
                 <label className="field-label" htmlFor="public-url">Публичный URL вручную</label>
                 <input id="public-url" className="field-input" value={publicUrl} onChange={(e) => setPublicUrlDraft(e.target.value)} placeholder="https://….trycloudflare.com" data-testid="input-public-url" />
@@ -3041,7 +3106,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
               <div className="rounded-xl border border-[hsl(var(--border))] p-4">
                 <div className="text-sm font-bold">Голос через интернет (TURN)</div>
                 <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-                  В разных Wi‑Fi/сетях без рабочего TURN голос не поднимется (чат при этом работает). Бесплатно: аккаунт на metered.ca → API key ниже. Или свой coturn.
+                  В разных сетях без TURN голос не поднимется. Metered API key или свой coturn.
                 </p>
                 <label className="field-label mt-3" htmlFor="metered-key">Metered API key</label>
                 <input id="metered-key" className="field-input" value={meteredKey} onChange={(e) => setMeteredKey(e.target.value)} placeholder="из dashboard Metered" data-testid="input-metered-key" />
@@ -3058,11 +3123,13 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
                 <label className="field-label mt-3" htmlFor="turn-cred">Credential</label>
                 <input id="turn-cred" className="field-input" type="password" value={turnCred} onChange={(e) => setTurnCred(e.target.value)} data-testid="input-turn-cred" />
               </div>
-            </>
-          )}
-          <button type="submit" className="primary-btn" data-testid="button-save-settings">Сохранить</button>
-          {saved && <p className="text-xs text-[hsl(var(--primary))]" data-testid="text-settings-saved">{saved}</p>}
-        </form>
+              <div className="flex flex-wrap items-center gap-3">
+                <button type="submit" className="primary-btn" data-testid="button-save-settings">Сохранить сеть</button>
+                {saved && <p className="text-xs text-[hsl(var(--primary))]" data-testid="text-settings-saved">{saved}</p>}
+              </div>
+            </form>
+          </SettingsSection>
+        </div>
       </main>
     </div>
   );

@@ -2,6 +2,7 @@ const MODE_KEY = "p2pchat-voice-mode";
 const PTT_KEY = "p2pchat-ptt-key";
 const OVERLAY_KEY = "p2pchat-voice-overlay";
 const OVERLAY_OPACITY_KEY = "p2pchat-voice-overlay-opacity";
+const OVERLAY_INTERACTIVE_KEY = "p2pchat-voice-overlay-interactive";
 /** JSON payload for overlay window (storage fallback when not using Tauri events). */
 export const VOICE_OVERLAY_PAYLOAD_KEY = "p2pchat-voice-overlay-state";
 
@@ -81,6 +82,19 @@ export function saveVoiceOverlayOpacity(opacity: number): void {
   window.localStorage.setItem(OVERLAY_OPACITY_KEY, String(clamped));
 }
 
+/** When false (default): clicks pass through the overlay to the game/app behind. */
+export function loadVoiceOverlayInteractive(): boolean {
+  try {
+    return window.localStorage.getItem(OVERLAY_INTERACTIVE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveVoiceOverlayInteractive(interactive: boolean): void {
+  window.localStorage.setItem(OVERLAY_INTERACTIVE_KEY, interactive ? "1" : "0");
+}
+
 export type VoiceOverlayPeer = {
   id: string;
   name: string;
@@ -91,5 +105,7 @@ export type VoiceOverlayPeer = {
 export type VoiceOverlayPayload = {
   channelName: string;
   opacity: number;
+  /** Allow drag / hit-test; when false, cursor events are ignored. */
+  interactive?: boolean;
   peers: VoiceOverlayPeer[];
 };

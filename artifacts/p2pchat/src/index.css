@@ -563,8 +563,16 @@ html.voice-overlay-mode #root {
   border: 1px solid rgba(255, 255, 255, 0.1);
   font-family: var(--app-font-sans, system-ui, sans-serif);
   color: rgba(245, 247, 250, 0.96);
-  -webkit-app-region: drag;
   user-select: none;
+  -webkit-app-region: no-drag;
+}
+.voice-overlay-panel.is-interactive {
+  -webkit-app-region: drag;
+  cursor: grab;
+  outline: 1px solid rgba(255, 255, 255, 0.18);
+}
+.voice-overlay-panel.is-clickthrough {
+  -webkit-app-region: no-drag;
 }
 .voice-overlay-channel {
   font-size: 10px;

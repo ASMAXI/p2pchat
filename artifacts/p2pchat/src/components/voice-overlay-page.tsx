@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   type VoiceOverlayPayload,
   VOICE_OVERLAY_PAYLOAD_KEY,
+  loadVoiceOverlayInteractive,
   loadVoiceOverlayOpacity,
 } from "@/lib/voice-settings";
 import { isDesktopShell } from "@/lib/p2p-client";
@@ -9,6 +10,7 @@ import { isDesktopShell } from "@/lib/p2p-client";
 const emptyPayload: VoiceOverlayPayload = {
   channelName: "",
   opacity: loadVoiceOverlayOpacity(),
+  interactive: loadVoiceOverlayInteractive(),
   peers: [],
 };
 
@@ -23,6 +25,8 @@ function parsePayload(raw: string | null): VoiceOverlayPayload | null {
       typeof data.opacity === "number" && data.opacity >= 0.15 && data.opacity <= 1
         ? data.opacity
         : loadVoiceOverlayOpacity();
+    const interactive =
+      typeof data.interactive === "boolean" ? data.interactive : loadVoiceOverlayInteractive();
     const seen = new Set<string>();
     const peers = data.peers.filter((peer) => {
       const key = `${peer.id}|${peer.name}`;
@@ -31,7 +35,7 @@ function parsePayload(raw: string | null): VoiceOverlayPayload | null {
       seen.add(peer.name);
       return true;
     });
-    return { ...data, opacity, peers };
+    return { ...data, opacity, interactive, peers };
   } catch {
     return null;
   }
@@ -42,13 +46,26 @@ function readPayload(): VoiceOverlayPayload {
     parsePayload(window.localStorage.getItem(VOICE_OVERLAY_PAYLOAD_KEY)) ?? {
       ...emptyPayload,
       opacity: loadVoiceOverlayOpacity(),
+      interactive: loadVoiceOverlayInteractive(),
     }
   );
+}
+
+async function applyClickThrough(interactive: boolean): Promise<void> {
+  if (!isDesktopShell()) return;
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    // ignore=true → clicks pass through to whatever is behind
+    await getCurrentWindow().setIgnoreCursorEvents(!interactive);
+  } catch {
+    // ignore
+  }
 }
 
 export function VoiceOverlayPage() {
   const [payload, setPayload] = useState<VoiceOverlayPayload>(readPayload);
   const panelRef = useRef<HTMLDivElement>(null);
+  const interactive = Boolean(payload.interactive);
 
   useEffect(() => {
     document.documentElement.classList.add("voice-overlay-mode");
@@ -95,6 +112,10 @@ export function VoiceOverlayPage() {
     };
   }, []);
 
+  useEffect(() => {
+    void applyClickThrough(interactive);
+  }, [interactive]);
+
   // Shrink the native window to the panel so there is no empty frame around it.
   useEffect(() => {
     if (!isDesktopShell()) return;
@@ -115,7 +136,7 @@ export function VoiceOverlayPage() {
     <div className="voice-overlay-root">
       <div
         ref={panelRef}
-        className="voice-overlay-panel"
+        className={`voice-overlay-panel${interactive ? " is-interactive" : " is-clickthrough"}`}
         style={{ background: `rgba(12, 14, 18, ${bgAlpha})` }}
       >
         <div className="voice-overlay-channel">{payload.channelName || "Голосовой канал"}</div>
