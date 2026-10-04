@@ -28,6 +28,7 @@
     "allow-start-ptt-watch",
     "allow-stop-ptt-watch",
     "allow-set-ptt-vk",
+    "allow-set-voice-hotkey-vks",
     "allow-show-voice-overlay",
     "allow-hide-voice-overlay",
     "allow-close-voice-overlay",

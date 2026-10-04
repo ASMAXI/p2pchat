@@ -161,13 +161,19 @@ import {
   type StartupSoundId,
 } from '@/lib/ui-sounds';
 import {
+  MUTE_DEAFEN_KEY_OPTIONS,
+  loadDeafenHotkeyCode,
+  loadMuteHotkeyCode,
   loadPttKeyCode,
   loadVoiceOverlayEnabled,
   loadVoiceOverlayInteractive,
   loadVoiceOverlayOpacity,
   loadVoiceTalkMode,
+  hotkeyVkForCode,
   pttVkForCode,
   PTT_KEY_OPTIONS,
+  saveDeafenHotkeyCode,
+  saveMuteHotkeyCode,
   savePttKeyCode,
   saveVoiceOverlayEnabled,
   saveVoiceOverlayInteractive,
@@ -1569,10 +1575,14 @@ function Workspace() {
   const voiceChannelRef = useRef<string | null>(null);
   const [voiceTalkMode, setVoiceTalkMode] = useState<VoiceTalkMode>(() => loadVoiceTalkMode());
   const [pttKeyCode, setPttKeyCode] = useState<PttKeyCode>(() => loadPttKeyCode());
+  const [muteHotkeyCode, setMuteHotkeyCode] = useState<PttKeyCode>(() => loadMuteHotkeyCode());
+  const [deafenHotkeyCode, setDeafenHotkeyCode] = useState<PttKeyCode>(() => loadDeafenHotkeyCode());
   const [pttHeld, setPttHeld] = useState(false);
   const pttHeldRef = useRef(false);
   const voiceTalkModeRef = useRef(voiceTalkMode);
   const pttKeyCodeRef = useRef(pttKeyCode);
+  const muteHotkeyCodeRef = useRef(muteHotkeyCode);
+  const deafenHotkeyCodeRef = useRef(deafenHotkeyCode);
   const userMutedRef = useRef(false);
   const [voiceOverlayEnabled, setVoiceOverlayEnabled] = useState(() => loadVoiceOverlayEnabled());
   const [voiceOverlayOpacity, setVoiceOverlayOpacity] = useState(() => loadVoiceOverlayOpacity());
@@ -1583,6 +1593,8 @@ function Workspace() {
   };
   voiceTalkModeRef.current = voiceTalkMode;
   pttKeyCodeRef.current = pttKeyCode;
+  muteHotkeyCodeRef.current = muteHotkeyCode;
+  deafenHotkeyCodeRef.current = deafenHotkeyCode;
   userMutedRef.current = muted;
   pttHeldRef.current = pttHeld;
 
@@ -1623,6 +1635,8 @@ function Workspace() {
       const key = loadPttKeyCode();
       setVoiceTalkMode(mode);
       setPttKeyCode(key);
+      setMuteHotkeyCode(loadMuteHotkeyCode());
+      setDeafenHotkeyCode(loadDeafenHotkeyCode());
       setVoiceOverlayEnabled(loadVoiceOverlayEnabled());
       setVoiceOverlayOpacity(loadVoiceOverlayOpacity());
       setVoiceOverlayInteractive(loadVoiceOverlayInteractive());
@@ -1633,7 +1647,23 @@ function Workspace() {
   }, [activeVoice]);
 
   useEffect(() => {
-    if (!activeVoice || voiceTalkMode !== 'ptt' || !isDesktopShell()) {
+    if (!isDesktopShell()) return;
+    void import('@tauri-apps/api/core').then(({ invoke }) => {
+      void invoke('set_voice_hotkey_vks', {
+        pttVk: pttVkForCode(pttKeyCode),
+        muteVk: hotkeyVkForCode(muteHotkeyCode),
+        deafenVk: hotkeyVkForCode(deafenHotkeyCode),
+      }).catch(() => {});
+    });
+  }, [pttKeyCode, muteHotkeyCode, deafenHotkeyCode]);
+
+  useEffect(() => {
+    const pttMode = voiceTalkMode === 'ptt';
+    const muteBound = Boolean(muteHotkeyCode);
+    const deafenBound = Boolean(deafenHotkeyCode);
+    const needWatch = Boolean(activeVoice && (pttMode || muteBound || deafenBound));
+
+    if (!needWatch) {
       if (isDesktopShell()) {
         void import('@tauri-apps/api/core').then(({ invoke }) => {
           void invoke('stop_ptt_watch').catch(() => {});
@@ -1643,25 +1673,64 @@ function Workspace() {
       pttHeldRef.current = false;
       return;
     }
-    const vk = pttVkForCode(pttKeyCode);
+
     let unlistenDown: (() => void) | undefined;
     let unlistenUp: (() => void) | undefined;
+    let unlistenMute: (() => void) | undefined;
+    let unlistenDeafen: (() => void) | undefined;
     let closed = false;
 
     const setHeld = (held: boolean) => {
+      if (!pttMode) return;
       pttHeldRef.current = held;
       setPttHeld(held);
       applyEffectiveMicMute(userMutedRef.current, held, 'ptt');
     };
 
+    const toggleMute = () => {
+      setMuted((value) => {
+        const next = !value;
+        applyEffectiveMicMute(next, pttHeldRef.current, voiceTalkModeRef.current);
+        return next;
+      });
+    };
+
+    const toggleDeafen = () => {
+      setDeafened((value) => {
+        const next = !value;
+        voiceMeshRef.current?.setDeafened(next);
+        return next;
+      });
+    };
+
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.code !== pttKeyCodeRef.current || event.repeat) return;
+      if (event.repeat) return;
       if (event.code === 'Mouse4' || event.code === 'Mouse5') return;
-      event.preventDefault();
-      setHeld(true);
+      const code = event.code;
+      if (pttMode && code === pttKeyCodeRef.current) {
+        event.preventDefault();
+        setHeld(true);
+        return;
+      }
+      // Desktop: mute/deafen приходят из глобального watch (иначе двойной toggle при фокусе).
+      if (isDesktopShell()) return;
+      if (muteBound && code === muteHotkeyCodeRef.current && code !== pttKeyCodeRef.current) {
+        event.preventDefault();
+        toggleMute();
+        return;
+      }
+      if (
+        deafenBound
+        && code === deafenHotkeyCodeRef.current
+        && code !== pttKeyCodeRef.current
+        && code !== muteHotkeyCodeRef.current
+      ) {
+        event.preventDefault();
+        toggleDeafen();
+      }
     };
     const onKeyUp = (event: globalThis.KeyboardEvent) => {
-      if (event.code !== pttKeyCodeRef.current) return;
+      if (!pttMode || event.code !== pttKeyCodeRef.current) return;
       event.preventDefault();
       setHeld(false);
     };
@@ -1669,23 +1738,44 @@ function Workspace() {
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
 
-    void import('@tauri-apps/api/core').then(({ invoke }) => {
-      void invoke('start_ptt_watch', { vk }).catch(() => {});
-    });
-    void import('@tauri-apps/api/event').then(({ listen }) => {
-      void listen('ptt-down', () => {
-        if (!closed) setHeld(true);
-      }).then((fn) => {
-        unlistenDown = fn;
+    if (isDesktopShell()) {
+      const pttVk = pttMode ? pttVkForCode(pttKeyCode) : 0;
+      const muteVk = hotkeyVkForCode(muteHotkeyCode);
+      const deafenVk = hotkeyVkForCode(deafenHotkeyCode);
+      void import('@tauri-apps/api/core').then(({ invoke }) => {
+        void invoke('start_ptt_watch', { vk: pttVk, muteVk, deafenVk }).catch(() => {});
       });
-      void listen('ptt-up', () => {
-        if (!closed) setHeld(false);
-      }).then((fn) => {
-        unlistenUp = fn;
+      void import('@tauri-apps/api/event').then(({ listen }) => {
+        if (pttMode) {
+          void listen('ptt-down', () => {
+            if (!closed) setHeld(true);
+          }).then((fn) => {
+            unlistenDown = fn;
+          });
+          void listen('ptt-up', () => {
+            if (!closed) setHeld(false);
+          }).then((fn) => {
+            unlistenUp = fn;
+          });
+        }
+        if (muteBound) {
+          void listen('hotkey-mute-toggle', () => {
+            if (!closed) toggleMute();
+          }).then((fn) => {
+            unlistenMute = fn;
+          });
+        }
+        if (deafenBound) {
+          void listen('hotkey-deafen-toggle', () => {
+            if (!closed) toggleDeafen();
+          }).then((fn) => {
+            unlistenDeafen = fn;
+          });
+        }
       });
-    });
+    }
 
-    applyEffectiveMicMute(userMutedRef.current, false, 'ptt');
+    if (pttMode) applyEffectiveMicMute(userMutedRef.current, false, 'ptt');
 
     return () => {
       closed = true;
@@ -1693,11 +1783,15 @@ function Workspace() {
       window.removeEventListener('keyup', onKeyUp);
       unlistenDown?.();
       unlistenUp?.();
-      void import('@tauri-apps/api/core').then(({ invoke }) => {
-        void invoke('stop_ptt_watch').catch(() => {});
-      });
+      unlistenMute?.();
+      unlistenDeafen?.();
+      if (isDesktopShell()) {
+        void import('@tauri-apps/api/core').then(({ invoke }) => {
+          void invoke('stop_ptt_watch').catch(() => {});
+        });
+      }
     };
-  }, [activeVoice, voiceTalkMode, pttKeyCode]);
+  }, [activeVoice, voiceTalkMode, pttKeyCode, muteHotkeyCode, deafenHotkeyCode]);
 
   useEffect(() => {
     if (!activeVoice) return;
@@ -2790,6 +2884,8 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [startupSoundId, setStartupSoundId] = useState<StartupSoundId>(() => loadStartupSoundId());
   const [voiceTalkMode, setVoiceTalkMode] = useState<VoiceTalkMode>(() => loadVoiceTalkMode());
   const [pttKeyCode, setPttKeyCode] = useState<PttKeyCode>(() => loadPttKeyCode());
+  const [muteHotkeyCode, setMuteHotkeyCode] = useState<PttKeyCode>(() => loadMuteHotkeyCode());
+  const [deafenHotkeyCode, setDeafenHotkeyCode] = useState<PttKeyCode>(() => loadDeafenHotkeyCode());
   const [voiceOverlayEnabled, setVoiceOverlayEnabled] = useState(() => loadVoiceOverlayEnabled());
   const [voiceOverlayOpacity, setVoiceOverlayOpacity] = useState(() => loadVoiceOverlayOpacity());
   const [voiceOverlayInteractive, setVoiceOverlayInteractive] = useState(() => loadVoiceOverlayInteractive());
@@ -2797,6 +2893,17 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [tunnelProvider, setTunnelProvider] = useState<TunnelProviderId>(() => loadTunnelProvider());
   const [ngrokToken, setNgrokToken] = useState(() => loadNgrokAuthToken());
   const [zrokToken, setZrokToken] = useState(() => loadZrokToken());
+
+  const pushVoiceHotkeysToNative = (ptt: PttKeyCode, mute: PttKeyCode, deafen: PttKeyCode) => {
+    if (!isDesktopShell()) return;
+    void import('@tauri-apps/api/core').then(({ invoke }) => {
+      void invoke('set_voice_hotkey_vks', {
+        pttVk: pttVkForCode(ptt),
+        muteVk: hotkeyVkForCode(mute),
+        deafenVk: hotkeyVkForCode(deafen),
+      }).catch(() => {});
+    });
+  };
 
   const toggleSection = (id: SettingsSectionId) => {
     setOpenSection((current) => (current === id ? null : id));
@@ -3031,7 +3138,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
             </select>
           </SettingsSection>
 
-          <SettingsSection id="voice" title="Голос и оверлей" hint="PTT и мини-войс поверх игр" open={openSection === 'voice'} onToggle={toggleSection} testId="settings-section-voice">
+          <SettingsSection id="voice" title="Голос и оверлей" hint="PTT, mute/deafen и мини-войс поверх игр" open={openSection === 'voice'} onToggle={toggleSection} testId="settings-section-voice">
             <label className="field-label" htmlFor="voice-mode">Режим</label>
             <select
               id="voice-mode"
@@ -3059,11 +3166,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
                     const code = event.target.value;
                     setPttKeyCode(code);
                     savePttKeyCode(code);
-                    if (isDesktopShell()) {
-                      void import('@tauri-apps/api/core').then(({ invoke }) => {
-                        void invoke('set_ptt_vk', { vk: pttVkForCode(code) }).catch(() => {});
-                      });
-                    }
+                    pushVoiceHotkeysToNative(code, muteHotkeyCode, deafenHotkeyCode);
                     window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
                   }}
                   data-testid="select-ptt-key"
@@ -3076,16 +3179,51 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
                   onCapture={(code) => {
                     setPttKeyCode(code);
                     savePttKeyCode(code);
-                    if (isDesktopShell()) {
-                      void import('@tauri-apps/api/core').then(({ invoke }) => {
-                        void invoke('set_ptt_vk', { vk: pttVkForCode(code) }).catch(() => {});
-                      });
-                    }
+                    pushVoiceHotkeysToNative(code, muteHotkeyCode, deafenHotkeyCode);
                     window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
                   }}
                 />
               </>
             )}
+            <label className="field-label mt-4" htmlFor="mute-hotkey">Заглушить / разглушить микрофон</label>
+            <select
+              id="mute-hotkey"
+              className="field-input"
+              value={muteHotkeyCode}
+              onChange={(event) => {
+                const code = event.target.value;
+                setMuteHotkeyCode(code);
+                saveMuteHotkeyCode(code);
+                pushVoiceHotkeysToNative(pttKeyCode, code, deafenHotkeyCode);
+                window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
+              }}
+              data-testid="select-mute-hotkey"
+            >
+              {MUTE_DEAFEN_KEY_OPTIONS.map((option) => (
+                <option key={`mute-${option.code || 'none'}`} value={option.code}>{option.label}</option>
+              ))}
+            </select>
+            <label className="field-label mt-3" htmlFor="deafen-hotkey">Выключить / включить уши</label>
+            <select
+              id="deafen-hotkey"
+              className="field-input"
+              value={deafenHotkeyCode}
+              onChange={(event) => {
+                const code = event.target.value;
+                setDeafenHotkeyCode(code);
+                saveDeafenHotkeyCode(code);
+                pushVoiceHotkeysToNative(pttKeyCode, muteHotkeyCode, code);
+                window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
+              }}
+              data-testid="select-deafen-hotkey"
+            >
+              {MUTE_DEAFEN_KEY_OPTIONS.map((option) => (
+                <option key={`deafen-${option.code || 'none'}`} value={option.code}>{option.label}</option>
+              ))}
+            </select>
+            <p className="mt-2 text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
+              Глобальные клавиши работают в голосовом канале (в т.ч. поверх игр в desktop). Не совпадайте с PTT.
+            </p>
             <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
               <input
                 type="checkbox"

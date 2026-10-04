@@ -1,5 +1,7 @@
 const MODE_KEY = "p2pchat-voice-mode";
 const PTT_KEY = "p2pchat-ptt-key";
+const MUTE_HOTKEY_KEY = "p2pchat-mute-hotkey";
+const DEAFEN_HOTKEY_KEY = "p2pchat-deafen-hotkey";
 const OVERLAY_KEY = "p2pchat-voice-overlay";
 const OVERLAY_OPACITY_KEY = "p2pchat-voice-overlay-opacity";
 const OVERLAY_INTERACTIVE_KEY = "p2pchat-voice-overlay-interactive";
@@ -8,7 +10,7 @@ export const VOICE_OVERLAY_PAYLOAD_KEY = "p2pchat-voice-overlay-state";
 
 export type VoiceTalkMode = "vad" | "ptt";
 
-/** Browser KeyboardEvent.code values (and a few aliases). */
+/** Browser KeyboardEvent.code values (and a few aliases). Empty string = unbound. */
 export type PttKeyCode = string;
 
 export const PTT_KEY_OPTIONS: Array<{ code: PttKeyCode; label: string; vk: number }> = [
@@ -16,12 +18,25 @@ export const PTT_KEY_OPTIONS: Array<{ code: PttKeyCode; label: string; vk: numbe
   { code: "KeyV", label: "V", vk: 0x56 },
   { code: "KeyB", label: "B", vk: 0x42 },
   { code: "KeyT", label: "T", vk: 0x54 },
+  { code: "KeyM", label: "M", vk: 0x4d },
+  { code: "KeyD", label: "D", vk: 0x44 },
   { code: "Backquote", label: "` (тильда)", vk: 0xc0 },
   { code: "ControlLeft", label: "Ctrl", vk: 0x11 },
   { code: "AltLeft", label: "Alt", vk: 0x12 },
   { code: "ShiftLeft", label: "Shift", vk: 0x10 },
+  { code: "F1", label: "F1", vk: 0x70 },
+  { code: "F2", label: "F2", vk: 0x71 },
+  { code: "F3", label: "F3", vk: 0x72 },
+  { code: "F4", label: "F4", vk: 0x73 },
   { code: "Mouse4", label: "Мышь 4 (боковая)", vk: 0x05 },
   { code: "Mouse5", label: "Мышь 5 (боковая)", vk: 0x06 },
+];
+
+export const HOTKEY_NONE = "";
+
+export const MUTE_DEAFEN_KEY_OPTIONS: Array<{ code: PttKeyCode; label: string; vk: number }> = [
+  { code: HOTKEY_NONE, label: "Не назначена", vk: 0 },
+  ...PTT_KEY_OPTIONS,
 ];
 
 export function loadVoiceTalkMode(): VoiceTalkMode {
@@ -52,6 +67,39 @@ export function savePttKeyCode(code: PttKeyCode): void {
 
 export function pttVkForCode(code: PttKeyCode): number {
   return PTT_KEY_OPTIONS.find((item) => item.code === code)?.vk ?? 0x20;
+}
+
+export function hotkeyVkForCode(code: PttKeyCode): number {
+  if (!code) return 0;
+  return MUTE_DEAFEN_KEY_OPTIONS.find((item) => item.code === code)?.vk ?? 0;
+}
+
+function loadOptionalHotkey(storageKey: string): PttKeyCode {
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (raw === null) return HOTKEY_NONE;
+    if (raw === HOTKEY_NONE) return HOTKEY_NONE;
+    if (MUTE_DEAFEN_KEY_OPTIONS.some((item) => item.code === raw)) return raw;
+  } catch {
+    // ignore
+  }
+  return HOTKEY_NONE;
+}
+
+export function loadMuteHotkeyCode(): PttKeyCode {
+  return loadOptionalHotkey(MUTE_HOTKEY_KEY);
+}
+
+export function saveMuteHotkeyCode(code: PttKeyCode): void {
+  window.localStorage.setItem(MUTE_HOTKEY_KEY, code || HOTKEY_NONE);
+}
+
+export function loadDeafenHotkeyCode(): PttKeyCode {
+  return loadOptionalHotkey(DEAFEN_HOTKEY_KEY);
+}
+
+export function saveDeafenHotkeyCode(code: PttKeyCode): void {
+  window.localStorage.setItem(DEAFEN_HOTKEY_KEY, code || HOTKEY_NONE);
 }
 
 export function loadVoiceOverlayEnabled(): boolean {

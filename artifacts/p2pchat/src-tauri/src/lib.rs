@@ -187,6 +187,7 @@ pub fn run() {
             ptt::start_ptt_watch,
             ptt::stop_ptt_watch,
             ptt::set_ptt_vk,
+            ptt::set_voice_hotkey_vks,
             overlay::show_voice_overlay,
             overlay::hide_voice_overlay,
             overlay::close_voice_overlay,

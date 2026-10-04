@@ -1,14 +1,19 @@
 [[permission]]
 identifier = "allow-start-ptt-watch"
-description = "Start global push-to-talk key watch"
+description = "Start global push-to-talk / voice hotkey watch"
 commands.allow = ["start_ptt_watch"]
 
 [[permission]]
 identifier = "allow-stop-ptt-watch"
-description = "Stop global push-to-talk key watch"
+description = "Stop global push-to-talk / voice hotkey watch"
 commands.allow = ["stop_ptt_watch"]
 
 [[permission]]
 identifier = "allow-set-ptt-vk"
 description = "Update push-to-talk virtual-key code"
 commands.allow = ["set_ptt_vk"]
+
+[[permission]]
+identifier = "allow-set-voice-hotkey-vks"
+description = "Update PTT / mute / deafen virtual-key codes"
+commands.allow = ["set_voice_hotkey_vks"]
