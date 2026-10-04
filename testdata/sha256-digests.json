@@ -1,0 +1,20 @@
+{
+  "cases": [
+    {
+      "input": "sha256:95572fc81114a806eebf5c189e5e94ed36311b1a5bb273dfb30eebbba2e98cad",
+      "expected": "95572fc81114a806eebf5c189e5e94ed36311b1a5bb273dfb30eebbba2e98cad"
+    },
+    {
+      "input": "95572fc81114a806eebf5c189e5e94ed36311b1a5bb273dfb30eebbba2e98cad",
+      "expected": "95572fc81114a806eebf5c189e5e94ed36311b1a5bb273dfb30eebbba2e98cad"
+    },
+    {
+      "input": "not-a-hash",
+      "expected": null
+    },
+    {
+      "input": "deadbeef",
+      "expected": null
+    }
+  ]
+}

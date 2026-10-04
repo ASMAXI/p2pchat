@@ -1,0 +1,18 @@
+{
+  "id": "room",
+  "name": "Room",
+  "ownerId": "a",
+  "hostId": "a",
+  "hostName": "A",
+  "epoch": 3,
+  "channels": [],
+  "messages": [],
+  "voiceParticipants": {},
+  "members": [
+    { "id": "a", "name": "A", "role": "owner", "joinedAt": "", "online": true, "endpoints": ["http://a"] },
+    { "id": "c", "name": "C", "role": "member", "joinedAt": "", "online": true, "endpoints": ["http://c"] },
+    { "id": "b", "name": "B", "role": "member", "joinedAt": "", "online": true, "endpoints": ["http://b"] },
+    { "id": "d", "name": "D", "role": "member", "joinedAt": "", "online": false, "endpoints": ["http://d"] },
+    { "id": "w", "name": "Web", "role": "member", "joinedAt": "", "online": true }
+  ]
+}

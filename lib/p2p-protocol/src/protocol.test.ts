@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildInvite, buildInviteDeepLink, claimProofText, isSignedCoordinatorClaim, parseInvite, validateVoiceSignalData } from "./index";
+import { loadTestdata } from "./test-fixtures";
 
 describe("invite", () => {
   it("round-trips via HTTPS landing (Steam-friendly) and deep link", () => {
@@ -54,14 +55,20 @@ describe("invite", () => {
 });
 
 describe("voice signal validation", () => {
-  it("accepts known small WebRTC signal kinds", () => {
-    assert.equal(validateVoiceSignalData({ kind: "offer", description: { type: "offer", sdp: "v=0" } }), null);
-    assert.equal(validateVoiceSignalData({ kind: "ice", candidate: { candidate: "a", sdpMid: "0" } }), null);
-    assert.equal(validateVoiceSignalData({ kind: "voice-state", muted: true, deafened: false }), null);
+  it("accepts known small WebRTC signal kinds from fixtures including screen-share", () => {
+    const fixture = loadTestdata<{
+      validSignals: unknown[];
+      invalidKinds: string[];
+    }>("voice-signals.json");
+    for (const signal of fixture.validSignals) {
+      assert.equal(validateVoiceSignalData(signal), null, JSON.stringify(signal));
+    }
+    for (const kind of fixture.invalidKinds) {
+      assert.match(validateVoiceSignalData({ kind }) ?? "", /kind/i, kind);
+    }
   });
 
-  it("rejects unknown kind, non-objects, and oversized payloads", () => {
-    assert.match(validateVoiceSignalData({ kind: "explode" }) ?? "", /kind/i);
+  it("rejects non-objects and oversized payloads", () => {
     assert.match(validateVoiceSignalData("nope") ?? "", /объект/i);
     const huge = { kind: "offer", pad: "x".repeat(70_000) };
     assert.match(validateVoiceSignalData(huge) ?? "", /большой/i);

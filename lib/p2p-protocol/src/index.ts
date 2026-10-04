@@ -18,6 +18,8 @@ export const LIMITS = {
   joinClockSkewMs: 10 * 60 * 1000,
   /** Max JSON size for a single voice WebRTC signal (offer/answer/ICE/state). */
   maxSignalJsonBytes: 64_000,
+  /** Bound the room event log (shadow → SoT). */
+  maxStoredEvents: 2_000,
 } as const;
 
 /** Allowed `data.kind` values for voice signaling (reject arbitrary payloads). */
@@ -96,7 +98,31 @@ export type WireRoomState = {
   messages: WireMessage[];
   members: WireMember[];
   voiceParticipants: Record<string, Array<{ id: string; name: string }>>;
+  /**
+   * Ordered room event log. When present and non-empty, fold(events) is the
+   * source of truth for messages/channels/epoch (snapshot fields are a projection).
+   * Older peers omit this; hubs seed on first write.
+   */
+  events?: RoomEvent[];
 };
+
+export type RoomEventBase = {
+  eventId: string;
+  sequence: number;
+  predecessorId?: string;
+  ts: string;
+};
+
+export type RoomMessageEvent = RoomEventBase & { kind: "message"; message: WireMessage };
+export type RoomChannelEvent = RoomEventBase & { kind: "channel_create"; channel: WireChannel };
+export type RoomCoordinatorEvent = RoomEventBase & {
+  kind: "coordinator_takeover";
+  hostId: string;
+  hostName: string;
+  epoch: number;
+  previousHostId: string | null;
+};
+export type RoomEvent = RoomMessageEvent | RoomChannelEvent | RoomCoordinatorEvent;
 
 export type OutgoingMessage = Pick<WireMessage, "id" | "channelId" | "content" | "timestamp" | "signature">;
 
@@ -254,6 +280,7 @@ export function createInitialRoomState(input: {
       },
     ],
     voiceParticipants: {},
+    events: [],
   };
 }
 

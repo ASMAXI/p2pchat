@@ -68,6 +68,7 @@ function startPeer(input: {
   origin: string;
   bootstrap: string[];
   initial?: SessionSnapshot | null;
+  onSignal?: (event: Extract<ServerEvent, { type: "signal" }>) => void;
 }): Peer {
   let lastView: SessionView | null = null;
   let lastSnapshot: SessionSnapshot | null = input.initial ?? null;
@@ -83,6 +84,7 @@ function startPeer(input: {
     timing,
     onView: (view) => (lastView = view),
     onPersist: (snapshot) => (lastSnapshot = structuredClone(snapshot)),
+    onSignal: input.onSignal,
   });
   session.start();
   cleanups.push(() => session.stop());
@@ -299,6 +301,97 @@ describe("critical E2E: coordinator crash and return", { concurrency: false }, (
 
     for (const peer of [peerA, peerB2, peerC]) peer.session.stop();
     await Promise.all([nodeA.node.close(), nodeB.node.close(), nodeC.node.close()]);
+  });
+
+  it("screen-share signaling relays after host migration", async () => {
+    const pool: StoredIdentity[] = [];
+    for (let attempt = 0; attempt < 40 && pool.length < 2; attempt += 1) {
+      pool.push(createIdentity(`S${attempt}`));
+    }
+    const sorted = [...pool].sort((left, right) => (left.peerId < right.peerId ? -1 : 1));
+    const b = { ...sorted[0]!, displayName: "B" };
+    const a = { ...sorted[1]!, displayName: "A" };
+    assert.ok(b.peerId < a.peerId);
+
+    const roomId = randomToken(8);
+    const inviteToken = randomToken(24);
+    const roomKey = generateRoomKey();
+    const workDir = freshWorkDir("screen-share");
+
+    let nodeA = await startNode("ss-a", workDir);
+    const nodeB = await startNode("ss-b", workDir);
+    const initialState = createInitialRoomState({
+      roomId,
+      name: "screen share",
+      ownerId: a.peerId,
+      ownerName: a.displayName,
+      ownerPublicKey: a.publicKey,
+      endpoints: [nodeA.origin],
+    });
+    const common = { roomId, inviteToken, roomKey };
+
+    const received: Array<{ fromPeerId: string; data: unknown }> = [];
+    const peerA = startPeer({
+      ...common,
+      identity: a,
+      origin: nodeA.origin,
+      bootstrap: [],
+      initial: { state: initialState, outbox: [] },
+    });
+    await waitFor("A coordinates", () => peerA.view().isCoordinator);
+
+    const peerB = startPeer({
+      ...common,
+      identity: b,
+      origin: nodeB.origin,
+      bootstrap: [nodeA.origin],
+      onSignal: (event) => received.push({ fromPeerId: event.fromPeerId, data: event.data }),
+    });
+    await waitFor("B connected under A", () => peerB.view().status === "connected");
+
+    assert.equal(peerA.session.sendSignal(b.peerId, { kind: "screen-share", active: true }), true);
+    await waitFor("B got screen-share under A", () =>
+      received.some(
+        (item) =>
+          item.fromPeerId === a.peerId &&
+          typeof item.data === "object" &&
+          item.data !== null &&
+          (item.data as { kind?: string }).kind === "screen-share" &&
+          (item.data as { active?: boolean }).active === true,
+      ),
+    );
+
+    await nodeA.node.close();
+    await waitFor("B took over after A crash", () => peerB.view().isCoordinator && peerB.view().status === "connected");
+
+    nodeA = await startNode("ss-a2", workDir);
+    const receivedAfter: Array<{ fromPeerId: string; data: unknown }> = [];
+    const peerA2 = startPeer({
+      ...common,
+      identity: a,
+      origin: nodeA.origin,
+      bootstrap: [nodeB.origin],
+      initial: peerA.snapshot(),
+      onSignal: (event) => receivedAfter.push({ fromPeerId: event.fromPeerId, data: event.data }),
+    });
+    await waitFor("A rejoined under B", () =>
+      peerA2.view().status === "connected" && peerA2.view().state?.hostId === b.peerId,
+    );
+
+    assert.equal(peerB.session.sendSignal(a.peerId, { kind: "screen-share", active: false }), true);
+    await waitFor("A got screen-share under new host", () =>
+      receivedAfter.some(
+        (item) =>
+          item.fromPeerId === b.peerId &&
+          typeof item.data === "object" &&
+          item.data !== null &&
+          (item.data as { kind?: string }).kind === "screen-share" &&
+          (item.data as { active?: boolean }).active === false,
+      ),
+    );
+
+    for (const peer of [peerA, peerA2, peerB]) peer.session.stop();
+    await Promise.all([nodeA.node.close(), nodeB.node.close()]);
   });
 });
 

@@ -24,3 +24,22 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run test
       - run: pnpm run typecheck
+
+  rust:
+    name: Cargo test and clippy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/p2pchat/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: artifacts/p2pchat/src-tauri
+      - name: Cargo test
+        run: cargo test --lib
+      - name: Cargo clippy
+        run: cargo clippy --lib -- -D warnings

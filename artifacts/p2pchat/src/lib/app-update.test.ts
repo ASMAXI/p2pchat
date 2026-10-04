@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { normalizeAssetSha256, pickInstallerAsset } from "./app-update";
+import { loadTestdata } from "./test-fixtures";
+
+type ShaFixture = {
+  cases: Array<{ input: string; expected: string | null }>;
+};
 
 describe("app-update", () => {
-  it("normalizes GitHub asset digests", () => {
-    assert.equal(
-      normalizeAssetSha256("sha256:95572fc81114a806eebf5c189e5e94ed36311b1a5bb273dfb30eebbba2e98cad"),
-      "95572fc81114a806eebf5c189e5e94ed36311b1a5bb273dfb30eebbba2e98cad",
-    );
-    assert.equal(normalizeAssetSha256("deadbeef"), null);
-    assert.equal(normalizeAssetSha256(null), null);
+  it("normalizes GitHub asset digests from shared fixtures", () => {
+    const fixture = loadTestdata<ShaFixture>("sha256-digests.json");
+    for (const item of fixture.cases) {
+      assert.equal(normalizeAssetSha256(item.input), item.expected);
+    }
   });
 
   it("prefers setup.exe over msi/portable", () => {

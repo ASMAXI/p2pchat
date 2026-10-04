@@ -168,7 +168,7 @@ fn wait_for_url_from_child(
 
     thread::spawn(move || {
         let reader = BufReader::new(stderr);
-        for line in reader.lines().flatten() {
+        for line in reader.lines().map_while(Result::ok) {
             if let Some(url) = extract_url_line(&line, &hints) {
                 let _ = tx.send(Ok(url));
             }
@@ -178,7 +178,7 @@ fn wait_for_url_from_child(
     if let Some(stdout) = stdout {
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 if let Some(url) = extract_url_line(&line, &hints2) {
                     let _ = tx2.send(Ok(url));
                 }
@@ -186,31 +186,22 @@ fn wait_for_url_from_child(
         });
     }
 
-    let deadline = Instant::now() + timeout;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(url)) => Ok(url),
+        Ok(Err(err)) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("Таймаут: туннель ({label}) не выдал публичный URL"));
+            Err(err)
         }
-        match rx.recv_timeout(remaining) {
-            Ok(Ok(url)) => return Ok(url),
-            Ok(Err(err)) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(err);
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("Таймаут: туннель ({label}) не выдал публичный URL"));
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("Процесс туннеля завершился до выдачи URL".into());
-            }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(format!("Таймаут: туннель ({label}) не выдал публичный URL"))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err("Процесс туннеля завершился до выдачи URL".into())
         }
     }
 }
@@ -429,7 +420,7 @@ fn extract_zip_windows(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
         if !status.success() {
             return Err("Не удалось распаковать ngrok.zip".into());
         }
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(windows))]
     {

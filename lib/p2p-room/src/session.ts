@@ -19,12 +19,15 @@ import {
   type OutgoingMessage,
   type RoomStatus,
   type ServerEvent,
+  type RoomEvent,
   type WireMessage,
   type WireRoomState,
 } from "@workspace/p2p-protocol";
 import { createSignedCoordinatorClaim, proposedCoordinatorClaimFields } from "./claim";
 import { compareCoordinators } from "./election";
+import { EventLog } from "./event-log";
 import { buildConnectPlan, type ConnectTarget } from "./migration";
+import { foldRoomState, materializeRoomState, mergeEventLogs } from "./room-events";
 
 export type SessionStatus = "connecting" | "connected" | "reconnecting" | "offline";
 export type DeliveryState = "queued" | "sent" | "synced";
@@ -157,12 +160,14 @@ export class RoomSession {
   private probing = false;
   private rttMs?: number;
   private lastError?: string;
+  private readonly eventLog = new EventLog<RoomEvent>();
 
   constructor(private readonly options: RoomSessionOptions) {
     this.timing = { ...DEFAULT_TIMING, ...options.timing };
     this.state = options.initial?.state ?? null;
     this.lastOrigin = options.initial?.lastOrigin;
     for (const item of options.initial?.outbox ?? []) this.outbox.set(item.message.id, item);
+    for (const event of options.initial?.state?.events ?? []) this.eventLog.stage(event);
   }
 
   get selfId(): string {
@@ -577,9 +582,26 @@ export class RoomSession {
 
   /** `presence` omits messages; the replica keeps its own copy. */
   private applyState(state: WireRoomState, full: boolean): void {
-    const messages = full ? state.messages : (this.state?.messages ?? []);
-    this.state = { ...state, messages };
-    for (const message of messages) this.settleOutbox(message.id);
+    const prevMessages = this.state?.messages ?? [];
+    const messages = full ? state.messages : prevMessages;
+    const events = mergeEventLogs(this.state?.events, state.events);
+    for (const event of events) this.eventLog.stage(event);
+    const staged = this.eventLog.listApplied();
+    const eventSource = staged.length > 0 ? staged : events;
+    let next: WireRoomState = { ...state, messages, events: eventSource };
+    if (full) {
+      next = materializeRoomState(next);
+    } else if (eventSource.length > 0) {
+      const folded = foldRoomState(next, eventSource);
+      next = {
+        ...folded,
+        messages,
+        channels: folded.channels.length > 0 ? folded.channels : state.channels,
+        events: eventSource,
+      };
+    }
+    this.state = next;
+    for (const message of next.messages) this.settleOutbox(message.id);
     this.persist();
     this.emit();
   }

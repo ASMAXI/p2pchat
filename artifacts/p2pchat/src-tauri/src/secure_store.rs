@@ -145,7 +145,7 @@ fn write_vault_file(bin_path: &Path, json_path: &Path, payload: &str) -> Result<
         fs::write(&tmp, &cipher).map_err(|err| err.to_string())?;
         fs::rename(&tmp, bin_path).map_err(|err| err.to_string())?;
         let _ = fs::remove_file(json_path);
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(windows))]
     {

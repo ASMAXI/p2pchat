@@ -111,6 +111,8 @@ struct PersistedRoom {
     channels: Vec<Channel>,
     messages: Vec<WireMessage>,
     members: Vec<Member>,
+    /// Shadow → SoT event log (same shape as TS `RoomEvent`).
+    events: Vec<Value>,
 }
 
 struct Client {
@@ -446,6 +448,7 @@ fn wire_state(room: &Room, with_messages: bool) -> Value {
                 ..member.clone()
             })
             .collect(),
+        events: state.events.clone(),
     };
     let mut value = serde_json::to_value(snapshot).unwrap_or_else(|_| json!({}));
     let voice: serde_json::Map<String, Value> = room
@@ -472,6 +475,65 @@ fn broadcast(room: &Room, event: &Value) {
 
 fn broadcast_presence(room: &Room) {
     broadcast(room, &json!({ "type": "presence", "state": wire_state(room, false) }));
+}
+
+fn next_event_sequence(events: &[Value]) -> u64 {
+    events
+        .iter()
+        .filter_map(|event| event.get("sequence").and_then(Value::as_u64))
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
+fn last_event_id(events: &[Value]) -> Option<String> {
+    events
+        .iter()
+        .max_by_key(|event| event.get("sequence").and_then(Value::as_u64).unwrap_or(0))
+        .and_then(|event| event.get("eventId").and_then(Value::as_str).map(str::to_string))
+}
+
+fn append_room_event(room: &mut Room, kind: &str, fields: Value) {
+    let sequence = next_event_sequence(&room.state.events);
+    let predecessor = last_event_id(&room.state.events);
+    let mut event = json!({
+        "eventId": random_token(12),
+        "sequence": sequence,
+        "ts": now_ms().to_string(),
+        "kind": kind,
+    });
+    if let Some(pred) = predecessor {
+        event["predecessorId"] = Value::String(pred);
+    }
+    if let Value::Object(map) = fields {
+        if let Value::Object(target) = &mut event {
+            for (key, value) in map {
+                target.insert(key, value);
+            }
+        }
+    }
+    room.state.events.push(event);
+    const MAX_EVENTS: usize = 2000;
+    if room.state.events.len() > MAX_EVENTS {
+        let skip = room.state.events.len() - MAX_EVENTS;
+        room.state.events.drain(0..skip);
+    }
+}
+
+fn append_coordinator_takeover(room: &mut Room, host_id: &str, host_name: &str, epoch: u64, previous_host_id: Option<&str>) {
+    append_room_event(
+        room,
+        "coordinator_takeover",
+        json!({
+            "hostId": host_id,
+            "hostName": host_name,
+            "epoch": epoch,
+            "previousHostId": previous_host_id,
+        }),
+    );
+    room.state.host_id = host_id.to_string();
+    room.state.host_name = host_name.to_string();
+    room.state.epoch = epoch;
 }
 
 /// Merges a peer's replica. Returns the messages this node did not have yet.
@@ -531,6 +593,22 @@ fn reconcile(room: &mut Room, snapshot: &PersistedRoom) -> Vec<WireMessage> {
             room.state.host_name = snapshot.host_name.clone();
         }
     }
+    // Merge event logs by eventId (shadow → SoT).
+    let mut seen = std::collections::HashSet::new();
+    for event in &room.state.events {
+        if let Some(id) = event.get("eventId").and_then(Value::as_str) {
+            seen.insert(id.to_string());
+        }
+    }
+    for event in &snapshot.events {
+        let Some(id) = event.get("eventId").and_then(Value::as_str) else {
+            continue;
+        };
+        if seen.insert(id.to_string()) {
+            room.state.events.push(event.clone());
+        }
+    }
+    room.state.events.sort_by_key(|event| event.get("sequence").and_then(Value::as_u64).unwrap_or(0));
     added
 }
 
@@ -675,22 +753,33 @@ fn join(hub: &mut Hub, command: &Value, tx: &Tx, socket_id: u64) -> Result<(Stri
     );
 
     if host {
-        if let Some(claim) = command.get("coordinatorClaim") {
-            let epoch = verify_coordinator_claim(
+        let previous = if room.state.host_id != peer_id {
+            Some(room.state.host_id.clone())
+        } else {
+            None
+        };
+        let next_epoch = if let Some(claim) = command.get("coordinatorClaim") {
+            verify_coordinator_claim(
                 claim,
                 &room_id,
                 &peer_id,
                 &public_key,
                 room.state.epoch,
                 &room.state.host_id,
-            )?;
-            room.state.epoch = epoch;
+            )?
         } else if room.host_peer_id.as_deref() != Some(peer_id.as_str()) || room.state.host_id != peer_id {
-            room.state.epoch += 1;
-        }
+            room.state.epoch + 1
+        } else {
+            room.state.epoch.max(1)
+        };
         room.host_peer_id = Some(peer_id.clone());
-        room.state.host_id = peer_id.clone();
-        room.state.host_name = display_name;
+        append_coordinator_takeover(
+            room,
+            &peer_id,
+            &display_name,
+            next_epoch.max(1),
+            previous.as_deref(),
+        );
     }
 
     persist(db, room);
@@ -756,6 +845,11 @@ fn accept_message(hub: &mut Hub, room_id: &str, peer_id: &str, input: Option<&Va
     client.sent_at.push(now);
     room.state.messages.push(message.clone());
     sort_and_trim(&mut room.state.messages);
+    append_room_event(
+        room,
+        "message",
+        json!({ "message": message }),
+    );
     persist(db, room);
     broadcast(room, &json!({ "type": "message", "message": message }));
     Ok(())
@@ -775,13 +869,27 @@ fn create_channel(hub: &mut Hub, room_id: &str, command: &Value) -> Result<(), H
         return Err(HubError::new("INVALID", "Слишком много каналов"));
     }
     let kind = if command.get("channelType").and_then(Value::as_str) == Some("voice") { "voice" } else { "text" };
-    room.state.channels.push(Channel {
+    let channel = Channel {
         id: format!("channel-{}", random_token(9)),
         name,
         kind: kind.to_string(),
         unread_count: 0,
         members: 0,
-    });
+    };
+    room.state.channels.push(channel.clone());
+    append_room_event(
+        room,
+        "channel_create",
+        json!({
+            "channel": {
+                "id": channel.id,
+                "name": channel.name,
+                "type": channel.kind,
+                "unreadCount": 0,
+                "members": 0,
+            }
+        }),
+    );
     persist(db, room);
     broadcast_presence(room);
     Ok(())

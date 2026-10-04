@@ -21,7 +21,15 @@ import {
   type WireMessage,
   type WireRoomState,
 } from "@workspace/p2p-protocol";
-import { electCoordinator, verifyCoordinatorClaimForJoin } from "@workspace/p2p-room";
+import {
+  appendChannelEvent,
+  appendCoordinatorEvent,
+  appendMessageEvent,
+  electCoordinator,
+  materializeRoomState,
+  mergeEventLogs,
+  verifyCoordinatorClaimForJoin,
+} from "@workspace/p2p-room";
 import { logger } from "./logger";
 
 type PersistedRoom = Omit<WireRoomState, "voiceParticipants">;
@@ -133,6 +141,7 @@ export class RoomHub {
         const state = JSON.parse(row.state_json) as PersistedRoom;
         if (!Array.isArray(state.members) || !Array.isArray(state.messages)) continue;
         state.epoch = state.epoch ?? 0;
+        if (!Array.isArray(state.events)) state.events = [];
         state.members = state.members.map((member) => ({ ...member, online: false }));
         this.rooms.set(row.id, {
           state,
@@ -286,6 +295,8 @@ export class RoomHub {
     });
 
     if (!this.alwaysHost && command.host) {
+      const previousHostId = room.state.hostId !== peerId ? room.state.hostId : null;
+      let nextEpoch = room.state.epoch;
       if (command.coordinatorClaim) {
         const claimError = verifyCoordinatorClaimForJoin(command.coordinatorClaim, {
           roomId,
@@ -295,13 +306,19 @@ export class RoomHub {
           roomHostId: room.state.hostId,
         });
         if (claimError) throw new HubError("UNAUTHORIZED", claimError);
-        room.state.epoch = command.coordinatorClaim.epoch;
+        nextEpoch = command.coordinatorClaim.epoch;
       } else if (room.hostPeerId !== peerId || room.state.hostId !== peerId) {
-        room.state.epoch += 1;
+        nextEpoch = room.state.epoch + 1;
       }
       room.hostPeerId = peerId;
-      room.state.hostId = peerId;
-      room.state.hostName = displayName;
+      const asWire = this.asWire(room);
+      const next = appendCoordinatorEvent(asWire, {
+        hostId: peerId,
+        hostName: displayName,
+        epoch: Math.max(1, nextEpoch),
+        previousHostId,
+      });
+      this.applyMaterialized(room, next);
     } else if (this.alwaysHost && !room.clients.has(room.state.hostId)) {
       this.electHost(room);
     }
@@ -328,6 +345,7 @@ export class RoomHub {
       channels: [],
       messages: [],
       members: [],
+      events: Array.isArray(snapshot.events) ? snapshot.events : [],
     };
     const room: RoomRuntime = { state, inviteToken, clients: new Map(), voice: new Map(), hostPeerId: null };
     this.rooms.set(state.id, room);
@@ -375,13 +393,25 @@ export class RoomHub {
         endpoints: Array.isArray(member.endpoints) ? member.endpoints.slice(0, 8) : [],
       });
     }
-    if (Number(snapshot.epoch) > room.state.epoch) {
-      room.state.epoch = Number(snapshot.epoch);
-      if (!room.hostPeerId) {
-        room.state.hostId = String(snapshot.hostId);
-        room.state.hostName = String(snapshot.hostName);
-      }
+    room.state.events = mergeEventLogs(room.state.events, snapshot.events);
+    // Append message events for newly validated messages missing from the log.
+    let wire = this.asWire(room);
+    for (const message of added) {
+      const already = wire.events?.some(
+        (event) => event.kind === "message" && event.message.id === message.id,
+      );
+      if (!already) wire = appendMessageEvent(wire, message);
     }
+    if (Number(snapshot.epoch) > wire.epoch && !(wire.events && wire.events.length > 0)) {
+      // Legacy snapshot without events: keep scalar epoch bump.
+      wire = {
+        ...wire,
+        epoch: Number(snapshot.epoch),
+        hostId: room.hostPeerId ? wire.hostId : String(snapshot.hostId),
+        hostName: room.hostPeerId ? wire.hostName : String(snapshot.hostName),
+      };
+    }
+    this.applyMaterialized(room, materializeRoomState(wire));
     return added;
   }
 
@@ -403,7 +433,7 @@ export class RoomHub {
           unreadCount: 0,
           members: 0,
         };
-        room.state.channels.push(channel);
+        this.applyMaterialized(room, appendChannelEvent(this.asWire(room), channel));
         this.persist(room);
         this.broadcastPresence(room);
         return;
@@ -483,11 +513,7 @@ export class RoomHub {
     };
     if (!isValidMessage(room.state.id, message)) throw new HubError("INVALID", "Подпись сообщения не прошла проверку");
     client.sentAt.push(nowMs);
-    room.state.messages.push(message);
-    room.state.messages.sort(compareMessages);
-    if (room.state.messages.length > LIMITS.maxStoredMessages) {
-      room.state.messages = room.state.messages.slice(-LIMITS.maxStoredMessages);
-    }
+    this.applyMaterialized(room, appendMessageEvent(this.asWire(room), message));
     this.persist(room);
     this.broadcast(room, { type: "message", message });
   }
@@ -527,21 +553,51 @@ export class RoomHub {
   private electHost(room: RoomRuntime): void {
     const next = electCoordinator([...room.clients.keys()]);
     if (!next || next === room.state.hostId) return;
-    room.state.epoch += 1;
-    room.state.hostId = next;
-    room.state.hostName = room.clients.get(next)?.displayName ?? "Координатор";
+    const previousHostId = room.state.hostId;
+    const hostName = room.clients.get(next)?.displayName ?? "Координатор";
+    this.applyMaterialized(
+      room,
+      appendCoordinatorEvent(this.asWire(room), {
+        hostId: next,
+        hostName,
+        epoch: room.state.epoch + 1,
+        previousHostId,
+      }),
+    );
+  }
+
+  private asWire(room: RoomRuntime): WireRoomState {
+    return {
+      ...room.state,
+      voiceParticipants: {},
+      events: room.state.events ?? [],
+    };
+  }
+
+  private applyMaterialized(room: RoomRuntime, next: WireRoomState): void {
+    room.state.messages = next.messages;
+    room.state.channels = next.channels;
+    room.state.epoch = next.epoch;
+    room.state.hostId = next.hostId;
+    room.state.hostName = next.hostName;
+    room.state.events = next.events ?? [];
+    if (room.state.messages.length > LIMITS.maxStoredMessages) {
+      room.state.messages = room.state.messages.slice(-LIMITS.maxStoredMessages);
+    }
   }
 
   private snapshot(room: RoomRuntime, withMessages: boolean): WireRoomState {
+    const materialized = materializeRoomState(this.asWire(room));
+    this.applyMaterialized(room, materialized);
     const members: WireMember[] = room.state.members.map((member) => ({ ...member, online: room.clients.has(member.id) }));
     return {
-      ...room.state,
+      ...materialized,
       members,
-      channels: room.state.channels.map((channel) => ({
+      channels: materialized.channels.map((channel) => ({
         ...channel,
         members: channel.type === "voice" ? (room.voice.get(channel.id)?.size ?? 0) : room.clients.size,
       })),
-      messages: withMessages ? room.state.messages : [],
+      messages: withMessages ? materialized.messages : [],
       voiceParticipants: Object.fromEntries(
         [...room.voice.entries()].map(([channelId, participants]) => [
           channelId,

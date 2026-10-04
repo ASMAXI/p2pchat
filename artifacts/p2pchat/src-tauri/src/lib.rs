@@ -1,4 +1,5 @@
 mod autostart;
+mod fixtures;
 mod local_hub;
 mod overlay;
 mod ptt;

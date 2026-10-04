@@ -5,33 +5,31 @@ import {
   isPrivateOrLoopbackHost,
   orderInviteOrigins,
 } from "./invite-origins";
+import { loadTestdata } from "./test-fixtures";
+
+type InviteFixture = {
+  privateHosts: string[];
+  publicHosts: string[];
+  shareableCases: Array<{ name: string; input: string[]; expected: string[] }>;
+};
 
 describe("shareable invite origins", () => {
-  it("detects RFC1918 and loopback hosts", () => {
-    assert.equal(isPrivateOrLoopbackHost("10.122.3.68"), true);
-    assert.equal(isPrivateOrLoopbackHost("192.168.1.5"), true);
-    assert.equal(isPrivateOrLoopbackHost("172.16.0.1"), true);
-    assert.equal(isPrivateOrLoopbackHost("127.0.0.1"), true);
-    assert.equal(isPrivateOrLoopbackHost("abc.trycloudflare.com"), false);
+  const fixture = loadTestdata<InviteFixture>("invite-origins.json");
+
+  it("detects RFC1918 and loopback hosts from fixtures", () => {
+    for (const host of fixture.privateHosts) {
+      assert.equal(isPrivateOrLoopbackHost(host), true, host);
+    }
+    for (const host of fixture.publicHosts) {
+      assert.equal(isPrivateOrLoopbackHost(host), false, host);
+    }
   });
 
-  it("drops VPN/LAN from invite when a public tunnel exists", () => {
-    const origins = filterShareableInviteOrigins([
-      "http://10.122.3.68:47821",
-      "https://abc.trycloudflare.com",
-      "http://192.168.1.10:47821",
-    ]);
-    assert.deepEqual(origins, ["https://abc.trycloudflare.com"]);
-  });
-
-  it("keeps LAN when there is no public URL (LAN-only party)", () => {
-    const origins = filterShareableInviteOrigins([
-      "http://192.168.1.10:47821",
-      "http://10.0.0.2:47821",
-      "http://127.0.0.1:47821",
-    ]);
-    assert.deepEqual(origins, ["http://192.168.1.10:47821", "http://10.0.0.2:47821"]);
-  });
+  for (const shareCase of fixture.shareableCases) {
+    it(shareCase.name, () => {
+      assert.deepEqual(filterShareableInviteOrigins(shareCase.input), shareCase.expected);
+    });
+  }
 
   it("orders public before LAN without removing either", () => {
     const ordered = orderInviteOrigins([

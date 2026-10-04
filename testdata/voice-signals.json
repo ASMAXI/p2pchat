@@ -1,0 +1,11 @@
+{
+  "validSignals": [
+    { "kind": "offer", "description": { "type": "offer", "sdp": "v=0" } },
+    { "kind": "answer", "description": { "type": "answer", "sdp": "v=0" } },
+    { "kind": "ice", "candidate": { "candidate": "a", "sdpMid": "0" } },
+    { "kind": "voice-state", "muted": true, "deafened": false },
+    { "kind": "screen-share", "active": true },
+    { "kind": "screen-share", "active": false }
+  ],
+  "invalidKinds": ["explode", "screen_share", "screenshare"]
+}

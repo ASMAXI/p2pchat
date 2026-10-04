@@ -286,7 +286,7 @@ Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
     Ok(())
 }
 
-fn launch_and_exit(app: &AppHandle, dest: &PathBuf) -> Result<(), String> {
+fn launch_and_exit(app: &AppHandle, dest: &Path) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|err| err.to_string())?;
     emit_progress(app, 0, None, "install");
     spawn_deferred_install(dest, &exe)?;
@@ -331,11 +331,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_github_digest() {
-        assert_eq!(
-            normalize_sha256("sha256:95572fc81114a806eebf5c189e5e94ed36311b1a5bb273dfb30eebbba2e98cad"),
-            Some("95572fc81114a806eebf5c189e5e94ed36311b1a5bb273dfb30eebbba2e98cad".into())
-        );
-        assert_eq!(normalize_sha256("not-a-hash"), None);
+    fn normalizes_github_digest_from_shared_fixtures() {
+        let raw = include_str!("../../../../testdata/sha256-digests.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(raw).expect("sha256-digests.json must parse");
+        let cases = parsed["cases"].as_array().expect("cases array");
+        for item in cases {
+            let input = item["input"].as_str().expect("input");
+            let expected = item["expected"].as_str().map(str::to_string);
+            assert_eq!(normalize_sha256(input), expected, "input={input}");
+        }
     }
 }
