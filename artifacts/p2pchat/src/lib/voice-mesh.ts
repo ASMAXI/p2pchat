@@ -2,7 +2,6 @@ import { createNoiseGateNode, ensureNoiseWorklet } from "@/lib/noise-gate";
 import { loadAudioInputId, loadAudioOutputId } from "@/lib/audio-settings";
 import {
   buildIceServers,
-  clearIceCache,
   getLastIceSource,
   isCustomTurnConfigured,
   isTurnConfigured,
@@ -846,11 +845,8 @@ export class VoiceMesh {
       debugLog("voice", "iceRestart", { peerId, sawRelay: runtime.sawRelay, initiator }, "warn");
       this.options.onPeerStatus?.(peerId, "connecting", "Переподключаем голос…");
       try {
-        clearIceCache();
-        const iceServers = await warmIceServers();
-        runtime.connection.setConfiguration({
-          iceServers: iceServers.length > 0 ? iceServers : buildIceServers(),
-        });
+        // Do not call setConfiguration() — browsers throw InvalidModificationError when
+        // iceServers change on a live RTCPeerConnection. iceRestart reuses current config.
         if (initiator || this.selfId > peerId) {
           runtime.makingOffer = true;
           const offer = await runtime.connection.createOffer({ iceRestart: true });
@@ -858,6 +854,8 @@ export class VoiceMesh {
           this.emitSignal(peerId, { kind: "offer", description: offer });
           return;
         }
+        // Non-initiator waits for remote iceRestart offer.
+        return;
       } catch (error) {
         debugLog("voice", "iceRestart failed", error, "warn");
       } finally {
@@ -869,6 +867,25 @@ export class VoiceMesh {
     const detail = failHint(runtime);
     this.options.onPeerStatus?.(peerId, "failed", detail);
     this.removePeer(peerId);
+  }
+
+  /** True while media path is still usable (ignore control-plane presence). */
+  hasLivePeer(peerId: string): boolean {
+    const runtime = this.peers.get(peerId);
+    if (!runtime) return false;
+    const cs = runtime.connection.connectionState;
+    const ice = runtime.connection.iceConnectionState;
+    return (
+      cs === "connected" ||
+      cs === "connecting" ||
+      ice === "connected" ||
+      ice === "completed" ||
+      ice === "checking"
+    );
+  }
+
+  listLivePeerIds(): string[] {
+    return [...this.peers.keys()].filter((peerId) => this.hasLivePeer(peerId));
   }
 
   async handleSignal(fromPeerId: string, data: unknown): Promise<void> {

@@ -1,5 +1,14 @@
 import { normalizeOrigin } from "@workspace/p2p-protocol";
 import { debugLog } from "@/lib/debug-log";
+import { orderInviteOrigins } from "@/lib/invite-origins";
+
+export {
+  filterShareableInviteOrigins,
+  isPrivateOrLoopbackHost,
+  isPublicHttpOrigin,
+  orderBootstrapOrigins,
+  orderInviteOrigins,
+} from "@/lib/invite-origins";
 
 const ICE_KEY = "p2pchat-ice-servers";
 const PUBLIC_URL_KEY = "p2pchat-public-url";
@@ -290,78 +299,6 @@ export function applyAutoPublicUrl(origin: string): void {
     window.localStorage.removeItem(MANUAL_PUBLIC_URL_KEY);
   }
   window.localStorage.setItem(PUBLIC_URL_KEY, normalized);
-}
-
-export function isPublicHttpOrigin(origin: string): boolean {
-  try {
-    const url = new URL(normalizeOrigin(origin));
-    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-    const host = url.hostname;
-    return host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]";
-  } catch {
-    return false;
-  }
-}
-
-/** Prefer public/tunnel URL, then LAN, never put loopback first for invites. */
-export function orderInviteOrigins(origins: string[]): string[] {
-  const unique = origins
-    .map(normalizeOrigin)
-    .filter(Boolean)
-    .filter((origin, index, list) => list.indexOf(origin) === index);
-  const publicOnes = unique.filter((origin) => {
-    try {
-      const host = new URL(origin).hostname;
-      return (
-        host !== "localhost" &&
-        host !== "127.0.0.1" &&
-        host !== "[::1]" &&
-        !host.startsWith("192.168.") &&
-        !host.startsWith("10.") &&
-        !/^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
-      );
-    } catch {
-      return false;
-    }
-  });
-  const lan = unique.filter((origin) => !publicOnes.includes(origin) && isPublicHttpOrigin(origin));
-  const rest = unique.filter((origin) => !publicOnes.includes(origin) && !lan.includes(origin));
-  const tunnels = unique.filter((origin) =>
-    /ngrok|trycloudflare|cloudflare|loca\.lt|serveo|localhost\.run|pinggy|bore\.pub|zrok\.io/i.test(
-      origin,
-    ),
-  );
-  return [...new Set([...publicOnes, ...tunnels, ...lan, ...rest])];
-}
-
-/**
- * Join/bootstrap order: try LAN before ephemeral trycloudflare URLs.
- * Stale Quick Tunnel hostnames fail slowly; same-Wi‑Fi peers should hit LAN first.
- */
-export function orderBootstrapOrigins(origins: string[]): string[] {
-  const unique = origins
-    .map(normalizeOrigin)
-    .filter(Boolean)
-    .filter((origin, index, list) => list.indexOf(origin) === index);
-  const loopback: string[] = [];
-  const lan: string[] = [];
-  const publicOnes: string[] = [];
-  for (const origin of unique) {
-    try {
-      const host = new URL(origin).hostname;
-      if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") loopback.push(origin);
-      else if (
-        host.startsWith("192.168.") ||
-        host.startsWith("10.") ||
-        /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
-      ) {
-        lan.push(origin);
-      } else publicOnes.push(origin);
-    } catch {
-      publicOnes.push(origin);
-    }
-  }
-  return [...lan, ...publicOnes, ...loopback];
 }
 
 export function collectNodeEndpoints(localNode: {

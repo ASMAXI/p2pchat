@@ -26,10 +26,10 @@ import {
 import {
   applyAutoPublicUrl,
   collectNodeEndpoints,
+  filterShareableInviteOrigins,
   getPublicUrl,
   isPublicHttpOrigin,
   orderBootstrapOrigins,
-  orderInviteOrigins,
   warmIceServers,
 } from "@/lib/network-settings";
 
@@ -341,7 +341,7 @@ export async function createLocalRoom(input: {
     ownerPublicKey: identity.publicKey,
     endpoints,
   });
-  const inviteOrigins = orderInviteOrigins([
+  const inviteOrigins = filterShareableInviteOrigins([
     ...(publicUrl ? [publicUrl] : []),
     ...(localNode?.lanOrigins ?? []),
     ...(bootstrap && isPublicHttpOrigin(bootstrap) ? [bootstrap] : []),
@@ -465,18 +465,8 @@ export function rebuildInviteOrigins(meta: RoomMeta, extraOrigins: string[] = []
   const publicUrl = getPublicUrl();
   // Live endpoints first; drop any historical trycloudflare hostnames not in the current set.
   const fresh = [publicUrl, ...extraOrigins].map(normalizeOrigin).filter(Boolean);
-  const origins = orderInviteOrigins(fresh).filter(
-    (origin) => isPublicHttpOrigin(origin) || /^https?:\/\//i.test(origin),
-  );
-  // Prefer non-loopback for invites; keep LAN + public.
-  const usable = origins.filter((origin) => {
-    try {
-      const host = new URL(origin).hostname;
-      return host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]";
-    } catch {
-      return false;
-    }
-  });
+  // Public tunnel → invite is public-only (no VPN/LAN leak). LAN-only party keeps private origins.
+  const usable = filterShareableInviteOrigins(fresh);
   if (usable.length === 0) return meta;
   const invite = buildInvite({
     roomId: meta.roomId,
@@ -567,9 +557,11 @@ export async function openRoomSession(input: {
   if (ownerOrHost && allowSelfHost) {
     const publicUrl = getPublicUrl() || localNode?.publicOrigin || "";
     const inviteOrigins = parseInvite(meta.invite)?.origins ?? meta.bootstrapOrigins;
+    // With a public URL we intentionally omit LAN/VPN from the invite — don't refresh just for that.
     const needsRefresh =
       (publicUrl && !inviteOrigins.includes(normalizeOrigin(publicUrl))) ||
-      Boolean(localNode?.lanOrigins?.some((origin) => !inviteOrigins.includes(normalizeOrigin(origin))));
+      (!publicUrl &&
+        Boolean(localNode?.lanOrigins?.some((origin) => !inviteOrigins.includes(normalizeOrigin(origin)))));
     if (needsRefresh) {
       activeMeta = rebuildInviteOrigins(meta, endpoints);
       input.onInvite?.(activeMeta);

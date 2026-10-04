@@ -1577,6 +1577,8 @@ function Workspace() {
   const sessionRef = useRef<RoomSession | null>(null);
   const voiceMeshRef = useRef<VoiceMesh | null>(null);
   const voiceChannelRef = useRef<string | null>(null);
+  /** Names for peers still in live WebRTC after control-plane presence dropped them. */
+  const stickyVoiceNamesRef = useRef<Map<string, string>>(new Map());
   const [voiceTalkMode, setVoiceTalkMode] = useState<VoiceTalkMode>(() => loadVoiceTalkMode());
   const [pttKeyCode, setPttKeyCode] = useState<PttKeyCode>(() => loadPttKeyCode());
   const [muteHotkeyCode, setMuteHotkeyCode] = useState<PttKeyCode>(() => loadMuteHotkeyCode());
@@ -1982,7 +1984,25 @@ function Workspace() {
           }
           setMembers(nextMembers);
           if (voiceChannelRef.current) {
-            setVoicePeers(view.state.voiceParticipants[voiceChannelRef.current] ?? []);
+            const fromState = view.state.voiceParticipants[voiceChannelRef.current] ?? [];
+            for (const peer of fromState) stickyVoiceNamesRef.current.set(peer.id, peer.name);
+            const mesh = voiceMeshRef.current;
+            if (!mesh) {
+              setVoicePeers(fromState);
+            } else {
+              const ids = new Set(fromState.map((peer) => peer.id));
+              const extras = mesh
+                .listLivePeerIds()
+                .filter((id) => id !== peerId && !ids.has(id))
+                .map((id) => ({
+                  id,
+                  name:
+                    stickyVoiceNamesRef.current.get(id) ??
+                    nextMembers.find((member) => member.id === id)?.name ??
+                    id.slice(0, 8),
+                }));
+              setVoicePeers([...fromState, ...extras]);
+            }
           }
         }
         const liveMessages: Message[] = view.messages.map((message) => ({
@@ -2091,6 +2111,7 @@ function Workspace() {
       onVoice: (event) => {
         if (event.channelId !== voiceChannelRef.current) return;
         if (event.joined) {
+          stickyVoiceNamesRef.current.set(event.peerId, event.displayName);
           if (event.peerId !== peerId && !deafenedRef.current) {
             playUiSound('voice-join');
             void notifyDesktop('voice-join', event.displayName, 'Подключился к голосовому каналу');
@@ -2100,6 +2121,9 @@ function Workspace() {
             setToast(error instanceof Error ? error.message : 'Не удалось подключить голосовой канал');
           });
         } else {
+          stickyVoiceNamesRef.current.delete(event.peerId);
+          // Intentional voice_leave: tear down mesh. WS-only drops don't emit this —
+          // presence clears voiceParticipants while WebRTC may still be live (kept via merge).
           if (event.peerId !== peerId && !deafenedRef.current) {
             playUiSound('voice-leave');
             void notifyDesktop('voice-leave', event.displayName, 'Вышел из голосового канала');
@@ -2266,7 +2290,7 @@ function Workspace() {
             return ok;
           },
           {
-            onPeerStatus: (_peerId, status, detail) => {
+            onPeerStatus: (statusPeerId, status, detail) => {
               setVoicePeerStatus(status);
               if (status === 'connecting') setVoiceHint(detail || 'Соединяем…');
               else if (status === 'connected') setVoiceHint('Голос подключен');
@@ -2274,6 +2298,10 @@ function Workspace() {
                 setShowMeteredHint(true);
                 setVoiceHint(detail || 'Нет прямого пути — нужен TURN');
               } else setVoiceHint('');
+              if (status === 'failed' || status === 'closed') {
+                stickyVoiceNamesRef.current.delete(statusPeerId);
+                setVoicePeers((current) => current.filter((peer) => peer.id !== statusPeerId));
+              }
             },
             onSpeaking: (id, speaking) => {
               setSpeakingPeers((current) => ({ ...current, [id]: speaking }));
@@ -2335,6 +2363,7 @@ function Workspace() {
     voiceMeshRef.current?.stop();
     voiceMeshRef.current = null;
     voiceChannelRef.current = null;
+    stickyVoiceNamesRef.current.clear();
     setVoiceHint('');
     setVoicePeerStatus(null);
     setVoicePeers([]);
