@@ -547,8 +547,12 @@ export async function openRoomSession(input: {
   const joinOnlyFlag = window.sessionStorage.getItem("p2pchat-join-only");
   const joinOnly = joinOnlyFlag === meta.roomId;
   if (joinOnly) window.sessionStorage.removeItem("p2pchat-join-only");
-  // Fresh invite join: never self-host. Resume/migration may self-host only with a replica.
-  const allowSelfHost = !joinOnly && Boolean(snap?.state && snap.state.id === meta.roomId);
+  // Drift principle: equal rights — любой desktop с local hub может стать координатором,
+  // как только в сессии есть реплика комнаты (canHost в migration требует state).
+  // Fresh invite чистит snapshot в prepareJoin, поэтому первый connect идёт по invite
+  // к живому хосту, а не в premature self-host. После обрыва хоста joiner уже с state
+  // может подхватить роль.
+  const allowSelfHost = Boolean(localNode);
 
   // Coordinator: refresh invite when Quick Tunnel URL rotated so friends get a live link.
   let activeMeta = meta;
@@ -599,7 +603,7 @@ export async function openRoomSession(input: {
           endpoints: endpoints.length > 0 ? endpoints : [localNode.origin, ...localNode.lanOrigins],
         }
       : null,
-    initial: allowSelfHost && snap?.state?.id === activeMeta.roomId ? snap : null,
+    initial: !joinOnly && snap?.state?.id === activeMeta.roomId ? snap : null,
     onAttempt: (event) => {
       debugLog(
         "connect",

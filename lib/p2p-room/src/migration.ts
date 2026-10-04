@@ -21,7 +21,7 @@ export type ConnectPlanInput = {
   redirect?: string[];
   /** First connection after launch: prefer joining an existing coordinator over self-hosting. */
   startup: boolean;
-  /** When false, never take over as coordinator (fresh invite join). */
+  /** When false, never take over as coordinator (tests / constrained clients without a hub). */
   allowSelfHost?: boolean;
 };
 

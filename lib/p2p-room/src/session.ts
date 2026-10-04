@@ -77,7 +77,7 @@ export type RoomSessionOptions = {
   bootstrapOrigins: string[];
   /** Our own node, when the runtime can host (desktop). */
   localNode?: { origin: string; endpoints: string[] } | null;
-  /** When false, never self-host (fresh invite join until we have a real replica). */
+  /** When false, never self-host (clients without a local hub / constrained tests). */
   allowSelfHost?: boolean;
   initial?: SessionSnapshot | null;
   timing?: Partial<SessionTiming>;
