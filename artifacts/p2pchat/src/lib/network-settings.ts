@@ -72,10 +72,13 @@ export function effectiveTurn(settings: IceSettings = loadIceSettings()): TurnCo
   return DEFAULT_FREE_TURN;
 }
 
+/**
+ * True only when the user opted into a real TURN path (custom coturn or Metered API key).
+ * Static openrelayproject is a degraded fallback — do not treat it as "relay ready".
+ */
 export function isTurnConfigured(settings: IceSettings = loadIceSettings()): boolean {
   if (resolveMeteredApiKey(settings)) return true;
-  const turn = effectiveTurn(settings);
-  return Boolean(turn.urls && turn.username && turn.credential);
+  return isCustomTurnConfigured(settings);
 }
 
 export function isCustomTurnConfigured(settings: IceSettings = loadIceSettings()): boolean {
@@ -145,7 +148,8 @@ function readIceCache(): RTCIceServer[] | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as IceCache;
     if (!parsed?.servers?.length) return null;
-    if (Date.now() - parsed.at > 6 * 60 * 60 * 1000) return null;
+    // Dynamic Metered credentials often expire sooner than 6h; keep a short cache.
+    if (Date.now() - parsed.at > 45 * 60 * 1000) return null;
     return parsed.servers;
   } catch {
     return null;

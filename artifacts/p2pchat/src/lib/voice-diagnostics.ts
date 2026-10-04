@@ -213,7 +213,7 @@ function diagnosePeer(input: {
   if (!input.sawLocalRelay && !metered && (iceSource === "static-openrelay" || iceSource === "cache")) {
     return {
       diagnosis: "NO_RELAY_NO_METERED",
-      hint: "No local relay candidate + no Metered key — classic symmetric NAT failure. Set Metered API key.",
+      hint: "No local relay candidate + no optional Metered/custom TURN — classic symmetric NAT failure. Set Metered API key or own TURN if needed.",
     };
   }
   if (!input.sawLocalRelay) {

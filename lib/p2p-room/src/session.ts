@@ -221,8 +221,9 @@ export class RoomSession {
     if (channelId) this.send({ type: "voice_join", channelId });
   }
 
-  sendSignal(toPeerId: string, data: unknown): void {
-    this.send({ type: "signal", toPeerId, data });
+  /** Returns false when the control-plane socket is not open (caller should log / renegotiate). */
+  sendSignal(toPeerId: string, data: unknown): boolean {
+    return this.send({ type: "signal", toPeerId, data });
   }
 
   private send(command: ClientCommand): boolean {

@@ -62,6 +62,7 @@ import {
   isTurnConfigured,
   leaveCurrentRoom,
   loadIceSettings,
+  loadRoomMeta,
   loadSavedServers,
   openRoomSession,
   parseInvite,
@@ -343,6 +344,7 @@ function Home() {
   const [apiOrigin, setApiOriginState] = useState(getBootstrapOrigin);
   const [toast, setToast] = useState('');
   const [busy, setBusy] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [savedServers, setSavedServers] = useState<SavedServer[]>(() => loadSavedServers());
   const nameOk = isValidDisplayName(displayName);
 
@@ -502,6 +504,14 @@ function Home() {
           <div className="absolute -right-8 top-40 h-56 w-56 rounded-full border border-[#d8fa67]/15" />
           <div className="absolute bottom-[-100px] left-[-70px] h-72 w-72 rounded-full" style={{ background: 'hsl(var(--accent) / .13)' }} />
           <LogoMark />
+          <button
+            type="button"
+            className="absolute right-5 top-6 z-20 ghost-btn !border-[#f5f0df]/20 !text-[#f5f0df] lg:right-10 lg:top-8"
+            onClick={() => setShowSettings(true)}
+            data-testid="button-home-settings"
+          >
+            <Settings size={15} /> Настройки
+          </button>
           <div className="relative z-10 mt-auto max-w-[590px] pb-3 pt-24 lg:pb-12">
             <div className="mb-7 inline-flex items-center gap-2 rounded-full border border-[#f5f0df]/15 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[.18em] text-[#d8fa67]"><span className="animate-pulse-dot h-1.5 w-1.5 rounded-full bg-[#d8fa67]" /> private by default</div>
             <h1 className="font-display text-[clamp(3.1rem,7vw,6.8rem)] font-bold leading-[.91] tracking-[-.08em]">Свои люди.<br /><span style={{ color: 'hsl(var(--primary))' }}>Своя комната.</span></h1>
@@ -520,7 +530,12 @@ function Home() {
         </section>
         <section className="flex max-h-[100dvh] items-start overflow-y-auto px-6 py-10 sm:px-12 lg:px-20">
           <div className="mx-auto w-full max-w-[440px] animate-rise">
-            <div className="mb-8 flex items-center justify-between lg:hidden"><LogoMark small /><span className="font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--muted-foreground))]">приватная комната</span></div>
+            <div className="mb-8 flex items-center justify-between lg:hidden">
+              <LogoMark small />
+              <button type="button" className="ghost-btn !h-9 !px-3 text-xs" onClick={() => setShowSettings(true)} data-testid="button-home-settings-mobile">
+                <Settings size={14} /> Настройки
+              </button>
+            </div>
             <div className="mb-8"><p className="font-mono text-[10px] uppercase tracking-[.18em] text-[hsl(var(--muted-foreground))]">Вход в пространство</p><h2 className="font-display mt-3 text-4xl font-bold tracking-[-.06em]">Где собираемся?</h2><p className="mt-3 text-sm leading-6 text-[hsl(var(--muted-foreground))]">Комната синхронизируется между приглашёнными участниками. Никаких аккаунтов и лишних шагов.</p></div>
 
             <div className="mb-5">
@@ -604,6 +619,11 @@ function Home() {
         </section>
       </div>
       {toast && <Toast text={toast} onClose={() => setToast('')} />}
+      {showSettings && (
+        <div className="fixed inset-0 z-[80] overflow-auto bg-[hsl(var(--background))]">
+          <SettingsPage onClose={() => setShowSettings(false)} />
+        </div>
+      )}
     </main>
   );
 }
@@ -2102,7 +2122,8 @@ function Workspace() {
         const mesh = voiceMeshRef.current ?? new VoiceMesh(
           peerId,
           (toPeerId, data) => {
-            sessionRef.current?.sendSignal(toPeerId, data);
+            const ok = sessionRef.current?.sendSignal(toPeerId, data) ?? false;
+            return ok;
           },
           {
             onPeerStatus: (_peerId, status, detail) => {
@@ -2158,6 +2179,7 @@ function Workspace() {
     }
     setActiveVoice(room.id);
     setVoiceRooms((current) => current.map((item) => item.id === room.id ? { ...item, participantCount: item.participantCount + 1, state: 'live', participants: item.participants.includes(displayName) ? item.participants : [...item.participants, displayName] } : item));
+    playUiSound('voice-enter');
     setToast(`Вы в комнате «${room.name}»`);
     triggerPatriotPopup();
   };
@@ -2367,9 +2389,11 @@ function Workspace() {
             <div className="mx-4 mt-3 rounded-xl border border-[hsl(var(--accent)/.45)] bg-[hsl(var(--accent)/.12)] px-4 py-3 text-left text-sm" data-testid="banner-voice-turn">
               <div className="font-semibold">Голос через интернет не подключился</div>
               <p className="mt-1 text-xs leading-5 text-[hsl(var(--muted-foreground))]">
-                Часто это NAT или firewall: нужен рабочий TURN. Бесплатный вариант —{' '}
+                Часто это NAT или firewall: между разными сетями помогает рабочий TURN.
+                Опционально —{' '}
                 <a href="https://www.metered.ca/" target="_blank" rel="noreferrer" className="font-semibold text-[hsl(var(--primary))] underline">metered.ca</a>
-                , API key в настройках Drift. {voiceHint && <span className="block mt-1 font-mono text-[10px]">{voiceHint}</span>}
+                {' '}API key или свой coturn в Настройки → Расширенные. Metered не обязателен.
+                {voiceHint && <span className="block mt-1 font-mono text-[10px]">{voiceHint}</span>}
               </p>
               <button type="button" className="ghost-btn mt-2" onClick={() => setOverlay('settings')} data-testid="button-voice-turn-settings">Открыть настройки</button>
             </div>
@@ -2504,7 +2528,8 @@ function Workspace() {
 
 function Diagnostics({ onClose }: { onClose?: () => void }) {
   const [, setLocation] = useLocation();
-  const goBack = () => (onClose ? onClose() : setLocation('/server'));
+  const server = readStore<Server>(SERVER_KEY, seedServer);
+  const goBack = () => (onClose ? onClose() : setLocation(server.roomId ? '/server' : '/'));
   const [revealed, setRevealed] = useState(false);
   const [checking, setChecking] = useState(false);
   const [lastChecked, setLastChecked] = useState('только что');
@@ -2512,7 +2537,6 @@ function Diagnostics({ onClose }: { onClose?: () => void }) {
   const [logAction, setLogAction] = useState('');
   const [natBusy, setNatBusy] = useState(false);
   const [natSummary, setNatSummary] = useState(() => getLastVoiceNatReport()?.summary ?? '');
-  const server = readStore<Server>(SERVER_KEY, seedServer);
   const connectionStatus = readStore<SessionStatus>(CONNECTION_KEY, 'offline');
   const connectionLabel = connectionStatus === 'connected' ? 'Стабильно' : connectionStatus === 'reconnecting' ? 'Переподключение' : connectionStatus === 'connecting' ? 'Подключение' : 'Офлайн';
   const turnOk = isTurnConfigured();
@@ -2529,7 +2553,7 @@ function Diagnostics({ onClose }: { onClose?: () => void }) {
         : iceFlags.iceSource;
   const diagnostics = [
     ['Control plane / Signaling', connectionStatus === 'connected' ? 'OK' : connectionLabel, 'Текст и WebRTC signaling через peer-узел. Публичный доступ — туннель (чат ≠ голос).'],
-    ['ICE / TURN', iceLabel, customTurn ? 'Кастомный relay из настроек.' : iceFlags.meteredConfigured ? `Metered (${iceFlags.meteredAppName || 'app'}), source=${iceFlags.iceSource}.` : 'Нет Metered key — в разных NAT голос часто молчит. Ключ в настройках сети.'],
+    ['ICE / TURN', iceLabel, customTurn ? 'Кастомный relay из настроек.' : iceFlags.meteredConfigured ? `Metered (${iceFlags.meteredAppName || 'app'}), source=${iceFlags.iceSource}.` : 'Metered/свой TURN не заданы (опционально). В разных NAT голос может молчать — ключ в Настройки → Расширенные.'],
     ['Публичный URL', publicUrl ? 'Авто/задан' : 'Нет', publicUrl ? publicUrl : 'Туннель не поднялся — повторите в настройках.'],
     ['Переезд координатора', 'Защищён', 'При уходе хоста пиры идут на endpoints преемника (сначала публичный URL).'],
   ];
@@ -2586,7 +2610,7 @@ function Diagnostics({ onClose }: { onClose?: () => void }) {
        <div className="max-w-[650px] animate-rise"><div className="mb-5 inline-flex items-center gap-2 rounded-full bg-[hsl(var(--primary)/.15)] px-3 py-1.5 font-mono text-[10px] uppercase tracking-[.15em] text-[hsl(var(--secondary))]"><ShieldCheck size={13} /> Состояние комнаты</div><h1 className="font-display text-5xl font-bold tracking-[-.08em] sm:text-7xl">Связь,<br /><span style={{ color: 'hsl(var(--accent))' }}>которая держится.</span></h1><p className="mt-6 max-w-[570px] text-[15px] leading-7 text-[hsl(var(--muted-foreground))]">Control plane (чат + signaling) и медиа (WebRTC + TURN) — разные пути. Здесь видно оба слоя.</p></div>
       <section className="mt-12 grid gap-3 sm:grid-cols-3">
          <div className="metric-card animate-rise stagger-1"><div className="flex items-center justify-between"><span className="font-mono text-[9px] uppercase tracking-[.14em] text-[hsl(var(--muted-foreground))]">Signaling</span><Wifi size={16} className="text-[hsl(var(--primary))]" /></div><div className="mt-4 font-display text-2xl font-bold">{connectionLabel}</div><div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">WebSocket control plane</div></div>
-        <div className="metric-card animate-rise stagger-2"><div className="flex items-center justify-between"><span className="font-mono text-[9px] uppercase tracking-[.14em] text-[hsl(var(--muted-foreground))]">TURN</span><Zap size={16} className="text-[hsl(var(--accent))]" /></div><div className="mt-4 font-display text-2xl font-bold">{turnOk ? 'Да' : 'Нет'}</div><div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{turnOk ? 'relay готов' : 'нужен для интернета'}</div></div>
+        <div className="metric-card animate-rise stagger-2"><div className="flex items-center justify-between"><span className="font-mono text-[9px] uppercase tracking-[.14em] text-[hsl(var(--muted-foreground))]">TURN</span><Zap size={16} className="text-[hsl(var(--accent))]" /></div><div className="mt-4 font-display text-2xl font-bold">{turnOk ? 'Да' : 'Опц.'}</div><div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{turnOk ? 'Metered/свой TURN' : 'не задан (по желанию)'}</div></div>
          <div className="metric-card animate-rise stagger-3"><div className="flex items-center justify-between"><span className="font-mono text-[9px] uppercase tracking-[.14em] text-[hsl(var(--muted-foreground))]">Роль узла</span><Network size={16} className="text-[hsl(var(--secondary))]" /></div><div className="mt-4 font-display text-2xl font-bold">{server.role ?? 'Участник'}</div><div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">координатор: {server.hostName}</div></div>
       </section>
       <section className="mt-3 overflow-hidden rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] animate-rise stagger-3">
@@ -2697,7 +2721,8 @@ function SettingsSection({
 
 function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [, setLocation] = useLocation();
-  const goBack = () => (onClose ? onClose() : setLocation('/server'));
+  const roomMeta = loadRoomMeta();
+  const goBack = () => (onClose ? onClose() : setLocation(roomMeta?.roomId ? '/server' : '/'));
   const ice = loadIceSettings();
   const [publicUrl, setPublicUrlDraft] = useState(getPublicUrl());
   const [bootstrap, setBootstrap] = useState(getBootstrapOrigin());
@@ -2888,11 +2913,13 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
         </div>
       )}
       <header className="flex h-[76px] items-center justify-between border-b border-[hsl(var(--border))] bg-[hsl(var(--card)/.72)] px-5 backdrop-blur-md sm:px-10">
-        <Link href="/server" className="flex items-center gap-3" data-testid="link-settings-back" onClick={(event) => { if (onClose) { event.preventDefault(); onClose(); } }}>
+        <Link href={roomMeta?.roomId ? '/server' : '/'} className="flex items-center gap-3" data-testid="link-settings-back" onClick={(event) => { if (onClose) { event.preventDefault(); onClose(); } }}>
           <div className="server-mark" style={{ width: 35, height: 35, borderRadius: 10 }}><Signal size={17} /></div>
           <BrandName className="text-lg" />
         </Link>
-        <button className="ghost-btn" onClick={goBack} data-testid="button-settings-back"><ArrowRight size={15} className="rotate-180" /> В комнату</button>
+        <button className="ghost-btn" onClick={goBack} data-testid="button-settings-back">
+          <ArrowRight size={15} className="rotate-180" /> {roomMeta?.roomId && !onClose ? 'В комнату' : 'Назад'}
+        </button>
       </header>
       <main className="mx-auto max-w-[640px] px-5 py-10 sm:px-10">
         <h1 className="font-display text-4xl font-bold tracking-[-.06em]">Настройки</h1>
@@ -3109,7 +3136,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
               <span>
                 <span className="block text-xs font-bold">Звуки событий</span>
                 <span className="mt-0.5 block text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
-                  Вход на сервер, голос, чат (не свои действия). Не играют при «звук выкл».
+                  Вход участников на сервер, вход в голос, чат. Ваш вход в голосовой канал — отдельный звук.
                 </span>
               </span>
             </label>
@@ -3283,7 +3310,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
               <div className="rounded-xl border border-[hsl(var(--border))] p-4">
                 <div className="text-sm font-bold">Голос через интернет (TURN)</div>
                 <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-                  В разных сетях без TURN голос не поднимется. Metered API key или свой coturn.
+                  Опционально. В разных сетях без TURN голос часто не поднимается — можно указать Metered API key или свой coturn. Без ключа остаётся бесплатный Open Relay (не всегда работает).
                 </p>
                 <label className="field-label mt-3" htmlFor="metered-key">Metered API key</label>
                 <input id="metered-key" className="field-input" value={meteredKey} onChange={(e) => setMeteredKey(e.target.value)} placeholder="из dashboard Metered" data-testid="input-metered-key" />

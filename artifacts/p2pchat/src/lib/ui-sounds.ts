@@ -6,6 +6,7 @@
 export type UiSoundId =
   | "startup"
   | "member-join"
+  | "voice-enter"
   | "voice-join"
   | "voice-leave"
   | "chat-text"
@@ -170,9 +171,17 @@ export function playUiSound(id: UiSoundId): void {
       tone(ctx, { freq: 523.25, start: t, duration: 0.12, type: "triangle", gain: 0.07 });
       tone(ctx, { freq: 659.25, start: t + 0.1, duration: 0.18, type: "triangle", gain: 0.08 });
       break;
+    case "voice-enter":
+      // Self entered a voice channel — deeper “open channel” motif (≠ startup / member-join).
+      tone(ctx, { freq: 196.0, start: t, duration: 0.28, type: "sine", gain: 0.045, attack: 0.06 });
+      tone(ctx, { freq: 293.66, start: t + 0.08, duration: 0.22, type: "triangle", gain: 0.07, attack: 0.04 });
+      tone(ctx, { freq: 392.0, start: t + 0.2, duration: 0.34, type: "sine", gain: 0.08, attack: 0.05, slideTo: 523.25 });
+      tone(ctx, { freq: 587.33, start: t + 0.38, duration: 0.28, type: "triangle", gain: 0.05, attack: 0.06 });
+      break;
     case "voice-join":
-      tone(ctx, { freq: 440, start: t, duration: 0.16, type: "sine", gain: 0.07, slideTo: 660 });
-      tone(ctx, { freq: 330, start: t + 0.05, duration: 0.12, type: "triangle", gain: 0.04 });
+      // Someone else joined voice — short dual blip, distinct from member-join.
+      tone(ctx, { freq: 349.23, start: t, duration: 0.1, type: "sine", gain: 0.06 });
+      tone(ctx, { freq: 523.25, start: t + 0.09, duration: 0.14, type: "triangle", gain: 0.075, slideTo: 698.46 });
       break;
     case "voice-leave":
       // Sad falling minor motif when someone leaves the voice channel.

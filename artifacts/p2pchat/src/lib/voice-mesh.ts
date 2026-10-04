@@ -2,6 +2,7 @@ import { createNoiseGateNode, ensureNoiseWorklet } from "@/lib/noise-gate";
 import { loadAudioInputId, loadAudioOutputId } from "@/lib/audio-settings";
 import {
   buildIceServers,
+  clearIceCache,
   getLastIceSource,
   isCustomTurnConfigured,
   isTurnConfigured,
@@ -48,6 +49,7 @@ type PeerRuntime = {
   pendingIce: RTCIceCandidateInit[];
   remoteReady: boolean;
   failTimer?: number;
+  connectTimer?: number;
   natTimer?: number;
   restartAttempted: boolean;
   sawRelay: boolean;
@@ -85,10 +87,10 @@ const MAX_PEER_GAIN = 2;
 function failHint(runtime: PeerRuntime): string {
   const source = getLastIceSource();
   if (!runtime.sawRelay && (source === "static-openrelay" || source === "cache")) {
-    return "TURN не выдал relay — в разных сетях нужен Metered API key или свой TURN в настройках";
+    return "TURN не выдал relay. Опционально: Metered API key или свой TURN в Настройки → Расширенные";
   }
   if (!runtime.sawRelay) {
-    return "TURN не выдал relay-кандидат — проверьте TURN/Metered в настройках";
+    return "TURN не выдал relay-кандидат — проверьте TURN/Metered в настройках (по желанию)";
   }
   if (isCustomTurnConfigured() || source === "metered-api") {
     return "Не удалось установить голосовой канал (NAT/firewall). Попробуйте снова зайти в канал";
@@ -98,7 +100,7 @@ function failHint(runtime: PeerRuntime): string {
 
 export class VoiceMesh {
   private readonly selfId: string;
-  private readonly sendSignal: (toPeerId: string, data: VoiceSignal) => void;
+  private readonly sendSignal: (toPeerId: string, data: VoiceSignal) => boolean | void;
   private readonly options: VoiceMeshOptions;
   private rawStream: MediaStream | null = null;
   private outboundStream: MediaStream | null = null;
@@ -124,13 +126,42 @@ export class VoiceMesh {
 
   constructor(
     selfId: string,
-    sendSignal: (toPeerId: string, data: VoiceSignal) => void,
+    sendSignal: (toPeerId: string, data: VoiceSignal) => boolean | void,
     options: VoiceMeshOptions = {},
   ) {
     this.selfId = selfId;
     this.sendSignal = sendSignal;
     this.options = options;
     activeVoiceMesh = this;
+  }
+
+  private emitSignal(toPeerId: string, data: VoiceSignal): boolean {
+    const ok = this.sendSignal(toPeerId, data);
+    if (ok === false) {
+      debugLog(
+        "signal",
+        "dropped",
+        {
+          to: toPeerId.slice(0, 8),
+          kind: data.kind,
+        },
+        "warn",
+      );
+      return false;
+    }
+    return true;
+  }
+
+  private async applyOutputSink(ctx: AudioContext): Promise<void> {
+    if (!this.outputDeviceId) return;
+    const anyCtx = ctx as AudioContext & { setSinkId?: (id: string) => Promise<void> };
+    if (typeof anyCtx.setSinkId !== "function") return;
+    try {
+      await anyCtx.setSinkId(this.outputDeviceId);
+      debugLog("voice", "audioContext setSinkId ok", { device: this.outputDeviceId.slice(0, 12) });
+    } catch (error) {
+      debugLog("voice", "audioContext setSinkId failed", error, "warn");
+    }
   }
 
   /** Full NAT/voice snapshot for beta reports (getStats + ICE types + diagnosis codes). */
@@ -235,6 +266,7 @@ export class VoiceMesh {
 
   setOutputDevice(deviceId: string): void {
     this.outputDeviceId = deviceId;
+    if (this.audioContext) void this.applyOutputSink(this.audioContext);
     void this.applyOutputDeviceToAll();
   }
 
@@ -245,8 +277,8 @@ export class VoiceMesh {
       if (typeof el.setSinkId === "function") {
         try {
           await el.setSinkId(this.outputDeviceId);
-        } catch {
-          // unsupported device
+        } catch (error) {
+          debugLog("voice", "audio element setSinkId failed", error, "warn");
         }
       }
     }
@@ -270,6 +302,7 @@ export class VoiceMesh {
 
   private ensureAudioContext(): AudioContext {
     if (!this.audioContext) this.audioContext = new AudioContext();
+    void this.applyOutputSink(this.audioContext);
     return this.audioContext;
   }
 
@@ -449,7 +482,7 @@ export class VoiceMesh {
 
   private broadcastScreenShare(active: boolean): void {
     for (const peerId of this.peers.keys()) {
-      this.sendSignal(peerId, { kind: "screen-share", active });
+      this.emitSignal(peerId, { kind: "screen-share", active });
     }
   }
 
@@ -464,7 +497,7 @@ export class VoiceMesh {
       runtime.makingOffer = true;
       await connection.setLocalDescription(await connection.createOffer());
       if (connection.localDescription) {
-        this.sendSignal(peerId, { kind: "offer", description: connection.localDescription });
+        this.emitSignal(peerId, { kind: "offer", description: connection.localDescription });
       }
     } catch (error) {
       debugLog("voice", "renegotiate failed", { peerId, error }, "warn");
@@ -576,7 +609,19 @@ export class VoiceMesh {
   }
 
   async addPeer(peerId: string, initiator: boolean): Promise<void> {
-    if (peerId === this.selfId || this.peers.has(peerId)) return;
+    if (peerId === this.selfId) return;
+    const existing = this.peers.get(peerId);
+    if (existing) {
+      const state = existing.connection.connectionState;
+      if (state === "connected" || state === "connecting") return;
+      debugLog(
+        "voice",
+        "recreate stale peer",
+        { peerId: peerId.slice(0, 8), state, ice: existing.connection.iceConnectionState },
+        "warn",
+      );
+      this.removePeer(peerId);
+    }
     if (!this.outboundStream) await this.start();
     const iceServers = await warmIceServers();
     const iceSummary = summarizeIceServers(iceServers.length > 0 ? iceServers : buildIceServers());
@@ -633,7 +678,7 @@ export class VoiceMesh {
         scope: summary?.scope,
         tcpType: summary?.tcpType,
       });
-      this.sendSignal(peerId, { kind: "ice", candidate: event.candidate.toJSON() });
+      this.emitSignal(peerId, { kind: "ice", candidate: event.candidate.toJSON() });
     };
 
     connection.onicegatheringstatechange = () => {
@@ -685,9 +730,9 @@ export class VoiceMesh {
         const audioStream = stream ?? new MediaStream([track]);
         runtime.remoteAudioStream = audioStream;
         this.attachRemoteAudio(peerId, audioStream);
-        this.sendSignal(peerId, { kind: "voice-state", muted: this.muted, deafened: this.deafened });
+        this.emitSignal(peerId, { kind: "voice-state", muted: this.muted, deafened: this.deafened });
         if (this.screenSharing) {
-          this.sendSignal(peerId, { kind: "screen-share", active: true });
+          this.emitSignal(peerId, { kind: "screen-share", active: true });
         }
       }
     };
@@ -705,8 +750,10 @@ export class VoiceMesh {
       if (state === "connected") {
         if (runtime.failTimer) window.clearTimeout(runtime.failTimer);
         runtime.failTimer = undefined;
+        if (runtime.connectTimer) window.clearTimeout(runtime.connectTimer);
+        runtime.connectTimer = undefined;
         this.options.onPeerStatus?.(peerId, "connected");
-        this.sendSignal(peerId, { kind: "voice-state", muted: this.muted, deafened: this.deafened });
+        this.emitSignal(peerId, { kind: "voice-state", muted: this.muted, deafened: this.deafened });
         // Delayed getStats so inbound audio bytes can accumulate (chat OK / media silent).
         if (runtime.natTimer) window.clearTimeout(runtime.natTimer);
         runtime.natTimer = window.setTimeout(() => {
@@ -734,26 +781,48 @@ export class VoiceMesh {
       }
     };
 
+    runtime.connectTimer = window.setTimeout(() => {
+      const state = connection.connectionState;
+      if (state === "connected" || state === "closed") return;
+      debugLog("voice", "connect timeout", { peerId, state }, "warn");
+      void this.handleFailed(peerId, runtime, initiator);
+    }, 45_000);
+
     if (initiator) {
-      const offer = await connection.createOffer();
-      await connection.setLocalDescription(offer);
-      this.sendSignal(peerId, { kind: "offer", description: offer });
+      try {
+        runtime.makingOffer = true;
+        const offer = await connection.createOffer();
+        await connection.setLocalDescription(offer);
+        this.emitSignal(peerId, { kind: "offer", description: offer });
+      } finally {
+        runtime.makingOffer = false;
+      }
     }
   }
 
   private async handleFailed(peerId: string, runtime: PeerRuntime, initiator: boolean): Promise<void> {
     if (!this.peers.has(peerId)) return;
-    if (!runtime.restartAttempted && initiator) {
+    if (!runtime.restartAttempted) {
       runtime.restartAttempted = true;
-      debugLog("voice", "iceRestart", { peerId, sawRelay: runtime.sawRelay }, "warn");
+      debugLog("voice", "iceRestart", { peerId, sawRelay: runtime.sawRelay, initiator }, "warn");
       this.options.onPeerStatus?.(peerId, "connecting", "Переподключаем голос…");
       try {
-        const offer = await runtime.connection.createOffer({ iceRestart: true });
-        await runtime.connection.setLocalDescription(offer);
-        this.sendSignal(peerId, { kind: "offer", description: offer });
-        return;
+        clearIceCache();
+        const iceServers = await warmIceServers();
+        runtime.connection.setConfiguration({
+          iceServers: iceServers.length > 0 ? iceServers : buildIceServers(),
+        });
+        if (initiator || this.selfId > peerId) {
+          runtime.makingOffer = true;
+          const offer = await runtime.connection.createOffer({ iceRestart: true });
+          await runtime.connection.setLocalDescription(offer);
+          this.emitSignal(peerId, { kind: "offer", description: offer });
+          return;
+        }
       } catch (error) {
         debugLog("voice", "iceRestart failed", error, "warn");
+      } finally {
+        runtime.makingOffer = false;
       }
     }
 
@@ -797,12 +866,21 @@ export class VoiceMesh {
         debugLog("voice", "ignoring glare offer", { fromPeerId }, "warn");
         return;
       }
-      await connection.setRemoteDescription(signal.description);
-      runtime.remoteReady = true;
-      await this.flushIce(fromPeerId);
-      const answer = await connection.createAnswer();
-      await connection.setLocalDescription(answer);
-      this.sendSignal(fromPeerId, { kind: "answer", description: answer });
+      try {
+        await connection.setRemoteDescription(signal.description);
+        runtime.remoteReady = true;
+        await this.flushIce(fromPeerId);
+        const answer = await connection.createAnswer();
+        await connection.setLocalDescription(answer);
+        this.emitSignal(fromPeerId, { kind: "answer", description: answer });
+      } catch (error) {
+        debugLog(
+          "voice",
+          "setRemoteDescription offer failed",
+          { fromPeerId, signalingState: connection.signalingState, error },
+          "warn",
+        );
+      }
     } else if (signal.kind === "answer" && signal.description) {
       try {
         await connection.setRemoteDescription(signal.description);
@@ -819,8 +897,8 @@ export class VoiceMesh {
       }
       try {
         await connection.addIceCandidate(signal.candidate);
-      } catch {
-        // Stale candidates after renegotiation are ignored.
+      } catch (error) {
+        debugLog("voice", "addIceCandidate failed", { fromPeerId, error }, "warn");
       }
     }
   }
@@ -832,15 +910,15 @@ export class VoiceMesh {
     for (const candidate of pending) {
       try {
         await runtime.connection.addIceCandidate(candidate);
-      } catch {
-        // Ignore.
+      } catch (error) {
+        debugLog("voice", "flushIce candidate failed", { peerId, error }, "warn");
       }
     }
   }
 
   private broadcastVoiceState(): void {
     for (const peerId of this.peers.keys()) {
-      this.sendSignal(peerId, { kind: "voice-state", muted: this.muted, deafened: this.deafened });
+      this.emitSignal(peerId, { kind: "voice-state", muted: this.muted, deafened: this.deafened });
     }
   }
 
@@ -861,6 +939,7 @@ export class VoiceMesh {
   removePeer(peerId: string): void {
     const runtime = this.peers.get(peerId);
     if (runtime?.failTimer) window.clearTimeout(runtime.failTimer);
+    if (runtime?.connectTimer) window.clearTimeout(runtime.connectTimer);
     if (runtime?.natTimer) window.clearTimeout(runtime.natTimer);
     if (runtime?.speakTimer) window.clearInterval(runtime.speakTimer);
     runtime?.source?.disconnect();
