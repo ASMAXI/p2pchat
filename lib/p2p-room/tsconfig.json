@@ -10,5 +10,5 @@
   },
   "references": [{ "path": "../p2p-protocol" }, { "path": "../p2p-identity" }],
   "include": ["src"],
-  "exclude": ["src/**/*.test.ts"]
+  "exclude": ["src/**/*.test.ts", "src/**/test-fixtures.ts"]
 }

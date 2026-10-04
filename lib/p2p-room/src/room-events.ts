@@ -6,6 +6,13 @@ import {
   type WireRoomState,
 } from "@workspace/p2p-protocol";
 
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+type RoomEventInput = DistributiveOmit<RoomEvent, "eventId" | "sequence" | "predecessorId" | "ts"> & {
+  eventId?: string;
+  ts?: string;
+};
+
 function randomEventId(): string {
   const bytes = new Uint8Array(12);
   crypto.getRandomValues(bytes);
@@ -22,13 +29,7 @@ export function nextSequence(events: RoomEvent[] | undefined): number {
   return Math.max(...events.map((event) => event.sequence)) + 1;
 }
 
-export function appendRoomEvent(
-  events: RoomEvent[] | undefined,
-  partial: Omit<RoomEvent, "eventId" | "sequence" | "predecessorId" | "ts"> & {
-    eventId?: string;
-    ts?: string;
-  },
-): RoomEvent[] {
+export function appendRoomEvent(events: RoomEvent[] | undefined, partial: RoomEventInput): RoomEvent[] {
   const list = events ? [...events] : [];
   const event = {
     ...partial,
