@@ -16,32 +16,26 @@
       * { box-sizing: border-box; }
       body {
         margin: 0;
-        min-height: 100dvh;
+        min-height: 100vh;
         display: grid;
         place-items: center;
         padding: 24px;
-        font-family: "Segoe UI", system-ui, sans-serif;
-        background: radial-gradient(circle at 20% 10%, #243038, var(--bg) 55%);
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: #12161a;
         color: var(--fg);
       }
       main {
-        width: min(440px, 100%);
+        width: 440px;
+        max-width: 100%;
         background: #1c2329;
         border: 1px solid #2e3942;
         border-radius: 20px;
         padding: 28px 24px;
-        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
       }
-      h1 {
-        margin: 0 0 8px;
-        font-size: 1.55rem;
-        letter-spacing: -0.04em;
-      }
+      h1 { margin: 0 0 8px; font-size: 1.55rem; }
       p { margin: 0 0 14px; color: var(--muted); line-height: 1.5; font-size: 0.95rem; }
       a.btn, button.btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
+        display: block;
         width: 100%;
         margin-top: 8px;
         border: 0;
@@ -53,6 +47,7 @@
         background: var(--accent);
         color: #12161a;
         font-size: 1rem;
+        text-align: center;
       }
       button.secondary, a.secondary {
         background: transparent;
@@ -72,18 +67,35 @@
       .ok { color: var(--accent); }
       .err { color: #f28262; }
       .steps { margin: 12px 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.85rem; line-height: 1.45; }
+      .warn {
+        margin: 12px 0;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid #f28262;
+        background: rgba(242, 130, 98, 0.12);
+        color: #f5f0df;
+        font-size: 0.9rem;
+        line-height: 1.45;
+      }
     </style>
   </head>
   <body>
     <main>
       <h1>Drift</h1>
       <p id="status">Нажмите кнопку, чтобы открыть приложение с приглашением.</p>
+      <div id="ieWarn" class="warn" style="display:none">
+        Открыт Internet Explorer / старый браузер — Drift так не запустится.
+        Скопируйте ссылку ниже и откройте её в <strong>Chrome</strong> или <strong>Edge</strong>,
+        либо вставьте приглашение вручную в Drift (вкладка «Войти по ссылке»).
+        В Steam: ПКМ по ссылке → Open Link in Default Browser / Открыть во внешнем браузере.
+      </div>
       <a class="btn" id="open" href="#">Открыть Drift</a>
       <button class="btn secondary" id="copy" type="button">Скопировать drift:// ссылку</button>
+      <button class="btn secondary" id="copyHttps" type="button">Скопировать эту https-страницу</button>
       <ol class="steps">
-        <li>Должен быть установлен Drift (Windows).</li>
+        <li>Установите Drift (Windows).</li>
+        <li>Открывайте ссылку в Chrome/Edge, не в Internet Explorer.</li>
         <li>Если браузер спросит — разрешите открыть приложение.</li>
-        <li>Нет Drift — установите и нажмите кнопку снова.</li>
       </ol>
       <code id="deep"></code>
     </main>
@@ -97,13 +109,19 @@
         var status = document.getElementById("status");
         var openBtn = document.getElementById("open");
         var copyBtn = document.getElementById("copy");
+        var copyHttpsBtn = document.getElementById("copyHttps");
         var deepEl = document.getElementById("deep");
+        var ieWarn = document.getElementById("ieWarn");
+        var ua = navigator.userAgent || "";
+        var isIE = /MSIE|Trident\//.test(ua);
+        var isAncient = isIE || (!window.URLSearchParams && !window.chrome);
 
         if (!payload) {
           status.className = "err";
           status.textContent = "В ссылке нет приглашения. Попросите свежую ссылку из Drift.";
           openBtn.style.display = "none";
           copyBtn.style.display = "none";
+          copyHttpsBtn.style.display = "none";
           return;
         }
 
@@ -111,7 +129,18 @@
         deepEl.textContent = deep;
         openBtn.href = deep;
 
+        if (isIE || isAncient) {
+          ieWarn.style.display = "block";
+          status.className = "err";
+          status.textContent = "Этот браузер не умеет открыть Drift. Используйте Chrome или Edge.";
+        }
+
         function launch(fromUser) {
+          if (isIE) {
+            status.className = "err";
+            status.textContent = "IE не поддерживается — скопируйте ссылку и откройте в Edge/Chrome.";
+            return;
+          }
           status.className = "ok";
           status.textContent = fromUser
             ? "Запускаем Drift… Разрешите открытие приложения, если браузер спросит."
@@ -125,35 +154,46 @@
               try { document.body.removeChild(iframe); } catch (e) {}
             }, 1500);
           } catch (e) {}
-          // Keep page alive; full navigation away often fails silently when scheme is blocked.
-          try {
-            window.location.href = deep;
-          } catch (e2) {}
+          try { window.location.href = deep; } catch (e2) {}
         }
 
-        openBtn.addEventListener("click", function (event) {
-          // Keep default <a href="drift://…"> navigation; also kick iframe fallback.
-          launch(true);
-        });
+        openBtn.onclick = function () { launch(true); };
 
-        copyBtn.addEventListener("click", function () {
+        function copyText(text, okMsg) {
           if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(deep).then(
+            navigator.clipboard.writeText(text).then(
               function () {
                 status.className = "ok";
-                status.textContent = "Ссылка drift:// скопирована — вставьте в Drift вручную";
+                status.textContent = okMsg;
               },
               function () {
                 status.textContent = "Не удалось скопировать — выделите код ниже";
               },
             );
           } else {
-            status.textContent = "Выделите код ниже и скопируйте вручную";
+            try {
+              var range = document.createRange();
+              range.selectNodeContents(deepEl);
+              var sel = window.getSelection();
+              sel.removeAllRanges();
+              sel.addRange(range);
+              document.execCommand("copy");
+              status.className = "ok";
+              status.textContent = okMsg;
+            } catch (e) {
+              status.textContent = "Выделите код ниже и скопируйте вручную (Ctrl+C)";
+            }
           }
-        });
+        }
 
-        // Soft auto-try (many browsers block this without a click — button is the real path).
-        setTimeout(function () { launch(false); }, 250);
+        copyBtn.onclick = function () {
+          copyText(deep, "Ссылка drift:// скопирована — вставьте в Drift → Войти по ссылке");
+        };
+        copyHttpsBtn.onclick = function () {
+          copyText(location.href, "https-ссылка скопирована — откройте её в Chrome/Edge");
+        };
+
+        if (!isIE) setTimeout(function () { launch(false); }, 250);
       })();
     </script>
   </body>

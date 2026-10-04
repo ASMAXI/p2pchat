@@ -265,17 +265,27 @@ export function setPublicUrl(origin: string, options?: { manual?: boolean }): vo
   if (normalized) {
     window.localStorage.setItem(PUBLIC_URL_KEY, normalized);
     if (options?.manual) window.localStorage.setItem(MANUAL_PUBLIC_URL_KEY, "1");
+    else window.localStorage.removeItem(MANUAL_PUBLIC_URL_KEY);
   } else {
     window.localStorage.removeItem(PUBLIC_URL_KEY);
     window.localStorage.removeItem(MANUAL_PUBLIC_URL_KEY);
   }
 }
 
-/** Auto tunnel may refresh the public URL unless the user pinned one manually. */
+/**
+ * Auto tunnel refreshes the public URL.
+ * If the live tunnel hostname changed, clear a stale "manual" pin so invites don't keep a dead trycloudflare link.
+ */
 export function applyAutoPublicUrl(origin: string): void {
-  if (isManualPublicUrl()) return;
   const normalized = normalizeOrigin(origin);
-  if (normalized) window.localStorage.setItem(PUBLIC_URL_KEY, normalized);
+  if (!normalized) return;
+  const previous = getPublicUrl();
+  if (isManualPublicUrl() && previous && previous === normalized) return;
+  if (isManualPublicUrl() && previous && previous !== normalized) {
+    // Live tunnel moved (Quick Tunnel hostname always changes) — don't keep the corpse in invites.
+    window.localStorage.removeItem(MANUAL_PUBLIC_URL_KEY);
+  }
+  window.localStorage.setItem(PUBLIC_URL_KEY, normalized);
 }
 
 export function isPublicHttpOrigin(origin: string): boolean {

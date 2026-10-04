@@ -747,27 +747,59 @@ function CreateChannelDialog({ onClose, onCreate }: { onClose: () => void; onCre
   );
 }
 
-function InviteDialog({ server, onClose, onNotify }: { server: Server; onClose: () => void; onNotify: (text: string) => void }) {
-  const link = server.invite ?? '';
-  const isLocal = isLocalhostOrigin(server.invite ?? '');
+function InviteDialog({
+  server,
+  onClose,
+  onNotify,
+  onInviteUpdated,
+}: {
+  server: Server;
+  onClose: () => void;
+  onNotify: (text: string) => void;
+  onInviteUpdated?: (invite: string) => void;
+}) {
+  const [link, setLink] = useState(server.invite ?? '');
+  const [refreshing, setRefreshing] = useState(true);
+  const isLocal = isLocalhostOrigin(link);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRefreshing(true);
+    void refreshCoordinatorInvite()
+      .then((meta) => {
+        if (cancelled) return;
+        const next = meta?.invite || server.invite || '';
+        setLink(next);
+        if (meta?.invite) onInviteUpdated?.(meta.invite);
+      })
+      .finally(() => {
+        if (!cancelled) setRefreshing(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Refresh once when the dialog opens so friends never get a dead Quick Tunnel hostname.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const copy = async () => {
     if (!link) {
       onNotify('Ссылка ещё не готова — подождите туннель');
       return;
     }
     try { await navigator.clipboard.writeText(link); } catch { /* clipboard can be unavailable in local previews */ }
-    onNotify('Ссылка скопирована — друг может нажать её и открыть Drift');
+    onNotify('Свежая ссылка скопирована — друг открывает её в Chrome/Edge (не в IE)');
     onClose();
   };
   return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="dialog-card">
     <div className="mb-6 flex items-start justify-between"><div><div className="font-mono text-[10px] uppercase tracking-[.18em] text-[hsl(var(--muted-foreground))]">Доступ в комнату</div><h3 className="font-display mt-2 text-2xl font-bold tracking-[-.05em]">Позвать своих</h3></div><button className="icon-btn" onClick={onClose} aria-label="Закрыть" data-testid="button-close-invite-dialog"><X size={18} /></button></div>
-    <p className="text-sm leading-6 text-[hsl(var(--muted-foreground))]">Ссылка <span className="font-mono text-[11px]">https://asmaxi.github.io/…</span> кликабельна в Steam: откроется страница → кнопка «Открыть Drift». У друга должно быть установлено приложение. После смены туннеля скопируйте свежую ссылку.</p>
+    <p className="text-sm leading-6 text-[hsl(var(--muted-foreground))]">Ссылка обновляется при каждом открытии этого окна (актуальный туннель). В Steam: ПКМ по ссылке → открыть во внешнем браузере (Chrome/Edge), не Internet Explorer. У друга должен быть установлен Drift.</p>
     {isLocal && <div className="mt-4 rounded-xl border border-[hsl(var(--accent))]/30 bg-[hsl(var(--accent)/.08)] p-3 text-xs leading-5 text-[hsl(var(--accent))]">
       <strong>Внимание:</strong> в ссылке только localhost. Друзья в другой сети не подключатся.
       <div className="mt-2 font-mono text-[10px]">В одной Wi‑Fi приглашение должно содержать LAN-адрес (его подставит desktop-клиент). Между сетями нужен публичный bootstrap или туннель.</div>
     </div>}
-    <div className="mt-5 max-h-40 overflow-auto rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.55)] p-3"><div className="break-all font-mono text-[11px] leading-5 tracking-tight text-[hsl(var(--foreground))]" data-testid="text-invite-link">{link || 'Ссылка появится после поднятия туннеля'}</div></div>
-    <button className="primary-btn mt-5 w-full" onClick={copy} data-testid="button-copy-invite"><Copy size={16} /> Скопировать ссылку</button>
+    <div className="mt-5 max-h-40 overflow-auto rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.55)] p-3"><div className="break-all font-mono text-[11px] leading-5 tracking-tight text-[hsl(var(--foreground))]" data-testid="text-invite-link">{refreshing ? 'Обновляем ссылку под текущий туннель…' : (link || 'Ссылка появится после поднятия туннеля')}</div></div>
+    <button className="primary-btn mt-5 w-full" onClick={copy} disabled={refreshing || !link} data-testid="button-copy-invite"><Copy size={16} /> {refreshing ? 'Готовим ссылку…' : 'Скопировать ссылку'}</button>
   </div></div>;
 }
 
@@ -2447,7 +2479,14 @@ function Workspace() {
       <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.length === 0 ? <p className="text-xs text-[hsl(var(--muted-foreground))]">{connectionStatus === 'connected' ? 'Пока только вы' : 'Ждём подключения…'}</p> : visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={avatarColors(member.name)}>{avatarInitials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="min-w-0 truncate text-xs font-semibold"><PatriotName name={member.name} seed={member.id} /></span>{member.name === server.hostName && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">координатор</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
     </aside>
     {showChannelDialog && <CreateChannelDialog onClose={() => setShowChannelDialog(false)} onCreate={addChannel} />}
-    {showInviteDialog && <InviteDialog server={server} onClose={() => setShowInviteDialog(false)} onNotify={notify} />}
+    {showInviteDialog && (
+      <InviteDialog
+        server={server}
+        onClose={() => setShowInviteDialog(false)}
+        onNotify={notify}
+        onInviteUpdated={(invite) => setServer((current) => ({ ...current, invite }))}
+      />
+    )}
     {overlay === 'diagnostics' && <div className="fixed inset-0 z-[80] overflow-auto bg-[hsl(var(--background))]"><Diagnostics onClose={() => setOverlay(null)} /></div>}
     {overlay === 'settings' && <div className="fixed inset-0 z-[80] overflow-auto bg-[hsl(var(--background))]"><SettingsPage onClose={() => setOverlay(null)} /></div>}
     {peerVolumeMenu && (

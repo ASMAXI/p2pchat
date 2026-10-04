@@ -315,13 +315,15 @@ export async function createLocalRoom(input: {
   const roomId = randomToken(8);
   const inviteToken = randomToken(24);
   const roomKey = generateRoomKey();
-  const publicUrl = getPublicUrl() || localNode?.publicOrigin || "";
+  // Prefer the live tunnel from this start — stored public URL is often a dead Quick Tunnel hostname.
+  const publicUrl = localNode?.publicOrigin || getPublicUrl() || "";
+  if (publicUrl) applyAutoPublicUrl(publicUrl);
   const endpoints = collectNodeEndpoints(
     localNode
       ? {
           origin: localNode.origin,
           lanOrigins: localNode.lanOrigins,
-          publicOrigin: localNode.publicOrigin,
+          publicOrigin: localNode.publicOrigin || publicUrl || null,
         }
       : null,
   );
@@ -455,11 +457,11 @@ export async function prepareJoin(input: {
 
 export function rebuildInviteOrigins(meta: RoomMeta, extraOrigins: string[] = []): RoomMeta {
   const publicUrl = getPublicUrl();
-  // Only current public + provided endpoints — never keep historical trycloudflare URLs.
-  const origins = orderInviteOrigins([
-    ...(publicUrl ? [publicUrl] : []),
-    ...extraOrigins,
-  ]).filter((origin) => isPublicHttpOrigin(origin) || /^https?:\/\//i.test(origin));
+  // Live endpoints first; drop any historical trycloudflare hostnames not in the current set.
+  const fresh = [publicUrl, ...extraOrigins].map(normalizeOrigin).filter(Boolean);
+  const origins = orderInviteOrigins(fresh).filter(
+    (origin) => isPublicHttpOrigin(origin) || /^https?:\/\//i.test(origin),
+  );
   // Prefer non-loopback for invites; keep LAN + public.
   const usable = origins.filter((origin) => {
     try {
