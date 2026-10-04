@@ -112,10 +112,10 @@ export function formatDebugReport(extra?: Record<string, unknown>): string {
     href: typeof location !== "undefined" ? location.href : "",
     peerId: (() => {
       try {
-        const raw = window.localStorage.getItem("p2pchat-identity");
+        const raw = window.localStorage.getItem("p2pchat-crypto-identity");
         if (!raw) return null;
         const parsed = JSON.parse(raw) as { peerId?: string };
-        return parsed.peerId ?? raw.slice(0, 80);
+        return parsed.peerId ?? null;
       } catch {
         return null;
       }

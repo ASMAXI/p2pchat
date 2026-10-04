@@ -1539,6 +1539,8 @@ function Workspace() {
   const [overlay, setOverlay] = useState<null | 'diagnostics' | 'settings'>(null);
   const [toast, setToast] = useState('');
   const [activeVoice, setActiveVoice] = useState<string | null>(null);
+  const [joiningVoice, setJoiningVoice] = useState(false);
+  const joiningVoiceRef = useRef(false);
   const [muted, setMuted] = useState(false);
   const [deafened, setDeafened] = useState(false);
   const [micVolume, setMicVolume] = useState(1);
@@ -2225,12 +2227,27 @@ function Workspace() {
     setToast(`Канал «${channelName}» создан`);
   };
   const joinVoice = async (room: StoredVoice) => {
+    if (joiningVoiceRef.current) return;
+    if (activeVoice === room.id) {
+      setSelectedId(room.id);
+      return;
+    }
     if (server.roomId) {
       if (connectionStatus !== 'connected') {
-        setToast('Нет соединения с комнатой');
+        setToast('Нет соединения с комнатой — подождите или откройте Диагностику');
+        debugLog('voice', 'join blocked: not connected', { roomId: room.id, connectionStatus });
         return;
       }
+      joiningVoiceRef.current = true;
+      setJoiningVoice(true);
+      setSelectedId(room.id);
+      setToast('Запрашиваем микрофон…');
+      debugLog('voice', 'join requested', { roomId: room.id, connectionStatus, peerId });
       try {
+        if (activeVoice && activeVoice !== room.id) {
+          sessionRef.current?.setVoiceChannel(null);
+          // keep mesh; just switch channel membership after start
+        }
         const mesh = voiceMeshRef.current ?? new VoiceMesh(
           peerId,
           (toPeerId, data) => {
@@ -2284,9 +2301,14 @@ function Workspace() {
         voiceMeshRef.current?.setDeafened(deafened);
         void voiceMeshRef.current?.setMicProcessing({ noiseSuppression, echoCancellation, enhancedNoise });
         sessionRef.current?.setVoiceChannel(room.id);
+        debugLog('voice', 'join announced', { roomId: room.id });
       } catch (error) {
+        debugLog('voice', 'join failed', error, 'error');
         setToast(error instanceof Error ? error.message : 'Не удалось получить доступ к микрофону');
         return;
+      } finally {
+        joiningVoiceRef.current = false;
+        setJoiningVoice(false);
       }
     }
     setActiveVoice(room.id);
@@ -2370,6 +2392,10 @@ function Workspace() {
   const selectChannel = (id: string) => {
     setSelectedId(id);
     setChannels((current) => current.map((channel) => channel.id === id ? { ...channel, unreadCount: 0 } : channel));
+    const voiceRoom = voiceRooms.find((room) => room.id === id);
+    if (voiceRoom && activeVoice !== id && !joiningVoiceRef.current) {
+      void joinVoice(voiceRoom);
+    }
   };
   const notify = (text: string) => setToast(text);
   const leaveServer = () => {
@@ -2529,8 +2555,17 @@ function Workspace() {
                 </div>
               </div>
               <div className={`flex flex-wrap items-center gap-3 ${activeVoice === selectedVoice.id ? '' : 'mt-4 flex-col'}`}>
-                <button className="primary-btn" onClick={() => (activeVoice === selectedVoice.id ? leaveVoice() : void joinVoice(selectedVoice))} data-testid="button-main-voice-toggle">
-                  {activeVoice === selectedVoice.id ? <><X size={16} /> Покинуть комнату</> : <><Radio size={16} /> Войти в комнату</>}
+                <button
+                  className="primary-btn"
+                  disabled={joiningVoice}
+                  onClick={() => (activeVoice === selectedVoice.id ? leaveVoice() : void joinVoice(selectedVoice))}
+                  data-testid="button-main-voice-toggle"
+                >
+                  {joiningVoice
+                    ? <><Radio size={16} /> Подключаем…</>
+                    : activeVoice === selectedVoice.id
+                      ? <><X size={16} /> Покинуть комнату</>
+                      : <><Radio size={16} /> Войти в комнату</>}
                 </button>
                 {activeVoice === selectedVoice.id && (
                   <button

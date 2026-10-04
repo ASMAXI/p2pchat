@@ -19,6 +19,22 @@ import {
   type VoiceNatReport,
 } from "@/lib/voice-diagnostics";
 
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 type VoiceSignal =
   | { kind: "offer"; description: RTCSessionDescriptionInit }
   | { kind: "answer"; description: RTCSessionDescriptionInit }
@@ -310,13 +326,36 @@ export class VoiceMesh {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("Браузер не поддерживает доступ к микрофону");
     }
-    const audioConstraints: MediaTrackConstraints = {
+    debugLog("voice", "requesting microphone", {
+      inputDeviceId: this.inputDeviceId || null,
+      processing: this.micProcessing,
+    });
+    const baseConstraints: MediaTrackConstraints = {
       echoCancellation: this.micProcessing.echoCancellation,
       noiseSuppression: this.micProcessing.noiseSuppression,
       autoGainControl: this.micProcessing.autoGainControl,
     };
-    if (this.inputDeviceId) audioConstraints.deviceId = { exact: this.inputDeviceId };
-    const nextRaw = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+    const requestMic = (constraints: MediaTrackConstraints) =>
+      withTimeout(
+        navigator.mediaDevices.getUserMedia({ audio: constraints }),
+        20_000,
+        "Нет ответа от микрофона (таймаут 20 с). Разрешите доступ в Windows/приложении и попробуйте снова.",
+      );
+
+    let nextRaw: MediaStream;
+    try {
+      const constraints: MediaTrackConstraints = { ...baseConstraints };
+      if (this.inputDeviceId) constraints.deviceId = { exact: this.inputDeviceId };
+      nextRaw = await requestMic(constraints);
+    } catch (error) {
+      if (this.inputDeviceId) {
+        debugLog("voice", "exact input device failed, retrying default", error, "warn");
+        this.inputDeviceId = "";
+        nextRaw = await requestMic(baseConstraints);
+      } else {
+        throw error;
+      }
+    }
     for (const track of this.rawStream?.getTracks() ?? []) track.stop();
     this.rawStream = nextRaw;
 
