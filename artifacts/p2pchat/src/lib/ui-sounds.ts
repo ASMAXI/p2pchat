@@ -28,6 +28,10 @@ const STARTUP_KEY = "p2pchat-startup-sound";
 let sharedCtx: AudioContext | null = null;
 let lastPlayAt = 0;
 let startupPlayed = false;
+/** Startup scheduled before first user gesture — cancelled when another UI sound wins. */
+let startupPending = false;
+let startupTimer: number | null = null;
+let startupGestureBound = false;
 
 export function loadUiSoundsEnabled(): boolean {
   try {
@@ -143,40 +147,74 @@ function playStartupVariant(ctx: AudioContext, t: number, id: StartupSoundId): v
   else playTide(ctx, t);
 }
 
+function cancelPendingStartup(): void {
+  startupPending = false;
+  if (startupTimer !== null) {
+    window.clearTimeout(startupTimer);
+    startupTimer = null;
+  }
+}
+
 /** Preview any startup motif (ignores mute + once-per-session). */
 export function previewStartupSound(id: StartupSoundId): void {
+  cancelPendingStartup();
+  startupPlayed = true;
   const ctx = ensureCtx();
   if (!ctx) return;
-  void ctx.resume();
-  playStartupVariant(ctx, ctx.currentTime + 0.02, id);
+  void ctx.resume().then(() => {
+    playStartupVariant(ctx, ctx.currentTime + 0.02, id);
+  });
+}
+
+function flushStartupIfReady(): void {
+  if (!startupPending || startupPlayed || !loadUiSoundsEnabled()) return;
+  const ctx = ensureCtx();
+  if (!ctx || ctx.state !== "running") return;
+  startupPending = false;
+  startupPlayed = true;
+  if (startupTimer !== null) {
+    window.clearTimeout(startupTimer);
+    startupTimer = null;
+  }
+  playStartupVariant(ctx, ctx.currentTime + 0.02, loadStartupSoundId());
 }
 
 /** Play a UI sound. Skips if disabled, rapid-fire, or AudioContext unavailable. */
 export function playUiSound(id: UiSoundId): void {
   if (!loadUiSoundsEnabled()) return;
+  // First real UI cue (voice enter, chat, …) must not collide with a deferred startup motif.
+  if (id !== "startup") {
+    cancelPendingStartup();
+    startupPlayed = true;
+  }
+
   const now = Date.now();
   if (id !== "startup" && now - lastPlayAt < 80) return;
   lastPlayAt = now;
 
   const ctx = ensureCtx();
   if (!ctx) return;
-  void ctx.resume();
-  const t = ctx.currentTime + 0.01;
+  void ctx.resume().then(() => {
+    if (id === "startup") {
+      flushStartupIfReady();
+      return;
+    }
+    const t = ctx.currentTime + 0.01;
+    playUiSoundNow(ctx, id, t);
+  });
+}
 
+function playUiSoundNow(ctx: AudioContext, id: Exclude<UiSoundId, "startup">, t: number): void {
   switch (id) {
-    case "startup":
-      playStartupVariant(ctx, t, loadStartupSoundId());
-      break;
     case "member-join":
       tone(ctx, { freq: 523.25, start: t, duration: 0.12, type: "triangle", gain: 0.07 });
       tone(ctx, { freq: 659.25, start: t + 0.1, duration: 0.18, type: "triangle", gain: 0.08 });
       break;
     case "voice-enter":
-      // Self entered a voice channel — deeper “open channel” motif (≠ startup / member-join).
-      tone(ctx, { freq: 196.0, start: t, duration: 0.28, type: "sine", gain: 0.045, attack: 0.06 });
-      tone(ctx, { freq: 293.66, start: t + 0.08, duration: 0.22, type: "triangle", gain: 0.07, attack: 0.04 });
-      tone(ctx, { freq: 392.0, start: t + 0.2, duration: 0.34, type: "sine", gain: 0.08, attack: 0.05, slideTo: 523.25 });
-      tone(ctx, { freq: 587.33, start: t + 0.38, duration: 0.28, type: "triangle", gain: 0.05, attack: 0.06 });
+      // Short “channel open” blip — must not resemble the ~2s startup motif.
+      tone(ctx, { freq: 220, start: t, duration: 0.1, type: "sine", gain: 0.06, attack: 0.02 });
+      tone(ctx, { freq: 330, start: t + 0.08, duration: 0.14, type: "triangle", gain: 0.075, attack: 0.03, slideTo: 494 });
+      tone(ctx, { freq: 660, start: t + 0.18, duration: 0.16, type: "sine", gain: 0.05, attack: 0.03 });
       break;
     case "voice-join":
       // Someone else joined voice — short dual blip, distinct from member-join.
@@ -206,9 +244,33 @@ export function playUiSound(id: UiSoundId): void {
   }
 }
 
-/** Once per page/session load — selected Drift startup motif. */
+/**
+ * Once per session. Waits until AudioContext is running (user gesture) so notes
+ * are not scheduled while suspended and then dumped together with voice-enter.
+ */
 export function playStartupSound(): void {
-  if (startupPlayed) return;
-  startupPlayed = true;
-  window.setTimeout(() => playUiSound("startup"), 280);
+  if (startupPlayed || startupPending) return;
+  startupPending = true;
+  startupTimer = window.setTimeout(() => {
+    startupTimer = null;
+    const ctx = ensureCtx();
+    if (!ctx) return;
+    void ctx.resume().then(() => {
+      flushStartupIfReady();
+      if (startupPlayed || !startupPending) return;
+      // Still suspended — play on first pointer/key interaction instead of queuing early.
+      if (startupGestureBound) return;
+      startupGestureBound = true;
+      const onGesture = () => {
+        window.removeEventListener("pointerdown", onGesture, true);
+        window.removeEventListener("keydown", onGesture, true);
+        // Defer past the click handler so voice-enter can cancel startup in the same gesture.
+        window.setTimeout(() => {
+          void ensureCtx()?.resume().then(() => flushStartupIfReady());
+        }, 0);
+      };
+      window.addEventListener("pointerdown", onGesture, true);
+      window.addEventListener("keydown", onGesture, true);
+    });
+  }, 280);
 }

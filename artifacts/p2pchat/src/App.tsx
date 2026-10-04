@@ -327,6 +327,19 @@ function CreatorCredit({ className = '' }: { className?: string }) {
   return <span className={`font-mono text-[10px] uppercase tracking-[.14em] ${className}`} data-testid="text-creator">Drift · создатель ASMAXI</span>;
 }
 
+function AppVersionLabel({ className = '' }: { className?: string }) {
+  const [version, setVersion] = useState('');
+  useEffect(() => {
+    void currentAppVersion().then(setVersion);
+  }, []);
+  if (!version) return null;
+  return (
+    <span className={`font-mono text-[10px] tracking-[.12em] text-[hsl(var(--muted-foreground))] ${className}`} data-testid="text-app-version">
+      v{version}
+    </span>
+  );
+}
+
 function Toast({ text, onClose }: { text: string; onClose: () => void }) {
   useEffect(() => {
     const timer = window.setTimeout(onClose, 3300);
@@ -504,14 +517,6 @@ function Home() {
           <div className="absolute -right-8 top-40 h-56 w-56 rounded-full border border-[#d8fa67]/15" />
           <div className="absolute bottom-[-100px] left-[-70px] h-72 w-72 rounded-full" style={{ background: 'hsl(var(--accent) / .13)' }} />
           <LogoMark />
-          <button
-            type="button"
-            className="absolute right-5 top-6 z-20 ghost-btn !border-[#f5f0df]/20 !text-[#f5f0df] lg:right-10 lg:top-8"
-            onClick={() => setShowSettings(true)}
-            data-testid="button-home-settings"
-          >
-            <Settings size={15} /> Настройки
-          </button>
           <div className="relative z-10 mt-auto max-w-[590px] pb-3 pt-24 lg:pb-12">
             <div className="mb-7 inline-flex items-center gap-2 rounded-full border border-[#f5f0df]/15 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[.18em] text-[#d8fa67]"><span className="animate-pulse-dot h-1.5 w-1.5 rounded-full bg-[#d8fa67]" /> private by default</div>
             <h1 className="font-display text-[clamp(3.1rem,7vw,6.8rem)] font-bold leading-[.91] tracking-[-.08em]">Свои люди.<br /><span style={{ color: 'hsl(var(--primary))' }}>Своя комната.</span></h1>
@@ -532,9 +537,7 @@ function Home() {
           <div className="mx-auto w-full max-w-[440px] animate-rise">
             <div className="mb-8 flex items-center justify-between lg:hidden">
               <LogoMark small />
-              <button type="button" className="ghost-btn !h-9 !px-3 text-xs" onClick={() => setShowSettings(true)} data-testid="button-home-settings-mobile">
-                <Settings size={14} /> Настройки
-              </button>
+              <span className="font-mono text-[10px] uppercase tracking-widest text-[hsl(var(--muted-foreground))]">приватная комната</span>
             </div>
             <div className="mb-8"><p className="font-mono text-[10px] uppercase tracking-[.18em] text-[hsl(var(--muted-foreground))]">Вход в пространство</p><h2 className="font-display mt-3 text-4xl font-bold tracking-[-.06em]">Где собираемся?</h2><p className="mt-3 text-sm leading-6 text-[hsl(var(--muted-foreground))]">Комната синхронизируется между приглашёнными участниками. Никаких аккаунтов и лишних шагов.</p></div>
 
@@ -579,6 +582,17 @@ function Home() {
               </form>
             )}
 
+            <div className="mt-4 flex justify-center">
+              <button
+                type="button"
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-4 py-2.5 text-sm font-semibold text-[hsl(var(--foreground))] transition hover:border-[hsl(var(--primary)/.45)] hover:bg-[hsl(var(--muted))]"
+                onClick={() => setShowSettings(true)}
+                data-testid="button-home-settings"
+              >
+                <Settings size={15} className="text-[hsl(var(--secondary))]" /> Настройки
+              </button>
+            </div>
+
             {savedServers.length > 0 && (
               <div className="mt-10" data-testid="saved-servers">
                 <div className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[hsl(var(--muted-foreground))]">Ваши серверы</div>
@@ -615,6 +629,7 @@ function Home() {
 
             <div className="mt-10 flex items-center gap-2 text-[11px] text-[hsl(var(--muted-foreground))]"><ShieldCheck size={14} /> Защищённая комната · без аккаунта</div>
             <CreatorCredit className="mt-3 block text-[hsl(var(--muted-foreground))]" />
+            <AppVersionLabel className="mt-2 block" />
           </div>
         </section>
       </div>
@@ -1004,6 +1019,7 @@ function ChannelPane({
       <button className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-xs font-semibold text-[hsl(var(--muted-foreground))] transition hover:bg-[hsl(var(--muted))] hover:text-[hsl(var(--foreground))]" onClick={onInvite} data-testid="button-invite-members"><UserPlus size={15} /> Пригласить друзей</button>
       <button className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-xs font-semibold text-[hsl(var(--accent))] transition hover:bg-[hsl(var(--accent)/.12)]" onClick={onLeaveServer} data-testid="button-leave-server"><X size={15} /> Покинуть сервер</button>
       <CreatorCredit className="block px-2 pt-1 text-[8px] text-[hsl(var(--muted-foreground)/.7)]" />
+      <AppVersionLabel className="mt-1 block px-2 text-[9px]" />
     </div>
   </aside>;
 }
@@ -2700,21 +2716,45 @@ function SettingsSection({
   testId?: string;
 }) {
   return (
-    <div className="mt-3 overflow-hidden rounded-xl border border-[hsl(var(--border))]" data-testid={testId}>
+    <div
+      className={`mt-3 overflow-hidden rounded-xl border transition ${
+        open
+          ? 'border-[hsl(var(--primary)/.55)] bg-[hsl(var(--primary)/.08)] shadow-[inset_0_0_0_1px_hsl(var(--primary)/.12)]'
+          : 'border-[hsl(var(--border))] bg-[hsl(var(--card)/.4)]'
+      }`}
+      data-testid={testId}
+    >
       <button
         type="button"
-        className="flex w-full items-start justify-between gap-3 px-4 py-3.5 text-left transition hover:bg-[hsl(var(--muted)/.35)]"
+        className={`flex w-full items-start justify-between gap-3 px-4 py-3.5 text-left transition ${
+          open
+            ? 'bg-[hsl(var(--primary)/.14)] hover:bg-[hsl(var(--primary)/.18)]'
+            : 'hover:bg-[hsl(var(--muted)/.45)]'
+        }`}
         onClick={() => onToggle(id)}
         aria-expanded={open}
         data-testid={testId ? `${testId}-toggle` : undefined}
       >
         <span className="min-w-0">
-          <span className="block text-sm font-bold">{title}</span>
-          {hint && <span className="mt-0.5 block text-xs text-[hsl(var(--muted-foreground))]">{hint}</span>}
+          <span className={`block text-sm font-bold ${open ? 'text-[hsl(var(--foreground))]' : ''}`}>{title}</span>
+          {hint && (
+            <span className={`mt-0.5 block text-xs ${open ? 'text-[hsl(var(--secondary))]' : 'text-[hsl(var(--muted-foreground))]'}`}>
+              {hint}
+            </span>
+          )}
         </span>
-        <ChevronDown size={18} className={`mt-0.5 shrink-0 text-[hsl(var(--muted-foreground))] transition ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown
+          size={18}
+          className={`mt-0.5 shrink-0 transition ${
+            open ? 'rotate-180 text-[hsl(var(--primary))]' : 'text-[hsl(var(--muted-foreground))]'
+          }`}
+        />
       </button>
-      {open && <div className="border-t border-[hsl(var(--border))] px-4 py-4">{children}</div>}
+      {open && (
+        <div className="border-t border-[hsl(var(--primary)/.25)] bg-[hsl(var(--background)/.72)] px-4 py-4">
+          {children}
+        </div>
+      )}
     </div>
   );
 }
