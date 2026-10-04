@@ -37,7 +37,7 @@ export async function currentAppVersion(): Promise<string> {
   } catch {
     // fall through
   }
-  return "0.9.14";
+  return "0.9.15";
 }
 
 export async function checkForAppUpdate(): Promise<AppUpdateInfo> {

@@ -161,7 +161,9 @@ import {
   type StartupSoundId,
 } from '@/lib/ui-sounds';
 import {
-  MUTE_DEAFEN_KEY_OPTIONS,
+  HOTKEY_NONE,
+  isHotkeyCodeSupported,
+  labelForHotkeyCode,
   loadDeafenHotkeyCode,
   loadMuteHotkeyCode,
   loadPttKeyCode,
@@ -170,8 +172,8 @@ import {
   loadVoiceOverlayOpacity,
   loadVoiceTalkMode,
   hotkeyVkForCode,
+  mouseButtonToHotkeyCode,
   pttVkForCode,
-  PTT_KEY_OPTIONS,
   saveDeafenHotkeyCode,
   saveMuteHotkeyCode,
   savePttKeyCode,
@@ -2762,31 +2764,123 @@ function Diagnostics({ onClose }: { onClose?: () => void }) {
   </div>;
 }
 
-function PttKeyCaptureButton({ onCapture }: { onCapture: (code: PttKeyCode) => void }) {
+function HotkeyBindControl({
+  label,
+  value,
+  allowClear = false,
+  onChange,
+  testId,
+}: {
+  label: string;
+  value: PttKeyCode;
+  allowClear?: boolean;
+  onChange: (code: PttKeyCode) => void;
+  testId: string;
+}) {
   const [capturing, setCapturing] = useState(false);
+  const [error, setError] = useState('');
+
   useEffect(() => {
     if (!capturing) return;
+    const finish = (code: PttKeyCode) => {
+      if (!isHotkeyCodeSupported(code)) {
+        setError('Эту клавишу назначить нельзя');
+        return;
+      }
+      setError('');
+      onChange(code);
+      setCapturing(false);
+    };
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       event.preventDefault();
       event.stopPropagation();
-      if (event.code === 'Mouse4' || event.code === 'Mouse5') return;
-      const known = PTT_KEY_OPTIONS.some((item) => item.code === event.code);
-      if (!known) return;
-      onCapture(event.code);
-      setCapturing(false);
+      if (event.code === 'Escape') {
+        setCapturing(false);
+        setError('');
+        return;
+      }
+      if (allowClear && event.code === 'Backspace') {
+        setError('');
+        onChange(HOTKEY_NONE);
+        setCapturing(false);
+        return;
+      }
+      finish(event.code);
+    };
+    const onMouseDown = (event: MouseEvent) => {
+      const code = mouseButtonToHotkeyCode(event.button);
+      if (!code) return;
+      event.preventDefault();
+      event.stopPropagation();
+      finish(code);
     };
     window.addEventListener('keydown', onKeyDown, true);
-    return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [capturing, onCapture]);
+    window.addEventListener('mousedown', onMouseDown, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('mousedown', onMouseDown, true);
+    };
+  }, [allowClear, capturing, onChange]);
+
   return (
-    <button
-      type="button"
-      className="ghost-btn mt-2 w-full text-xs"
-      onClick={() => setCapturing(true)}
-      data-testid="button-capture-ptt-key"
-    >
-      {capturing ? 'Нажмите клавишу…' : 'Нажмите клавишу…'}
-    </button>
+    <div className="mt-3" data-testid={testId}>
+      <div className="field-label">{label}</div>
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <div
+          className="min-w-[7rem] flex-1 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.35)] px-3 py-2 font-mono text-xs font-semibold"
+          data-testid={`${testId}-value`}
+        >
+          {capturing ? 'Нажмите клавишу или кнопку мыши…' : labelForHotkeyCode(value)}
+        </div>
+        <button
+          type="button"
+          className="ghost-btn text-xs"
+          onClick={() => {
+            setError('');
+            setCapturing(true);
+          }}
+          data-testid={`${testId}-bind`}
+        >
+          {capturing ? 'Жду…' : 'Назначить'}
+        </button>
+        {allowClear && value && !capturing && (
+          <button
+            type="button"
+            className="ghost-btn text-xs"
+            onClick={() => {
+              setError('');
+              onChange(HOTKEY_NONE);
+            }}
+            data-testid={`${testId}-clear`}
+          >
+            Сброс
+          </button>
+        )}
+        {capturing && (
+          <button
+            type="button"
+            className="ghost-btn text-xs"
+            onClick={() => {
+              setCapturing(false);
+              setError('');
+            }}
+            data-testid={`${testId}-cancel`}
+          >
+            Отмена
+          </button>
+        )}
+      </div>
+      <p className="mt-1 text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
+        {capturing
+          ? allowClear
+            ? 'Любая клавиша / боковая кнопка мыши. Esc — отмена, Backspace — сброс.'
+            : 'Любая клавиша / боковая кнопка мыши. Esc — отмена.'
+          : error || null}
+      </p>
+      {error && !capturing && (
+        <p className="mt-1 text-[11px] text-[hsl(var(--accent))]">{error}</p>
+      )}
+    </div>
   );
 }
 
@@ -3156,73 +3250,44 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
               <option value="ptt">По нажатию клавиши (PTT)</option>
             </select>
             {voiceTalkMode === 'ptt' && (
-              <>
-                <label className="field-label mt-3" htmlFor="ptt-key">Клавиша PTT</label>
-                <select
-                  id="ptt-key"
-                  className="field-input"
-                  value={pttKeyCode}
-                  onChange={(event) => {
-                    const code = event.target.value;
-                    setPttKeyCode(code);
-                    savePttKeyCode(code);
-                    pushVoiceHotkeysToNative(code, muteHotkeyCode, deafenHotkeyCode);
-                    window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
-                  }}
-                  data-testid="select-ptt-key"
-                >
-                  {PTT_KEY_OPTIONS.map((option) => (
-                    <option key={option.code} value={option.code}>{option.label}</option>
-                  ))}
-                </select>
-                <PttKeyCaptureButton
-                  onCapture={(code) => {
-                    setPttKeyCode(code);
-                    savePttKeyCode(code);
-                    pushVoiceHotkeysToNative(code, muteHotkeyCode, deafenHotkeyCode);
-                    window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
-                  }}
-                />
-              </>
+              <HotkeyBindControl
+                label="Клавиша PTT"
+                value={pttKeyCode}
+                testId="hotkey-ptt"
+                onChange={(code) => {
+                  setPttKeyCode(code);
+                  savePttKeyCode(code);
+                  pushVoiceHotkeysToNative(code, muteHotkeyCode, deafenHotkeyCode);
+                  window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
+                }}
+              />
             )}
-            <label className="field-label mt-4" htmlFor="mute-hotkey">Заглушить / разглушить микрофон</label>
-            <select
-              id="mute-hotkey"
-              className="field-input"
+            <HotkeyBindControl
+              label="Заглушить / разглушить микрофон"
               value={muteHotkeyCode}
-              onChange={(event) => {
-                const code = event.target.value;
+              allowClear
+              testId="hotkey-mute"
+              onChange={(code) => {
                 setMuteHotkeyCode(code);
                 saveMuteHotkeyCode(code);
                 pushVoiceHotkeysToNative(pttKeyCode, code, deafenHotkeyCode);
                 window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
               }}
-              data-testid="select-mute-hotkey"
-            >
-              {MUTE_DEAFEN_KEY_OPTIONS.map((option) => (
-                <option key={`mute-${option.code || 'none'}`} value={option.code}>{option.label}</option>
-              ))}
-            </select>
-            <label className="field-label mt-3" htmlFor="deafen-hotkey">Выключить / включить уши</label>
-            <select
-              id="deafen-hotkey"
-              className="field-input"
+            />
+            <HotkeyBindControl
+              label="Выключить / включить уши"
               value={deafenHotkeyCode}
-              onChange={(event) => {
-                const code = event.target.value;
+              allowClear
+              testId="hotkey-deafen"
+              onChange={(code) => {
                 setDeafenHotkeyCode(code);
                 saveDeafenHotkeyCode(code);
                 pushVoiceHotkeysToNative(pttKeyCode, muteHotkeyCode, code);
                 window.dispatchEvent(new CustomEvent('p2pchat-voice-settings'));
               }}
-              data-testid="select-deafen-hotkey"
-            >
-              {MUTE_DEAFEN_KEY_OPTIONS.map((option) => (
-                <option key={`deafen-${option.code || 'none'}`} value={option.code}>{option.label}</option>
-              ))}
-            </select>
+            />
             <p className="mt-2 text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
-              Глобальные клавиши работают в голосовом канале (в т.ч. поверх игр в desktop). Не совпадайте с PTT.
+              Назначьте любую клавишу или боковую кнопку мыши. Глобально в голосовом канале (desktop). Не совпадайте с PTT.
             </p>
             <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
               <input
