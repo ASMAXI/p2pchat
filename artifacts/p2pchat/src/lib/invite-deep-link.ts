@@ -45,11 +45,12 @@ export async function installInviteDeepLinkHandler(
     const { getCurrent, onOpenUrl } = await import("@tauri-apps/plugin-deep-link");
     const handleUrls = (urls: string[]) => {
       for (const url of urls) {
-        if (!parseInvite(url)) {
-          debugLog("invite", "ignored deep link", { url: url.slice(0, 80) }, "warn");
+        const parsed = parseInvite(url);
+        if (!parsed) {
+          debugLog("invite", "ignored deep link", { scheme: url.split(":")[0] ?? "?" }, "warn");
           continue;
         }
-        debugLog("invite", "deep link open", { url: url.slice(0, 96) });
+        debugLog("invite", "deep link open", { roomId: parsed.roomId, origins: parsed.origins.slice(0, 4) });
         onInvite(url);
       }
     };

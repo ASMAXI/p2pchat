@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-secure-vault-load"
+description = "Load encrypted secret vault from OS-backed storage"
+commands.allow = ["secure_vault_load"]
+
+[[permission]]
+identifier = "allow-secure-vault-save"
+description = "Save encrypted secret vault to OS-backed storage"
+commands.allow = ["secure_vault_save"]

@@ -17,6 +17,13 @@ import {
 import { ensureLocalNode, type LocalNodeInfo } from "@/lib/desktop-bridge";
 import { debugLog } from "@/lib/debug-log";
 import {
+  createSecureIdentityStorage,
+  getSecureRoomMetaRaw,
+  getSecureSavedServersRaw,
+  setSecureRoomMetaRaw,
+  setSecureSavedServersRaw,
+} from "@/lib/secure-storage";
+import {
   applyAutoPublicUrl,
   collectNodeEndpoints,
   getPublicUrl,
@@ -25,6 +32,8 @@ import {
   orderInviteOrigins,
   warmIceServers,
 } from "@/lib/network-settings";
+
+const identityStorage = createSecureIdentityStorage();
 
 export {
   VoiceMesh,
@@ -65,6 +74,8 @@ export type RoomMessage = {
 };
 
 const PROFILE_NAME_KEY = "p2pchat-profile-name";
+const BOOTSTRAP_KEY = "p2pchat-api-origin";
+const SESSION_SNAPSHOT_KEY = "p2pchat-session-snapshot";
 
 /** Prefer saved profile name; empty string keeps existing identity name. */
 export function readProfileDisplayName(): string {
@@ -82,11 +93,6 @@ export function readProfileDisplayName(): string {
 export function writeProfileDisplayName(name: string): void {
   window.localStorage.setItem(PROFILE_NAME_KEY, JSON.stringify(name.trim() || "Участник"));
 }
-
-const BOOTSTRAP_KEY = "p2pchat-api-origin";
-const ROOM_META_KEY = "p2pchat-room-meta";
-const SESSION_SNAPSHOT_KEY = "p2pchat-session-snapshot";
-const SAVED_SERVERS_KEY = "p2pchat-saved-servers";
 
 export type RoomMeta = {
   roomId: string;
@@ -113,7 +119,7 @@ function clearSnapshot(): void {
 
 export function loadSavedServers(): SavedServer[] {
   try {
-    const raw = window.localStorage.getItem(SAVED_SERVERS_KEY);
+    const raw = getSecureSavedServersRaw();
     if (!raw) return migrateLegacyServer();
     const parsed = JSON.parse(raw) as SavedServer[];
     if (!Array.isArray(parsed)) return migrateLegacyServer();
@@ -148,7 +154,7 @@ function migrateLegacyServer(): SavedServer[] {
       hostName: server.hostName,
       lastJoinedAt: Date.now(),
     };
-    window.localStorage.setItem(SAVED_SERVERS_KEY, JSON.stringify([saved]));
+    setSecureSavedServersRaw(JSON.stringify([saved]));
     return [saved];
   } catch {
     return [];
@@ -162,13 +168,13 @@ export function upsertSavedServer(input: Omit<SavedServer, "lastJoinedAt"> & { l
   };
   const list = loadSavedServers().filter((item) => item.roomId !== next.roomId);
   list.unshift(next);
-  window.localStorage.setItem(SAVED_SERVERS_KEY, JSON.stringify(list.slice(0, 24)));
+  setSecureSavedServersRaw(JSON.stringify(list.slice(0, 24)));
   return list;
 }
 
 export function removeSavedServer(roomId: string): SavedServer[] {
   const list = loadSavedServers().filter((item) => item.roomId !== roomId);
-  window.localStorage.setItem(SAVED_SERVERS_KEY, JSON.stringify(list));
+  setSecureSavedServersRaw(JSON.stringify(list));
   return list;
 }
 
@@ -198,7 +204,7 @@ export function activateSavedServer(server: SavedServer): RoomMeta {
 
 export function leaveCurrentRoom(): void {
   clearSnapshot();
-  window.localStorage.removeItem(ROOM_META_KEY);
+  setSecureRoomMetaRaw(null);
 }
 
 export function isDesktopShell(): boolean {
@@ -206,7 +212,7 @@ export function isDesktopShell(): boolean {
 }
 
 export function getPeerId(): string {
-  return loadOrCreateIdentity(readProfileDisplayName() || "").peerId;
+  return loadOrCreateIdentity(readProfileDisplayName() || "", identityStorage).peerId;
 }
 
 export function getBootstrapOrigin(): string {
@@ -260,12 +266,12 @@ export function parseInvite(value: string): {
 }
 
 export function saveRoomMeta(meta: RoomMeta): void {
-  window.localStorage.setItem(ROOM_META_KEY, JSON.stringify(meta));
+  setSecureRoomMetaRaw(JSON.stringify(meta));
 }
 
 export function loadRoomMeta(): RoomMeta | null {
   try {
-    const raw = window.localStorage.getItem(ROOM_META_KEY);
+    const raw = getSecureRoomMetaRaw();
     return raw ? (JSON.parse(raw) as RoomMeta) : null;
   } catch {
     return null;
@@ -297,7 +303,7 @@ export async function createLocalRoom(input: {
     displayName: string;
   bootstrapOrigin?: string;
 }): Promise<CreatedRoom> {
-  const identity = loadOrCreateIdentity(input.displayName.trim() || readProfileDisplayName() || "Участник");
+  const identity = loadOrCreateIdentity(input.displayName.trim() || readProfileDisplayName() || "Участник", identityStorage);
   writeProfileDisplayName(identity.displayName);
   const localNode = await ensureLocalNode();
   if (localNode?.publicOrigin) applyAutoPublicUrl(localNode.publicOrigin);
@@ -398,7 +404,7 @@ export async function prepareJoin(input: {
   if (!parsed) throw new Error("Некорректная ссылка приглашения");
   if (!parsed.roomKey) throw new Error("В ссылке нет ключа шифрования — попросите новую пригласительную ссылку");
 
-  const identity = loadOrCreateIdentity(input.displayName.trim() || readProfileDisplayName() || "Участник");
+  const identity = loadOrCreateIdentity(input.displayName.trim() || readProfileDisplayName() || "Участник", identityStorage);
   writeProfileDisplayName(identity.displayName);
   const localNode = await ensureLocalNode();
   // Do NOT apply joiner's own tunnel as the room public URL — that would rewrite invites to the wrong peer.
@@ -525,7 +531,7 @@ export async function openRoomSession(input: {
 }): Promise<OpenSessionHandles | null> {
   const meta = loadRoomMeta();
   if (!meta) return null;
-  const identity = loadOrCreateIdentity(readProfileDisplayName() || "");
+  const identity = loadOrCreateIdentity(readProfileDisplayName() || "", identityStorage);
   if (identity.displayName) writeProfileDisplayName(identity.displayName);
   const localNode = await ensureLocalNode();
   if (localNode?.publicOrigin) applyAutoPublicUrl(localNode.publicOrigin);

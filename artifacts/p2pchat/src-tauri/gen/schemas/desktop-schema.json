@@ -381,6 +381,18 @@
           "markdownDescription": "Restart Cloudflare Quick Tunnel"
         },
         {
+          "description": "Load encrypted secret vault from OS-backed storage",
+          "type": "string",
+          "const": "allow-secure-vault-load",
+          "markdownDescription": "Load encrypted secret vault from OS-backed storage"
+        },
+        {
+          "description": "Save encrypted secret vault to OS-backed storage",
+          "type": "string",
+          "const": "allow-secure-vault-save",
+          "markdownDescription": "Save encrypted secret vault to OS-backed storage"
+        },
+        {
           "description": "Change Windows autostart state",
           "type": "string",
           "const": "allow-set-autostart-enabled",
@@ -399,6 +411,12 @@
           "markdownDescription": "Update tray speaking indicator"
         },
         {
+          "description": "Update PTT / mute / deafen virtual-key codes",
+          "type": "string",
+          "const": "allow-set-voice-hotkey-vks",
+          "markdownDescription": "Update PTT / mute / deafen virtual-key codes"
+        },
+        {
           "description": "Show mini voice overlay window",
           "type": "string",
           "const": "allow-show-voice-overlay",
@@ -411,16 +429,16 @@
           "markdownDescription": "Start local P2P hub and tunnel"
         },
         {
-          "description": "Start global push-to-talk key watch",
+          "description": "Start global push-to-talk / voice hotkey watch",
           "type": "string",
           "const": "allow-start-ptt-watch",
-          "markdownDescription": "Start global push-to-talk key watch"
+          "markdownDescription": "Start global push-to-talk / voice hotkey watch"
         },
         {
-          "description": "Stop global push-to-talk key watch",
+          "description": "Stop global push-to-talk / voice hotkey watch",
           "type": "string",
           "const": "allow-stop-ptt-watch",
-          "markdownDescription": "Stop global push-to-talk key watch"
+          "markdownDescription": "Stop global push-to-talk / voice hotkey watch"
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

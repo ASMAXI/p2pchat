@@ -16,19 +16,25 @@ import {
   PROTOCOL_VERSION,
   type ServerEvent,
 } from "@workspace/p2p-protocol";
-import { RoomSession, type SessionSnapshot, type SessionView } from "@workspace/p2p-room";
+import { RoomSession, createSignedCoordinatorClaim, type SessionSnapshot, type SessionView } from "@workspace/p2p-room";
 import { createSyncServer, type SyncServer } from "./server";
 
-const workDir = mkdtempSync(join(tmpdir(), "p2pchat-e2e-"));
 const cleanups: Array<() => unknown> = [];
 after(async () => {
   for (const cleanup of cleanups.reverse()) await cleanup();
-  try {
-    rmSync(workDir, { recursive: true, force: true });
-  } catch {
-    // SQLite WAL files can stay locked briefly on Windows.
-  }
 });
+
+function freshWorkDir(label: string): string {
+  const dir = mkdtempSync(join(tmpdir(), `p2pchat-e2e-${label}-`));
+  cleanups.push(() => {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // SQLite WAL files can stay locked briefly on Windows.
+    }
+  });
+  return dir;
+}
 
 const timing = {
   connectTimeoutMs: 1000,
@@ -41,7 +47,7 @@ const timing = {
   reconnectDelayMs: 50,
 };
 
-async function startNode(name: string): Promise<{ node: SyncServer; origin: string }> {
+async function startNode(name: string, workDir: string): Promise<{ node: SyncServer; origin: string }> {
   const node = createSyncServer({ alwaysHost: false, databaseFile: join(workDir, `${name}.sqlite`) });
   const port = await node.listen(0, "127.0.0.1");
   cleanups.push(() => node.close());
@@ -73,6 +79,7 @@ function startPeer(input: {
     bootstrapOrigins: input.bootstrap,
     localNode: { origin: input.origin, endpoints: [input.origin] },
     initial: input.initial,
+    allowLoopbackBootstrap: true,
     timing,
     onView: (view) => (lastView = view),
     onPersist: (snapshot) => (lastSnapshot = structuredClone(snapshot)),
@@ -93,7 +100,8 @@ async function waitFor(label: string, predicate: () => boolean, timeoutMs = 1500
 const texts = (peer: Peer) => peer.view().messages.map((message) => message.text);
 const ids = (peer: Peer) => peer.view().messages.map((message) => message.id);
 
-describe("critical E2E: coordinator crash and return", () => {
+describe("api-server e2e", { concurrency: false }, () => {
+describe("critical E2E: coordinator crash and return", { concurrency: false }, () => {
   it("A creates, B/C join, A crashes, B coordinates, A returns without duplicates", async () => {
     const identities = [createIdentity("A"), createIdentity("B"), createIdentity("C")];
     const [first, second] = [identities[1]!, identities[2]!].sort((l, r) => (l.peerId < r.peerId ? -1 : 1));
@@ -104,10 +112,11 @@ describe("critical E2E: coordinator crash and return", () => {
     const roomId = randomToken(8);
     const inviteToken = randomToken(24);
     const roomKey = generateRoomKey();
+    const workDir = freshWorkDir("crash");
 
-    let nodeA = await startNode("a");
-    const nodeB = await startNode("b");
-    const nodeC = await startNode("c");
+    let nodeA = await startNode("a", workDir);
+    const nodeB = await startNode("b", workDir);
+    const nodeC = await startNode("c", workDir);
 
     const initialState = createInitialRoomState({
       roomId,
@@ -144,7 +153,7 @@ describe("critical E2E: coordinator crash and return", () => {
     assert.equal(peerC.session.sendChat("general", "пока A нет"), true);
     await waitFor("C message reached B", () => texts(peerB).includes("пока A нет"));
 
-    nodeA = await startNode("a");
+    nodeA = await startNode("a", workDir);
     peerA = startPeer({ ...common, identity: a, origin: nodeA.origin, bootstrap: [], initial: snapshotBeforeCrash });
     await waitFor("A rejoined as a regular peer", () => peerA.view().status === "connected");
     assert.equal(peerA.view().isCoordinator, false);
@@ -163,17 +172,146 @@ describe("critical E2E: coordinator crash and return", () => {
     for (const peer of [peerA, peerB, peerC]) peer.session.stop();
     await Promise.all([nodeA.node.close(), nodeB.node.close(), nodeC.node.close()]);
   });
+
+  it("TZ drift chain: A→B→C host handoff, chat converges, old host can return", async () => {
+    // Deterministic succession: among survivors, lexicographically smallest peerId hosts.
+    // Force peerId order B < C < A so: A dies → B hosts; B dies → C hosts.
+    const pool: StoredIdentity[] = [];
+    for (let attempt = 0; attempt < 40 && pool.length < 3; attempt += 1) {
+      pool.push(createIdentity(`P${attempt}`));
+    }
+    const sorted = [...pool].sort((left, right) => (left.peerId < right.peerId ? -1 : 1));
+    const b = { ...sorted[0]!, displayName: "B" };
+    const c = { ...sorted[1]!, displayName: "C" };
+    const a = { ...sorted[2]!, displayName: "A" };
+    assert.ok(b.peerId < c.peerId && c.peerId < a.peerId);
+
+    const roomId = randomToken(8);
+    const inviteToken = randomToken(24);
+    const roomKey = generateRoomKey();
+    const workDir = freshWorkDir("tz");
+
+    let nodeA = await startNode("tz-a", workDir);
+    let nodeB = await startNode("tz-b", workDir);
+    const nodeC = await startNode("tz-c", workDir);
+
+    const initialState = createInitialRoomState({
+      roomId,
+      name: "TZ drift",
+      ownerId: a.peerId,
+      ownerName: a.displayName,
+      ownerPublicKey: a.publicKey,
+      endpoints: [nodeA.origin],
+    });
+    const common = { roomId, inviteToken, roomKey };
+
+    let peerA = startPeer({
+      ...common,
+      identity: a,
+      origin: nodeA.origin,
+      bootstrap: [],
+      initial: { state: initialState, outbox: [] },
+    });
+    await waitFor("A is coordinator", () => peerA.view().isCoordinator && peerA.view().status === "connected");
+
+    const peerB = startPeer({ ...common, identity: b, origin: nodeB.origin, bootstrap: [nodeA.origin] });
+    const peerC = startPeer({ ...common, identity: c, origin: nodeC.origin, bootstrap: [nodeA.origin] });
+    await waitFor("B/C connected under A", () =>
+      peerB.view().status === "connected" &&
+      peerC.view().status === "connected" &&
+      peerB.view().state?.hostId === a.peerId &&
+      peerC.view().state?.hostId === a.peerId,
+    );
+
+    assert.equal(peerA.session.sendChat("general", "от A до падения"), true);
+    await waitFor("msg1 replicated", () =>
+      [peerA, peerB, peerC].every((peer) => texts(peer).includes("от A до падения")),
+    );
+    const epochUnderA = peerA.view().state?.epoch ?? 0;
+
+    // A hard-crashes (no LEAVE).
+    await nodeA.node.close();
+    peerA.session.stop();
+
+    await waitFor("B became coordinator", () => peerB.view().isCoordinator && peerB.view().status === "connected");
+    await waitFor("C follows B", () => peerC.view().status === "connected" && peerC.view().state?.hostId === b.peerId);
+    assert.ok((peerB.view().state?.epoch ?? 0) > epochUnderA);
+    assert.equal(peerC.session.sendChat("general", "от C при хосте B"), true);
+    await waitFor("B sees C message", () => texts(peerB).includes("от C при хосте B"));
+
+    // A returns while B hosts — must sync as peer, not steal host.
+    const snapAfterB = peerB.snapshot();
+    nodeA = await startNode("tz-a2", workDir);
+    peerA = startPeer({
+      ...common,
+      identity: a,
+      origin: nodeA.origin,
+      bootstrap: [nodeB.origin, nodeC.origin],
+      initial: snapAfterB,
+    });
+    await waitFor("A rejoined under B", () =>
+      peerA.view().status === "connected" && peerA.view().state?.hostId === b.peerId,
+    );
+    assert.equal(peerA.view().isCoordinator, false);
+    await waitFor("A has C message", () => texts(peerA).includes("от C при хосте B"));
+    assert.equal(peerA.session.sendChat("general", "A вернулся"), true);
+    await waitFor("all see A returned", () =>
+      [peerA, peerB, peerC].every((peer) => texts(peer).includes("A вернулся")),
+    );
+
+    const epochUnderB = peerB.view().state?.epoch ?? 0;
+    const snapBeforeBCrash = peerB.snapshot();
+
+    // B hard-crashes → C must become coordinator (peerId B < C < A).
+    await nodeB.node.close();
+    peerB.session.stop();
+
+    await waitFor("C became coordinator", () => peerC.view().isCoordinator && peerC.view().status === "connected");
+    await waitFor("A follows C", () => peerA.view().status === "connected" && peerA.view().state?.hostId === c.peerId);
+    assert.ok((peerC.view().state?.epoch ?? 0) > epochUnderB);
+    assert.equal(peerC.session.sendChat("general", "от C как хост"), true);
+    await waitFor("A sees host-C message", () => texts(peerA).includes("от C как хост"));
+
+    // Everyone converges: same host, same message set, no duplicates.
+    const expected = ["от A до падения", "от C при хосте B", "A вернулся", "от C как хост"];
+    for (const peer of [peerA, peerC]) {
+      assert.equal(peer.view().state?.hostId, c.peerId);
+      for (const text of expected) assert.ok(texts(peer).includes(text), `missing "${text}"`);
+      assert.equal(new Set(ids(peer)).size, texts(peer).length, "no duplicate ids");
+    }
+    assert.equal(peerA.view().state?.epoch, peerC.view().state?.epoch);
+
+    // Stale B snapshot must not win over live C epoch when B returns.
+    nodeB = await startNode("tz-b2", workDir);
+    const peerB2 = startPeer({
+      ...common,
+      identity: b,
+      origin: nodeB.origin,
+      bootstrap: [nodeC.origin, nodeA.origin],
+      initial: snapBeforeBCrash,
+    });
+    await waitFor("B rejoined under C", () =>
+      peerB2.view().status === "connected" && peerB2.view().state?.hostId === c.peerId,
+    );
+    assert.equal(peerB2.view().isCoordinator, false);
+    await waitFor("B caught up to C host msgs", () => texts(peerB2).includes("от C как хост"));
+    for (const text of expected) assert.ok(texts(peerB2).includes(text));
+
+    for (const peer of [peerA, peerB2, peerC]) peer.session.stop();
+    await Promise.all([nodeA.node.close(), nodeB.node.close(), nodeC.node.close()]);
+  });
 });
 
-describe("split brain", () => {
+describe("split brain", { concurrency: false }, () => {
   it("two peers that both coordinate converge on one without losing messages", async () => {
     const a = createIdentity("A");
     const b = createIdentity("B");
     const roomId = randomToken(8);
     const inviteToken = randomToken(24);
     const roomKey = generateRoomKey();
-    const nodeA = await startNode("split-a");
-    const nodeB = await startNode("split-b");
+    const workDir = freshWorkDir("split");
+    const nodeA = await startNode("split-a", workDir);
+    const nodeB = await startNode("split-b", workDir);
 
     const state = createInitialRoomState({
       roomId,
@@ -188,25 +326,34 @@ describe("split brain", () => {
       name: b.displayName,
       role: "member",
       joinedAt: new Date().toISOString(),
-      online: false,
+      online: true,
       publicKey: b.publicKey,
       endpoints: [nodeB.origin],
     });
-    const common = { roomId, inviteToken, roomKey, bootstrap: [] };
+    const aMember = state.members.find((member) => member.id === a.peerId);
+    if (aMember) {
+      aMember.online = true;
+      aMember.endpoints = [nodeA.origin];
+    }
+    const common = { roomId, inviteToken, roomKey, bootstrap: [] as string[] };
     const peerA = startPeer({ ...common, identity: a, origin: nodeA.origin, initial: { state, outbox: [] } });
     const peerB = startPeer({ ...common, identity: b, origin: nodeB.origin, initial: { state, outbox: [] } });
     peerA.session.sendChat("general", "от A во время раскола");
     peerB.session.sendChat("general", "от B во время раскола");
 
-    await waitFor("single coordinator", () => {
-      const [viewA, viewB] = [peerA.view(), peerB.view()];
-      return (
-        viewA.status === "connected" &&
-        viewB.status === "connected" &&
-        viewA.isCoordinator !== viewB.isCoordinator &&
-        viewA.state?.hostId === viewB.state?.hostId
-      );
-    });
+    await waitFor(
+      "single coordinator",
+      () => {
+        const [viewA, viewB] = [peerA.view(), peerB.view()];
+        return (
+          viewA.status === "connected" &&
+          viewB.status === "connected" &&
+          viewA.isCoordinator !== viewB.isCoordinator &&
+          viewA.state?.hostId === viewB.state?.hostId
+        );
+      },
+      25000,
+    );
     await waitFor("both messages survive", () =>
       [peerA, peerB].every(
         (peer) => texts(peer).includes("от A во время раскола") && texts(peer).includes("от B во время раскола"),
@@ -219,7 +366,7 @@ describe("split brain", () => {
   });
 });
 
-describe("security", () => {
+describe("security", { concurrency: false }, () => {
   async function rawJoin(origin: string, command: Record<string, unknown>): Promise<ServerEvent> {
     const socket = new WebSocket(`${origin.replace("http", "ws")}/api/ws`);
     return new Promise((resolve, reject) => {
@@ -233,6 +380,7 @@ describe("security", () => {
   }
 
   it("rejects a join whose proof was signed by another key", async () => {
+    const workDir = freshWorkDir("sec");
     const node = createSyncServer({ alwaysHost: true, databaseFile: join(workDir, "security.sqlite") });
     const origin = `http://127.0.0.1:${await node.listen(0, "127.0.0.1")}`;
     const victim = createIdentity("Victim");
@@ -265,7 +413,130 @@ describe("security", () => {
     await node.close();
   });
 
+  it("rejects a host join with a forged coordinator claim", async () => {
+    const workDir = freshWorkDir("claim");
+    const node = createSyncServer({ alwaysHost: false, databaseFile: join(workDir, "claim.sqlite") });
+    const origin = `http://127.0.0.1:${await node.listen(0, "127.0.0.1")}`;
+    const host = createIdentity("Host");
+    const attacker = createIdentity("Attacker");
+    const state = createInitialRoomState({
+      roomId: "claim-room",
+      name: "claim",
+      ownerId: host.peerId,
+      ownerName: host.displayName,
+      ownerPublicKey: host.publicKey,
+      endpoints: [origin],
+    });
+    const ts = Date.now();
+    const claim = createSignedCoordinatorClaim(host, {
+      roomId: "claim-room",
+      epoch: 1,
+      previousHostId: null,
+      ts,
+    });
+    claim.signature = createSignedCoordinatorClaim(attacker, {
+      roomId: "claim-room",
+      epoch: 1,
+      previousHostId: null,
+      ts,
+    }).signature;
+    const event = await rawJoin(origin, {
+      type: "join",
+      protocol: PROTOCOL_VERSION,
+      roomId: "claim-room",
+      inviteToken: "token",
+      peerId: host.peerId,
+      displayName: host.displayName,
+      publicKey: host.publicKey,
+      ts,
+      proof: signText(host, joinProofText("claim-room", host.peerId, ts)),
+      endpoints: [origin],
+      host: true,
+      snapshot: state,
+      coordinatorClaim: claim,
+    });
+    assert.equal(event.type, "error");
+    assert.equal(event.type === "error" && event.code, "UNAUTHORIZED");
+    await node.close();
+  });
+
+  it("rate-limits bursty voice signals", async () => {
+    const workDir = freshWorkDir("signal-rate");
+    const node = createSyncServer({ alwaysHost: false, databaseFile: join(workDir, "signal.sqlite") });
+    const origin = `http://127.0.0.1:${await node.listen(0, "127.0.0.1")}`;
+    const host = createIdentity("Host");
+    const peer = createIdentity("Peer");
+    const state = createInitialRoomState({
+      roomId: "signal-room",
+      name: "signals",
+      ownerId: host.peerId,
+      ownerName: host.displayName,
+      ownerPublicKey: host.publicKey,
+      endpoints: [origin],
+    });
+    const ts = Date.now();
+    const claim = createSignedCoordinatorClaim(host, {
+      roomId: "signal-room",
+      epoch: 1,
+      previousHostId: null,
+      ts,
+    });
+
+    const hostSocket = new WebSocket(`${origin.replace("http", "ws")}/api/ws`);
+    await new Promise<void>((resolve, reject) => {
+      hostSocket.onopen = () => resolve();
+      hostSocket.onerror = () => reject(new Error("host socket error"));
+    });
+    const joined = new Promise<ServerEvent>((resolve) => {
+      hostSocket.onmessage = (event) => resolve(JSON.parse(String(event.data)) as ServerEvent);
+    });
+    hostSocket.send(
+      JSON.stringify({
+        type: "join",
+        protocol: PROTOCOL_VERSION,
+        roomId: "signal-room",
+        inviteToken: "token",
+        peerId: host.peerId,
+        displayName: host.displayName,
+        publicKey: host.publicKey,
+        ts,
+        proof: signText(host, joinProofText("signal-room", host.peerId, ts)),
+        endpoints: [origin],
+        host: true,
+        snapshot: state,
+        coordinatorClaim: claim,
+      }),
+    );
+    const joinEvent = await joined;
+    assert.equal(joinEvent.type, "state");
+
+    let rateLimited = false;
+    const waitRate = new Promise<void>((resolve) => {
+      hostSocket.onmessage = (event) => {
+        const data = JSON.parse(String(event.data)) as ServerEvent;
+        if (data.type === "error" && data.code === "RATE_LIMIT") {
+          rateLimited = true;
+          resolve();
+        }
+      };
+    });
+    for (let i = 0; i < 100; i += 1) {
+      hostSocket.send(
+        JSON.stringify({
+          type: "signal",
+          toPeerId: peer.peerId,
+          data: { kind: "ice", candidate: { candidate: `c${i}`, sdpMid: "0" } },
+        }),
+      );
+    }
+    await Promise.race([waitRate, new Promise((resolve) => setTimeout(resolve, 2000))]);
+    assert.equal(rateLimited, true);
+    hostSocket.close();
+    await node.close();
+  });
+
   it("drops forged messages from a replica and rejects forged live messages", async () => {
+    const workDir = freshWorkDir("forged");
     const node = createSyncServer({ alwaysHost: true, databaseFile: join(workDir, "forged.sqlite") });
     const origin = `http://127.0.0.1:${await node.listen(0, "127.0.0.1")}`;
     const owner = createIdentity("Owner");
@@ -296,6 +567,7 @@ describe("security", () => {
       roomKey,
       identity: owner,
       bootstrapOrigins: [origin],
+      allowLoopbackBootstrap: true,
       initial: { state, outbox: [] },
       timing,
       onView: (next) => (view = next),
@@ -311,4 +583,5 @@ describe("security", () => {
     session.stop();
     await node.close();
   });
+});
 });

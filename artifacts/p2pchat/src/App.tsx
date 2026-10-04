@@ -1651,6 +1651,17 @@ function Workspace() {
   }, [activeVoice]);
 
   useEffect(() => {
+    const onAudioSettings = () => {
+      const mesh = voiceMeshRef.current ?? getActiveVoiceMesh();
+      if (!mesh) return;
+      mesh.setInputDevice(loadAudioInputId());
+      mesh.setOutputDevice(loadAudioOutputId());
+    };
+    window.addEventListener('p2pchat-audio-settings', onAudioSettings);
+    return () => window.removeEventListener('p2pchat-audio-settings', onAudioSettings);
+  }, []);
+
+  useEffect(() => {
     if (!isDesktopShell()) return;
     void import('@tauri-apps/api/core').then(({ invoke }) => {
       void invoke('set_voice_hotkey_vks', {
@@ -3120,13 +3131,18 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
       window.open(updateInfo.releaseUrl, '_blank');
       return;
     }
+    if (!updateInfo.sha256) {
+      setUpdateMsg('В релизе нет SHA-256 — откройте страницу релиза и скачайте установщик вручную.');
+      window.open(updateInfo.releaseUrl, '_blank');
+      return;
+    }
     setUpdateBusy(true);
     setUpdateProgress({ loaded: 0, total: null, phase: 'download' });
     setUpdateMsg(`Скачиваем Drift ${updateInfo.latestVersion}… Приложение закроется. Подтвердите запрос Windows (администратор) — иначе файлы в Program Files не заменятся.`);
     try {
       await installAppUpdate(updateInfo.downloadUrl, (loaded, total, phase) => {
         setUpdateProgress({ loaded, total, phase });
-      });
+      }, updateInfo.sha256);
     } catch (error) {
       setUpdateMsg(error instanceof Error ? error.message : String(error));
       setUpdateBusy(false);
@@ -3170,7 +3186,12 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
           <div className="mx-4 w-full max-w-md rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 shadow-xl">
             <div className="text-sm font-bold">Обновление Drift</div>
             <p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]">
-              {updateProgress.phase === 'install' ? 'Запуск установщика…' : 'Скачивание…'} Не закрывайте окно.
+              {updateProgress.phase === 'install'
+                ? 'Запуск установщика…'
+                : updateProgress.phase === 'verify'
+                  ? 'Проверка SHA-256…'
+                  : 'Скачивание…'}{' '}
+              Не закрывайте окно.
             </p>
             <div className="mt-4 h-2 overflow-hidden rounded-full bg-[hsl(var(--muted))]">
               <div
@@ -3230,7 +3251,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
           </SettingsSection>
 
           <SettingsSection id="devices" title="Микрофон и динамики" hint="Устройства ввода/вывода" open={openSection === 'devices'} onToggle={toggleSection} testId="settings-section-devices">
-            <p className="text-xs text-[hsl(var(--muted-foreground))]">Применяются при следующем входе в голос (или перезайдите в комнату).</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">Меняются сразу, даже если вы уже в голосовом канале.</p>
             <label className="field-label mt-3" htmlFor="audio-input">Вход (микрофон)</label>
             <select
               id="audio-input"
@@ -3240,6 +3261,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
                 const id = event.target.value;
                 setAudioInputId(id);
                 saveAudioInputId(id);
+                window.dispatchEvent(new CustomEvent('p2pchat-audio-settings'));
               }}
               data-testid="select-audio-input"
             >
@@ -3257,6 +3279,7 @@ function SettingsPage({ onClose }: { onClose?: () => void }) {
                 const id = event.target.value;
                 setAudioOutputId(id);
                 saveAudioOutputId(id);
+                window.dispatchEvent(new CustomEvent('p2pchat-audio-settings'));
               }}
               data-testid="select-audio-output"
             >

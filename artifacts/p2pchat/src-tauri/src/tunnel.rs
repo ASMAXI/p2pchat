@@ -13,6 +13,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -228,6 +229,20 @@ fn wrap_handle(child: Child, public: String, provider: TunnelProvider) -> (Tunne
 
 // --- Cloudflare -----------------------------------------------------------
 
+/// Pinned cloudflared release (avoid floating `latest` binary).
+const CLOUDFLARED_VERSION: &str = "2025.2.0";
+
+/// Official SHA-256 from the Cloudflare GitHub release notes for 2025.2.0.
+fn cloudflared_expected_sha256() -> Option<&'static str> {
+    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Some("74eb23de1b2fdc7862447dddaadaa82fd5b43659b3c41205a40ea194dff373a9")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("cbd18c5a6dee084db7a55d761b91202e47e63ddbd18d0faff04ca96e56739b3f")
+    } else {
+        None
+    }
+}
+
 fn cloudflared_exe_name() -> &'static str {
     if cfg!(windows) {
         "cloudflared.exe"
@@ -236,24 +251,58 @@ fn cloudflared_exe_name() -> &'static str {
     }
 }
 
-fn cloudflared_download_url() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+fn cloudflared_download_url() -> String {
+    let file = if cfg!(target_os = "windows") {
+        "cloudflared-windows-amd64.exe"
     } else if cfg!(target_os = "macos") {
         if cfg!(target_arch = "aarch64") {
-            "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz"
+            "cloudflared-darwin-arm64.tgz"
         } else {
-            "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz"
+            "cloudflared-darwin-amd64.tgz"
         }
     } else {
-        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+        "cloudflared-linux-amd64"
+    };
+    format!(
+        "https://github.com/cloudflare/cloudflared/releases/download/{CLOUDFLARED_VERSION}/{file}"
+    )
+}
+
+fn file_sha256_hex(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|err| err.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|err| err.to_string())?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
     }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn verify_cloudflared_sha256(path: &Path) -> Result<(), String> {
+    let Some(expected) = cloudflared_expected_sha256() else {
+        return Ok(());
+    };
+    let actual = file_sha256_hex(path)?;
+    if actual.eq_ignore_ascii_case(expected) {
+        return Ok(());
+    }
+    Err(format!(
+        "Проверка cloudflared не прошла (ожидался SHA-256 {expected}, получен {actual})"
+    ))
 }
 
 fn ensure_cloudflared(bin_dir: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(bin_dir).map_err(|err| err.to_string())?;
     let dest = bin_dir.join(cloudflared_exe_name());
-    if dest.exists() {
+    let marker = bin_dir.join("cloudflared.version");
+    let pinned = std::fs::read_to_string(&marker)
+        .map(|value| value.trim() == CLOUDFLARED_VERSION)
+        .unwrap_or(false);
+    if dest.exists() && pinned && verify_cloudflared_sha256(&dest).is_ok() {
         return Ok(dest);
     }
     let url = cloudflared_download_url();
@@ -262,9 +311,18 @@ fn ensure_cloudflared(bin_dir: &Path) -> Result<PathBuf, String> {
             "На macOS положите cloudflared в каталог приложения или установите через brew".into(),
         );
     }
-    download_file(url, &dest)?;
+    if dest.exists() {
+        let _ = std::fs::remove_file(&dest);
+    }
+    download_file(&url, &dest)?;
+    if let Err(err) = verify_cloudflared_sha256(&dest) {
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&marker);
+        return Err(err);
+    }
     #[cfg(unix)]
     set_executable(&dest)?;
+    std::fs::write(&marker, CLOUDFLARED_VERSION).map_err(|err| err.to_string())?;
     Ok(dest)
 }
 
@@ -822,5 +880,28 @@ pub fn start_tunnel(
         TunnelProvider::Pinggy => start_pinggy(local_port),
         TunnelProvider::Bore => start_bore(app_data, local_port),
         TunnelProvider::Zrok => start_zrok(app_data, local_port, zrok_token),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn hashes_file_contents() {
+        let dir = std::env::temp_dir().join(format!("drift-sha-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sample.bin");
+        {
+            let mut file = File::create(&path).expect("create");
+            file.write_all(b"drift-cloudflared-pin").expect("write");
+        }
+        let digest = file_sha256_hex(&path).expect("hash");
+        assert_eq!(
+            digest,
+            "d48bb636dd03cbd527b9db324550b98b3e619aece6bd89bbfcd3eac3c6652f4c"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

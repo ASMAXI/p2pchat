@@ -2,6 +2,7 @@ mod autostart;
 mod local_hub;
 mod overlay;
 mod ptt;
+mod secure_store;
 mod tray_activity;
 mod tunnel;
 mod updater;
@@ -177,6 +178,7 @@ pub fn run() {
             active_provider: tokio::sync::Mutex::new(None),
         })
         .manage(Arc::new(ptt::PttWatchState::default()))
+        .manage(secure_store::SecureVaultState::default())
         .invoke_handler(tauri::generate_handler![
             start_local_sync_server,
             restart_public_tunnel,
@@ -191,7 +193,9 @@ pub fn run() {
             overlay::show_voice_overlay,
             overlay::hide_voice_overlay,
             overlay::close_voice_overlay,
-            overlay::focus_voice_overlay
+            overlay::focus_voice_overlay,
+            secure_store::secure_vault_load,
+            secure_store::secure_vault_save
         ])
         .setup(|app| {
             #[cfg(any(windows, target_os = "linux"))]

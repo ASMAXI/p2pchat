@@ -46,6 +46,7 @@ const MAX_CHANNEL_NAME_CHARS: usize = 50;
 const MAX_CHANNELS: usize = 50;
 const RATE_WINDOW_MS: i64 = 5_000;
 const RATE_MAX_MESSAGES: usize = 12;
+const RATE_MAX_SIGNALS: usize = 80;
 const JOIN_CLOCK_SKEW_MS: i64 = 10 * 60 * 1_000;
 pub const PREFERRED_PORT: u16 = 47_821;
 
@@ -117,6 +118,7 @@ struct Client {
     display_name: String,
     tx: Tx,
     sent_at: Vec<i64>,
+    signal_sent_at: Vec<i64>,
 }
 
 struct Room {
@@ -207,6 +209,81 @@ fn verify_peer_signature(peer_id: &str, public_key_hex: &str, text: &str, signat
 
 fn join_proof_text(room_id: &str, peer_id: &str, ts: i64) -> String {
     format!("p2pchat/v{PROTOCOL_VERSION}/join/{room_id}/{peer_id}/{ts}")
+}
+
+fn claim_proof_text(room_id: &str, epoch: u64, host_id: &str, previous_host_id: Option<&str>, ts: i64) -> String {
+    let previous = previous_host_id.unwrap_or("-");
+    format!("p2pchat/v{PROTOCOL_VERSION}/claim/{room_id}/{epoch}/{host_id}/{previous}/{ts}")
+}
+
+fn verify_coordinator_claim(
+    claim: &Value,
+    room_id: &str,
+    peer_id: &str,
+    public_key: &str,
+    room_epoch: u64,
+    room_host_id: &str,
+) -> Result<u64, HubError> {
+    let claim_room = claim
+        .get("roomId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| HubError::new("UNAUTHORIZED", "Некорректный coordinator claim"))?;
+    let epoch = claim
+        .get("epoch")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| HubError::new("UNAUTHORIZED", "Некорректный coordinator claim"))?;
+    let host_id = claim
+        .get("hostId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| HubError::new("UNAUTHORIZED", "Некорректный coordinator claim"))?;
+    let claim_key = claim
+        .get("publicKey")
+        .and_then(Value::as_str)
+        .ok_or_else(|| HubError::new("UNAUTHORIZED", "Некорректный coordinator claim"))?;
+    let ts = claim
+        .get("ts")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| HubError::new("UNAUTHORIZED", "Некорректный coordinator claim"))?;
+    let signature = claim
+        .get("signature")
+        .and_then(Value::as_str)
+        .ok_or_else(|| HubError::new("UNAUTHORIZED", "Некорректный coordinator claim"))?;
+    if !bounded(claim_room, 80)
+        || !bounded(host_id, 100)
+        || !bounded(claim_key, 128)
+        || !bounded(signature, 256)
+        || epoch < 1
+    {
+        return Err(HubError::new("UNAUTHORIZED", "Некорректный coordinator claim"));
+    }
+    let previous_host_id = match claim.get("previousHostId") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) if bounded(value, 100) && !value.is_empty() => Some(value.as_str()),
+        _ => return Err(HubError::new("UNAUTHORIZED", "Некорректный coordinator claim")),
+    };
+    if claim_room != room_id {
+        return Err(HubError::new("UNAUTHORIZED", "Claim относится к другой комнате"));
+    }
+    if host_id != peer_id {
+        return Err(HubError::new("UNAUTHORIZED", "Claim hostId не совпадает с участником"));
+    }
+    if claim_key != public_key {
+        return Err(HubError::new("UNAUTHORIZED", "Claim publicKey не совпадает с участником"));
+    }
+    if (now_ms() - ts).abs() > JOIN_CLOCK_SKEW_MS {
+        return Err(HubError::new("UNAUTHORIZED", "Проверьте системное время на компьютере"));
+    }
+    if epoch < room_epoch {
+        return Err(HubError::new("UNAUTHORIZED", "Устаревший coordinator claim"));
+    }
+    if epoch == room_epoch && room_epoch > 0 && host_id != room_host_id {
+        return Err(HubError::new("UNAUTHORIZED", "Конфликт coordinator claim"));
+    }
+    let proof = claim_proof_text(room_id, epoch, host_id, previous_host_id, ts);
+    if !verify_peer_signature(host_id, claim_key, &proof, signature) {
+        return Err(HubError::new("UNAUTHORIZED", "Подпись coordinator claim недействительна"));
+    }
+    Ok(epoch)
 }
 
 fn message_proof_text(room_id: &str, message: &WireMessage) -> String {
@@ -593,11 +670,22 @@ fn join(hub: &mut Hub, command: &Value, tx: &Tx, socket_id: u64) -> Result<(Stri
             display_name: display_name.clone(),
             tx: tx.clone(),
             sent_at: Vec::new(),
+            signal_sent_at: Vec::new(),
         },
     );
 
     if host {
-        if room.host_peer_id.as_deref() != Some(peer_id.as_str()) || room.state.host_id != peer_id {
+        if let Some(claim) = command.get("coordinatorClaim") {
+            let epoch = verify_coordinator_claim(
+                claim,
+                &room_id,
+                &peer_id,
+                &public_key,
+                room.state.epoch,
+                &room.state.host_id,
+            )?;
+            room.state.epoch = epoch;
+        } else if room.host_peer_id.as_deref() != Some(peer_id.as_str()) || room.state.host_id != peer_id {
             room.state.epoch += 1;
         }
         room.host_peer_id = Some(peer_id.clone());
@@ -737,16 +825,50 @@ fn voice(hub: &mut Hub, room_id: &str, peer_id: &str, command: &Value, joined: b
     Ok(())
 }
 
-fn relay_signal(hub: &Hub, room_id: &str, peer_id: &str, command: &Value) {
-    let Some(room) = hub.rooms.get(room_id) else {
-        return;
+fn relay_signal(hub: &mut Hub, room_id: &str, peer_id: &str, command: &Value) -> Result<(), HubError> {
+    let data = command.get("data").cloned().unwrap_or(Value::Null);
+    if let Err(message) = validate_voice_signal(&data) {
+        return Err(HubError::new("INVALID", message));
+    }
+    let Some(room) = hub.rooms.get_mut(room_id) else {
+        return Ok(());
     };
+    {
+        let Some(client) = room.clients.get_mut(peer_id) else {
+            return Ok(());
+        };
+        let now = now_ms();
+        client.signal_sent_at.retain(|at| now - at < RATE_WINDOW_MS);
+        if client.signal_sent_at.len() >= RATE_MAX_SIGNALS {
+            return Err(HubError::new(
+                "RATE_LIMIT",
+                "Слишком много голосовых сигналов — подождите секунду",
+            ));
+        }
+        client.signal_sent_at.push(now);
+    }
     let target = command.get("toPeerId").and_then(Value::as_str).unwrap_or("");
-    if let Some(client) = room.clients.get(target) {
+    if let Some(target_client) = room.clients.get(target) {
         send_event(
-            &client.tx,
-            json!({ "type": "signal", "fromPeerId": peer_id, "data": command.get("data").cloned().unwrap_or(Value::Null) }),
+            &target_client.tx,
+            json!({ "type": "signal", "fromPeerId": peer_id, "data": data }),
         );
+    }
+    Ok(())
+}
+
+fn validate_voice_signal(data: &Value) -> Result<(), &'static str> {
+    if !data.is_object() {
+        return Err("Сигнал голоса: ожидался объект");
+    }
+    let encoded = data.to_string();
+    if encoded.len() > 64_000 {
+        return Err("Сигнал голоса слишком большой");
+    }
+    let kind = data.get("kind").and_then(Value::as_str).unwrap_or("");
+    match kind {
+        "offer" | "answer" | "ice" | "voice-state" | "screen-share" => Ok(()),
+        _ => Err("Сигнал голоса: неизвестный kind"),
     }
 }
 
@@ -818,10 +940,7 @@ fn dispatch(
         "create_channel" => create_channel(hub, &room_id, command),
         "voice_join" => voice(hub, &room_id, &peer_id, command, true),
         "voice_leave" => voice(hub, &room_id, &peer_id, command, false),
-        "signal" => {
-            relay_signal(hub, &room_id, &peer_id, command);
-            Ok(())
-        }
+        "signal" => relay_signal(hub, &room_id, &peer_id, command),
         "leave" => {
             let redirect = command.get("redirect").and_then(Value::as_str).map(str::to_string);
             depart(hub, &room_id, &peer_id, socket_id, redirect);

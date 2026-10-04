@@ -1,3 +1,8 @@
+export {
+  createSignedCoordinatorClaim,
+  proposedCoordinatorClaimFields,
+  verifyCoordinatorClaimForJoin,
+} from "./claim";
 export { compareCoordinators, electCoordinator, isStaleEpoch, type CoordinatorClaim } from "./election";
 export { EventLog, type OrderedEvent } from "./event-log";
 export { buildConnectPlan, migrationCandidates, preferReachableEndpoints, type ConnectTarget } from "./migration";

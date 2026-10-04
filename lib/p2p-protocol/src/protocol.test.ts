@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildInvite, buildInviteDeepLink, parseInvite } from "./index";
+import { buildInvite, buildInviteDeepLink, claimProofText, isSignedCoordinatorClaim, parseInvite, validateVoiceSignalData } from "./index";
 
 describe("invite", () => {
   it("round-trips via HTTPS landing (Steam-friendly) and deep link", () => {
@@ -50,5 +50,45 @@ describe("invite", () => {
     assert.equal(parseInvite("p2pchat://join?room=r1"), null);
     assert.equal(parseInvite("drift://j/"), null);
     assert.equal(parseInvite(""), null);
+  });
+});
+
+describe("voice signal validation", () => {
+  it("accepts known small WebRTC signal kinds", () => {
+    assert.equal(validateVoiceSignalData({ kind: "offer", description: { type: "offer", sdp: "v=0" } }), null);
+    assert.equal(validateVoiceSignalData({ kind: "ice", candidate: { candidate: "a", sdpMid: "0" } }), null);
+    assert.equal(validateVoiceSignalData({ kind: "voice-state", muted: true, deafened: false }), null);
+  });
+
+  it("rejects unknown kind, non-objects, and oversized payloads", () => {
+    assert.match(validateVoiceSignalData({ kind: "explode" }) ?? "", /kind/i);
+    assert.match(validateVoiceSignalData("nope") ?? "", /объект/i);
+    const huge = { kind: "offer", pad: "x".repeat(70_000) };
+    assert.match(validateVoiceSignalData(huge) ?? "", /большой/i);
+  });
+});
+
+describe("coordinator claim shape", () => {
+  it("accepts a well-formed claim and builds a stable proof text", () => {
+    const claim = {
+      roomId: "r1",
+      epoch: 2,
+      hostId: "host",
+      previousHostId: null as string | null,
+      publicKey: "abc",
+      ts: 1,
+      signature: "sig",
+    };
+    assert.equal(isSignedCoordinatorClaim(claim), true);
+    assert.equal(claimProofText(claim), "p2pchat/v1/claim/r1/2/host/-/1");
+    assert.equal(
+      claimProofText({ ...claim, previousHostId: "prev" }),
+      "p2pchat/v1/claim/r1/2/host/prev/1",
+    );
+  });
+
+  it("rejects incomplete claims", () => {
+    assert.equal(isSignedCoordinatorClaim({ roomId: "r", epoch: 0, hostId: "h" }), false);
+    assert.equal(isSignedCoordinatorClaim(null), false);
   });
 });

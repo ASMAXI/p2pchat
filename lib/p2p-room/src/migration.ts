@@ -23,6 +23,11 @@ export type ConnectPlanInput = {
   startup: boolean;
   /** When false, never take over as coordinator (tests / constrained clients without a hub). */
   allowSelfHost?: boolean;
+  /**
+   * When true, keep 127.0.0.1/localhost bootstrap targets (local multi-node E2E).
+   * Production stays false: invite loopback points at the joiner's machine, not the host.
+   */
+  allowLoopbackBootstrap?: boolean;
 };
 
 function isLoopbackOrigin(origin: string): boolean {
@@ -129,8 +134,15 @@ export function buildConnectPlan(input: ConnectPlanInput): ConnectTarget[] {
   }
 
   for (const origin of input.bootstrapOrigins) {
-    // Loopback in an invite is almost never useful for friends; skip unless hosting locally.
-    if (isLoopbackOrigin(origin) && !targetIsLocalHostIntent(origin, localOrigin)) continue;
+    // Loopback in an invite is almost never useful for friends; skip unless hosting locally
+    // or explicitly allowed (same-machine multi-node tests on different 127.0.0.1 ports).
+    if (
+      isLoopbackOrigin(origin) &&
+      !input.allowLoopbackBootstrap &&
+      !targetIsLocalHostIntent(origin, localOrigin)
+    ) {
+      continue;
+    }
     add({ origin, host: false });
   }
   if (canHost) add({ origin: localOrigin!, host: true, peerId: selfId });

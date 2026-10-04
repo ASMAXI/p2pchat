@@ -10,6 +10,7 @@ import {
   LIMITS,
   messageProofText,
   PROTOCOL_VERSION,
+  validateVoiceSignalData,
   type ClientCommand,
   type ErrorCode,
   type OutgoingMessage,
@@ -20,7 +21,7 @@ import {
   type WireMessage,
   type WireRoomState,
 } from "@workspace/p2p-protocol";
-import { electCoordinator } from "@workspace/p2p-room";
+import { electCoordinator, verifyCoordinatorClaimForJoin } from "@workspace/p2p-room";
 import { logger } from "./logger";
 
 type PersistedRoom = Omit<WireRoomState, "voiceParticipants">;
@@ -31,6 +32,7 @@ type ClientConnection = {
   socket: WebSocket;
   host: boolean;
   sentAt: number[];
+  signalSentAt: number[];
 };
 
 type RoomRuntime = {
@@ -274,10 +276,29 @@ export class RoomHub {
         endpoints,
       });
     }
-    room.clients.set(peerId, { peerId, displayName, socket, host: !this.alwaysHost && command.host === true, sentAt: [] });
+    room.clients.set(peerId, {
+      peerId,
+      displayName,
+      socket,
+      host: !this.alwaysHost && command.host === true,
+      sentAt: [],
+      signalSentAt: [],
+    });
 
     if (!this.alwaysHost && command.host) {
-      if (room.hostPeerId !== peerId || room.state.hostId !== peerId) room.state.epoch += 1;
+      if (command.coordinatorClaim) {
+        const claimError = verifyCoordinatorClaimForJoin(command.coordinatorClaim, {
+          roomId,
+          peerId,
+          publicKey,
+          roomEpoch: room.state.epoch,
+          roomHostId: room.state.hostId,
+        });
+        if (claimError) throw new HubError("UNAUTHORIZED", claimError);
+        room.state.epoch = command.coordinatorClaim.epoch;
+      } else if (room.hostPeerId !== peerId || room.state.hostId !== peerId) {
+        room.state.epoch += 1;
+      }
       room.hostPeerId = peerId;
       room.state.hostId = peerId;
       room.state.hostName = displayName;
@@ -415,6 +436,14 @@ export class RoomHub {
         return;
       }
       case "signal": {
+        const invalid = validateVoiceSignalData(command.data);
+        if (invalid) throw new HubError("INVALID", invalid);
+        const nowMs = Date.now();
+        client.signalSentAt = client.signalSentAt.filter((at) => nowMs - at < LIMITS.rateWindowMs);
+        if (client.signalSentAt.length >= LIMITS.rateMaxSignals) {
+          throw new HubError("RATE_LIMIT", "Слишком много голосовых сигналов — подождите секунду");
+        }
+        client.signalSentAt.push(nowMs);
         const target = room.clients.get(command.toPeerId);
         if (target) this.sendTo(target.socket, { type: "signal", fromPeerId: client.peerId, data: command.data });
         return;

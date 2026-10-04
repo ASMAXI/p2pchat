@@ -33,6 +33,8 @@
     "allow-hide-voice-overlay",
     "allow-close-voice-overlay",
     "allow-focus-voice-overlay",
+    "allow-secure-vault-load",
+    "allow-secure-vault-save",
     "notification:default"
   ]
 }

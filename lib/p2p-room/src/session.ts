@@ -22,6 +22,7 @@ import {
   type WireMessage,
   type WireRoomState,
 } from "@workspace/p2p-protocol";
+import { createSignedCoordinatorClaim, proposedCoordinatorClaimFields } from "./claim";
 import { compareCoordinators } from "./election";
 import { buildConnectPlan, type ConnectTarget } from "./migration";
 
@@ -79,6 +80,8 @@ export type RoomSessionOptions = {
   localNode?: { origin: string; endpoints: string[] } | null;
   /** When false, never self-host (clients without a local hub / constrained tests). */
   allowSelfHost?: boolean;
+  /** Local multi-node tests: allow bootstrap to other 127.0.0.1 ports. */
+  allowLoopbackBootstrap?: boolean;
   initial?: SessionSnapshot | null;
   timing?: Partial<SessionTiming>;
   WebSocketImpl?: typeof WebSocket;
@@ -173,6 +176,8 @@ export class RoomSession {
   stop(): void {
     if (this.closed) return;
     this.closed = true;
+    this.hosting = false;
+    this.stopProbe();
     this.send({ type: "leave" });
     this.endConnection?.({ kind: "ended", hostId: this.state?.hostId ?? "", kicked: false });
     this.setStatus("offline");
@@ -269,6 +274,7 @@ export class RoomSession {
         redirect,
         startup,
         allowSelfHost: this.options.allowSelfHost,
+        allowLoopbackBootstrap: this.options.allowLoopbackBootstrap,
       });
       redirect = undefined;
       retryOrigin = undefined;
@@ -332,7 +338,7 @@ export class RoomSession {
   private joinCommand(target: ConnectTarget): ClientCommand {
     const { identity, roomId, inviteToken } = this.options;
     const ts = Date.now();
-    return {
+    const command: Extract<ClientCommand, { type: "join" }> = {
       type: "join",
       protocol: PROTOCOL_VERSION,
       roomId,
@@ -346,6 +352,16 @@ export class RoomSession {
       host: target.host,
       snapshot: this.state ?? undefined,
     };
+    if (target.host) {
+      const fields = proposedCoordinatorClaimFields(this.state, identity.peerId);
+      command.coordinatorClaim = createSignedCoordinatorClaim(identity, {
+        roomId,
+        epoch: fields.epoch,
+        previousHostId: fields.previousHostId,
+        ts,
+      });
+    }
+    return command;
   }
 
   private async attempt(target: ConnectTarget): Promise<Outcome> {
@@ -656,7 +672,9 @@ export class RoomSession {
       // (stale LAN/tunnels caused step-down reconnect storms).
       const origins = new Set<string>();
       for (const member of this.state.members) {
-        if (member.id === this.selfId || !member.online) continue;
+        if (member.id === this.selfId) continue;
+        // Probe any known endpoints — not only online. After dual self-host both peers
+        // mark each other offline on their local hub, which previously hid split-brain.
         for (const endpoint of member.endpoints ?? []) origins.add(endpoint);
       }
       origins.delete(this.options.localNode?.origin ?? "");

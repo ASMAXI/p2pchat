@@ -4,6 +4,8 @@ export type AppUpdateInfo = {
   latestVersion: string;
   releaseUrl: string;
   downloadUrl: string | null;
+  /** GitHub Releases asset digest (`sha256:…`) when present. */
+  sha256: string | null;
   name: string;
   body: string;
 };
@@ -28,6 +30,13 @@ function compareSemver(a: string, b: string): number {
   return 0;
 }
 
+/** Accepts GitHub `digest` (`sha256:hex`) or a bare 64-char hex. */
+export function normalizeAssetSha256(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim().replace(/^sha256:/i, "");
+  return /^[a-f0-9]{64}$/i.test(trimmed) ? trimmed.toLowerCase() : null;
+}
+
 export async function currentAppVersion(): Promise<string> {
   try {
     if ("__TAURI_INTERNALS__" in window) {
@@ -37,7 +46,23 @@ export async function currentAppVersion(): Promise<string> {
   } catch {
     // fall through
   }
-  return "0.9.16";
+  return "0.10.0";
+}
+
+type GithubReleaseAsset = {
+  name: string;
+  browser_download_url: string;
+  digest?: string;
+};
+
+export function pickInstallerAsset(assets: GithubReleaseAsset[]): GithubReleaseAsset | null {
+  return (
+    assets.find((asset) => /setup\.exe$/i.test(asset.name)) ||
+    assets.find((asset) => /\.msi$/i.test(asset.name)) ||
+    assets.find((asset) => /drift.*\.exe$/i.test(asset.name) && !/portable/i.test(asset.name)) ||
+    assets.find((asset) => /\.exe$/i.test(asset.name) && !/portable/i.test(asset.name)) ||
+    null
+  );
 }
 
 export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
@@ -56,16 +81,11 @@ export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
     html_url?: string;
     name?: string;
     body?: string;
-    assets?: Array<{ name: string; browser_download_url: string }>;
+    assets?: GithubReleaseAsset[];
   };
   const latestVersion = normalizeVersion(release.tag_name || release.name || currentVersion);
   const assets = release.assets ?? [];
-  // Prefer real installers; avoid portable/unsigned side artifacts.
-  const installer =
-    assets.find((asset) => /setup\.exe$/i.test(asset.name)) ||
-    assets.find((asset) => /\.msi$/i.test(asset.name)) ||
-    assets.find((asset) => /drift.*\.exe$/i.test(asset.name) && !/portable/i.test(asset.name)) ||
-    assets.find((asset) => /\.exe$/i.test(asset.name) && !/portable/i.test(asset.name));
+  const installer = pickInstallerAsset(assets);
   const upToDate = compareSemver(currentVersion, latestVersion) >= 0;
   return {
     upToDate,
@@ -73,16 +93,24 @@ export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
     latestVersion,
     releaseUrl: release.html_url || `https://github.com/${GITHUB_REPO}/releases`,
     downloadUrl: installer?.browser_download_url ?? null,
+    sha256: normalizeAssetSha256(installer?.digest),
     name: release.name || latestVersion,
     body: (release.body || "").slice(0, 2000),
   };
 }
 
-/** Desktop: downloads the installer with progress, runs it and closes the app. */
+/** Desktop: downloads the installer with progress, verifies SHA-256, runs it and closes the app. */
 export async function installAppUpdate(
   downloadUrl: string,
   onProgress?: (loaded: number, total: number | null, phase: string) => void,
+  sha256?: string | null,
 ): Promise<void> {
+  const digest = normalizeAssetSha256(sha256);
+  if (!digest) {
+    throw new Error(
+      "В релизе нет SHA-256 установщика — обновление через приложение недоступно. Откройте страницу релиза и скачайте вручную.",
+    );
+  }
   const { invoke } = await import("@tauri-apps/api/core");
   let unlisten: (() => void) | undefined;
   try {
@@ -98,7 +126,7 @@ export async function installAppUpdate(
     console.warn("update-progress listen unavailable", error);
   }
   try {
-    await invoke("install_update", { url: downloadUrl });
+    await invoke("install_update", { url: downloadUrl, sha256: digest });
   } finally {
     unlisten?.();
   }

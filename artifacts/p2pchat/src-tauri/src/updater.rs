@@ -13,6 +13,7 @@ use std::{
 };
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 
 #[cfg(windows)]
@@ -90,6 +91,45 @@ fn download(url: &str, dest: &PathBuf, app: &AppHandle) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn file_sha256_hex(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|err| err.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|err| err.to_string())?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn normalize_sha256(value: &str) -> Option<String> {
+    let trimmed = value
+        .trim()
+        .trim_start_matches("sha256:")
+        .trim_start_matches("SHA256:")
+        .trim();
+    if trimmed.len() == 64 && trimmed.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some(trimmed.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+fn verify_installer_sha256(path: &Path, expected: &str) -> Result<(), String> {
+    let expected = normalize_sha256(expected)
+        .ok_or_else(|| "Некорректный SHA-256 установщика из релиза".to_string())?;
+    let actual = file_sha256_hex(path)?;
+    if actual == expected {
+        return Ok(());
+    }
+    Err(format!(
+        "Проверка обновления не прошла (ожидался SHA-256 {expected}, получен {actual})"
+    ))
 }
 
 fn ps_single_quote(value: &str) -> String {
@@ -257,15 +297,45 @@ fn launch_and_exit(app: &AppHandle, dest: &PathBuf) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn install_update(app: AppHandle, url: String) -> Result<(), String> {
+pub async fn install_update(
+    app: AppHandle,
+    url: String,
+    sha256: Option<String>,
+) -> Result<(), String> {
     if !ALLOWED_PREFIXES.iter().any(|prefix| url.starts_with(prefix)) {
         return Err("Обновления скачиваются только с GitHub Releases ASMAXI".into());
     }
+    let expected = sha256
+        .as_deref()
+        .and_then(normalize_sha256)
+        .ok_or_else(|| {
+            "В релизе нет SHA-256 установщика — обновление через приложение недоступно. Скачайте вручную со страницы релиза."
+                .to_string()
+        })?;
     let dest = installer_path(&url)?;
     let target = dest.clone();
     let app_dl = app.clone();
     tokio::task::spawn_blocking(move || download(&url, &target, &app_dl))
         .await
         .map_err(|err| err.to_string())??;
+    emit_progress(&app, 0, None, "verify");
+    if let Err(err) = verify_installer_sha256(&dest, &expected) {
+        let _ = std::fs::remove_file(&dest);
+        return Err(err);
+    }
     launch_and_exit(&app, &dest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_github_digest() {
+        assert_eq!(
+            normalize_sha256("sha256:95572fc81114a806eebf5c189e5e94ed36311b1a5bb273dfb30eebbba2e98cad"),
+            Some("95572fc81114a806eebf5c189e5e94ed36311b1a5bb273dfb30eebbba2e98cad".into())
+        );
+        assert_eq!(normalize_sha256("not-a-hash"), None);
+    }
 }

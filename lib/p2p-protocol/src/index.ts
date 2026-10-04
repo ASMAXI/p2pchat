@@ -13,8 +13,43 @@ export const LIMITS = {
   maxChannels: 50,
   rateWindowMs: 5000,
   rateMaxMessages: 12,
+  /** ICE can burst; keep well above chat rate but capped against flood. */
+  rateMaxSignals: 80,
   joinClockSkewMs: 10 * 60 * 1000,
+  /** Max JSON size for a single voice WebRTC signal (offer/answer/ICE/state). */
+  maxSignalJsonBytes: 64_000,
 } as const;
+
+/** Allowed `data.kind` values for voice signaling (reject arbitrary payloads). */
+export const VOICE_SIGNAL_KINDS = [
+  "offer",
+  "answer",
+  "ice",
+  "voice-state",
+  "screen-share",
+] as const;
+
+export type VoiceSignalKind = (typeof VOICE_SIGNAL_KINDS)[number];
+
+export function isVoiceSignalKind(value: unknown): value is VoiceSignalKind {
+  return typeof value === "string" && (VOICE_SIGNAL_KINDS as readonly string[]).includes(value);
+}
+
+/** Returns an error message when the signal must be dropped; null when OK. */
+export function validateVoiceSignalData(data: unknown): string | null {
+  if (data == null || typeof data !== "object" || Array.isArray(data)) {
+    return "Сигнал голоса: ожидался объект";
+  }
+  const encoded = JSON.stringify(data);
+  if (encoded.length > LIMITS.maxSignalJsonBytes) {
+    return "Сигнал голоса слишком большой";
+  }
+  const kind = (data as { kind?: unknown }).kind;
+  if (!isVoiceSignalKind(kind)) {
+    return "Сигнал голоса: неизвестный kind";
+  }
+  return null;
+}
 
 export type ChannelType = "text" | "voice";
 export type MemberRole = "owner" | "admin" | "member";
@@ -80,6 +115,11 @@ export type ClientCommand =
       /** Set when the client connects to its own node to act as coordinator. */
       host: boolean;
       snapshot?: WireRoomState;
+      /**
+       * Optional signed proof of coordinator succession (host joins).
+       * Additive: hubs still accept legacy host joins without a claim.
+       */
+      coordinatorClaim?: SignedCoordinatorClaim;
     }
   | { type: "message"; message: OutgoingMessage }
   | { type: "create_channel"; name: string; channelType: ChannelType }
@@ -110,6 +150,56 @@ export type RoomStatus = {
 
 export function joinProofText(roomId: string, peerId: string, ts: number): string {
   return `p2pchat/v${PROTOCOL_VERSION}/join/${roomId}/${peerId}/${ts}`;
+}
+
+/**
+ * Signed statement that `hostId` is the coordinator for `roomId` at `epoch`.
+ * Used on host joins to bind epoch succession to a peer key (anti-spoof).
+ */
+export type SignedCoordinatorClaim = {
+  roomId: string;
+  epoch: number;
+  hostId: string;
+  /** Prior coordinator when taking over; null for first activation / same-host reclaim. */
+  previousHostId: string | null;
+  publicKey: string;
+  ts: number;
+  signature: string;
+};
+
+export function claimProofText(
+  claim: Pick<SignedCoordinatorClaim, "roomId" | "epoch" | "hostId" | "previousHostId" | "ts">,
+): string {
+  const previous = claim.previousHostId ?? "-";
+  return `p2pchat/v${PROTOCOL_VERSION}/claim/${claim.roomId}/${claim.epoch}/${claim.hostId}/${previous}/${claim.ts}`;
+}
+
+export function isSignedCoordinatorClaim(value: unknown): value is SignedCoordinatorClaim {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const claim = value as Partial<SignedCoordinatorClaim>;
+  return (
+    typeof claim.roomId === "string" &&
+    claim.roomId.length > 0 &&
+    claim.roomId.length <= 80 &&
+    typeof claim.epoch === "number" &&
+    Number.isInteger(claim.epoch) &&
+    claim.epoch >= 1 &&
+    typeof claim.hostId === "string" &&
+    claim.hostId.length > 0 &&
+    claim.hostId.length <= 100 &&
+    (claim.previousHostId === null ||
+      (typeof claim.previousHostId === "string" &&
+        claim.previousHostId.length > 0 &&
+        claim.previousHostId.length <= 100)) &&
+    typeof claim.publicKey === "string" &&
+    claim.publicKey.length > 0 &&
+    claim.publicKey.length <= 128 &&
+    typeof claim.ts === "number" &&
+    Number.isFinite(claim.ts) &&
+    typeof claim.signature === "string" &&
+    claim.signature.length > 0 &&
+    claim.signature.length <= 256
+  );
 }
 
 export function messageProofText(

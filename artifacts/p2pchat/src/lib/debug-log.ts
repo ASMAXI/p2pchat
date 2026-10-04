@@ -48,12 +48,44 @@ function notify(): void {
   for (const listener of listeners) listener();
 }
 
+const SECRET_KEY =
+  /^(inviteToken|invite_token|roomKey|room_key|privateKey|private_key|authToken|auth_token|token|password|secret|ngrok|zrok)$/i;
+
+function redactValue(key: string, value: unknown): unknown {
+  if (SECRET_KEY.test(key)) return "[redacted]";
+  if (typeof value === "string" && /(?:inviteToken|roomKey|privateKey|authToken)=/i.test(value)) {
+    return value
+      .replace(/(inviteToken|roomKey|privateKey|authToken|token)=([^&\s#]+)/gi, "$1=[redacted]")
+      .replace(/(drift|p2pchat):\/\/[^\s"']+/gi, "[invite-redacted]");
+  }
+  return value;
+}
+
+function redactDeep(value: unknown): unknown {
+  if (value == null) return value;
+  if (Array.isArray(value)) return value.map(redactDeep);
+  if (typeof value !== "object") return value;
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: redactValue("message", value.message),
+      stack: value.stack,
+    };
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = redactDeep(redactValue(key, child));
+  }
+  return out;
+}
+
 function safeData(data: unknown): unknown {
   if (data == null) return undefined;
-  if (typeof data === "string" || typeof data === "number" || typeof data === "boolean") return data;
-  if (data instanceof Error) return { name: data.name, message: data.message, stack: data.stack };
+  if (typeof data === "string" || typeof data === "number" || typeof data === "boolean") {
+    return redactValue("value", data);
+  }
   try {
-    return JSON.parse(JSON.stringify(data));
+    return redactDeep(JSON.parse(JSON.stringify(data)));
   } catch {
     return String(data);
   }
