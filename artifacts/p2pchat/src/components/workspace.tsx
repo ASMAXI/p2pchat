@@ -1969,8 +1969,8 @@ export function Workspace() {
         onInviteUpdated={(invite) => setServer((current) => ({ ...current, invite }))}
       />
     )}
-    {overlay === 'diagnostics' && <div className="fixed inset-0 z-[80] overflow-auto bg-[hsl(var(--background))]"><Diagnostics onClose={() => setOverlay(null)} /></div>}
-    {overlay === 'settings' && <div className="fixed inset-0 z-[80] overflow-auto bg-[hsl(var(--background))]"><SettingsPage onClose={() => setOverlay(null)} /></div>}
+    {overlay === 'diagnostics' && <div className="fixed inset-x-0 bottom-0 z-[80] overflow-auto bg-[hsl(var(--background))]" style={{ top: 'var(--app-titlebar-h, 36px)' }}><Diagnostics onClose={() => setOverlay(null)} /></div>}
+    {overlay === 'settings' && <div className="fixed inset-x-0 bottom-0 z-[80] overflow-auto bg-[hsl(var(--background))]" style={{ top: 'var(--app-titlebar-h, 36px)' }}><SettingsPage onClose={() => setOverlay(null)} /></div>}
     {peerVolumeMenu && (
       <PeerVolumeContextMenu
         menu={peerVolumeMenu}

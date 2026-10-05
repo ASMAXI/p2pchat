@@ -382,7 +382,7 @@ export function SettingsPage({ onClose }: { onClose?: () => void }) {
   };
 
   return (
-    <div className="noise relative min-h-[100dvh] app-grid" style={{ background: 'hsl(var(--background))' }}>
+    <div className="noise relative h-full min-h-0 overflow-auto app-grid" style={{ background: 'hsl(var(--background))' }}>
       {updateProgress && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[hsl(var(--background)/.85)] backdrop-blur-sm" data-testid="overlay-update-progress">
           <div className="mx-4 w-full max-w-md rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 shadow-xl">

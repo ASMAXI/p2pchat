@@ -172,9 +172,9 @@ export function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return (
-    <main className="noise min-h-[100dvh] overflow-hidden app-grid" style={{ background: 'hsl(var(--background))' }}>
-      <div className="mx-auto grid min-h-[100dvh] max-w-[1500px] grid-cols-1 lg:grid-cols-[1.05fr_.95fr]">
-        <section className="relative flex min-h-[440px] flex-col overflow-hidden px-6 py-7 text-[#f5f0df] lg:min-h-[100dvh] lg:px-14 lg:py-10" style={{ background: 'hsl(var(--sidebar))' }}>
+    <main className="noise h-full min-h-0 overflow-hidden app-grid" style={{ background: 'hsl(var(--background))' }}>
+      <div className="mx-auto grid h-full min-h-0 max-w-[1500px] grid-cols-1 lg:grid-cols-[1.05fr_.95fr]">
+        <section className="relative flex min-h-[440px] flex-col overflow-hidden px-6 py-7 text-[#f5f0df] lg:min-h-0 lg:h-full lg:px-14 lg:py-10" style={{ background: 'hsl(var(--sidebar))' }}>
           <div className="absolute -right-24 top-24 h-72 w-72 rounded-full border border-[#d8fa67]/20" />
           <div className="absolute -right-8 top-40 h-56 w-56 rounded-full border border-[#d8fa67]/15" />
           <div className="absolute bottom-[-100px] left-[-70px] h-72 w-72 rounded-full" style={{ background: 'hsl(var(--accent) / .13)' }} />
@@ -195,7 +195,7 @@ export function Home() {
             <div className="mt-5 flex items-center gap-1"><div className="h-5 w-5 rounded-md bg-[#d8fa67]"/><div className="h-5 w-5 rounded-md bg-[#f28262]"/><div className="h-5 w-5 rounded-md bg-[#f5f0df]/20"/><span className="ml-1 text-[9px] text-[#f5f0df]/50">18 здесь</span></div>
           </div>
         </section>
-        <section className="flex max-h-[100dvh] items-start overflow-y-auto px-6 py-10 sm:px-12 lg:px-20">
+        <section className="flex max-h-full items-start overflow-y-auto px-6 py-10 sm:px-12 lg:px-20">
           <div className="mx-auto w-full max-w-[440px] animate-rise">
             <div className="mb-8 flex items-center justify-between lg:hidden">
               <LogoMark small />
@@ -297,7 +297,7 @@ export function Home() {
       </div>
       {toast && <Toast text={toast} onClose={() => setToast('')} />}
       {showSettings && (
-        <div className="fixed inset-0 z-[80] overflow-auto bg-[hsl(var(--background))]">
+        <div className="fixed inset-x-0 bottom-0 z-[80] overflow-auto bg-[hsl(var(--background))]" style={{ top: 'var(--app-titlebar-h, 36px)' }}>
           <SettingsPage onClose={() => setShowSettings(false)} />
         </div>
       )}

@@ -11,6 +11,7 @@ import { Home } from '@/components/home-page';
 import { Workspace } from '@/components/workspace';
 import { Diagnostics } from '@/components/diagnostics-panel';
 import { SettingsPage } from '@/components/settings-page';
+import { TitleBar } from '@/components/title-bar';
 
 const queryClient = new QueryClient();
 
@@ -81,7 +82,10 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        {router}
+        <div className="app-frame">
+          <TitleBar />
+          <div className="app-frame-body">{router}</div>
+        </div>
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>
