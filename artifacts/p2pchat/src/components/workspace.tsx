@@ -1293,7 +1293,7 @@ export function Workspace() {
               ...room,
               participants,
               participantCount: participants.length,
-              state: participants.length > 0 ? 'live' : 'ready',
+              state: participants.length > 0 ? ('live' as const) : ('ready' as const),
             };
           });
           setVoiceRooms(mergedVoiceRooms);
@@ -1783,7 +1783,7 @@ export function Workspace() {
         ...item,
         participantCount: participants.length,
         participants,
-        state: participants.length === 0 ? 'ready' : 'live',
+        state: participants.length === 0 ? ('ready' as const) : ('live' as const),
       };
     }));
     setActiveVoice(null); setMuted(false); setDeafened(false); setToast('Вы вышли из голосовой комнаты');
