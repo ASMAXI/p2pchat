@@ -433,13 +433,13 @@ html[data-theme="gachi"] .nav-icon.active {
 .theme-chat-bg .message-item {
   border-radius: 14px;
   padding: 10px 12px;
-  background: hsl(var(--card) / .94);
-  backdrop-filter: blur(8px);
-  box-shadow: 0 1px 0 hsl(var(--border) / .55);
+  background: hsl(var(--card) / .52);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 1px 0 hsl(var(--border) / .35);
   max-width: 780px;
 }
 .theme-chat-bg .message-scroll {
-  background: linear-gradient(180deg, hsl(var(--background) / .35), hsl(var(--background) / .5));
+  background: linear-gradient(180deg, hsl(var(--background) / .12), hsl(var(--background) / .22));
 }
 .soundboard-panel {
   display: grid;

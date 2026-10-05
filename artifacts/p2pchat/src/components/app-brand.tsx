@@ -113,15 +113,31 @@ export function ConnectionStatusChips({
 }
 
 
-export function PatriotName({ name, seed }: { name: string; seed?: string }) {
+export function ChatName({ name, seed }: { name: string; seed?: string }) {
   const theme = useAppTheme();
-  if (theme !== 'patriot') return <>{name}</>;
-  const rank = rfRankFor(seed || name);
+  const colorSeed = seed || name;
+  const hue = (() => {
+    let hash = 0;
+    for (let i = 0; i < colorSeed.length; i += 1) hash = (hash * 31 + colorSeed.charCodeAt(i)) >>> 0;
+    return hash % 360;
+  })();
+  const nick = (
+    <span className="font-bold" style={{ color: `hsl(${hue} 68% 52%)` }}>
+      {name}
+    </span>
+  );
+  if (theme !== 'patriot') return nick;
+  const rank = rfRankFor(colorSeed);
   return (
     <>
       <span className="patriot-rank">{rank}</span>{' '}
-      {name}
+      {nick}
     </>
   );
+}
+
+/** @deprecated use ChatName */
+export function PatriotName({ name, seed }: { name: string; seed?: string }) {
+  return <ChatName name={name} seed={seed} />;
 }
 

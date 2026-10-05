@@ -33,7 +33,12 @@ export type EditBody = { v: 1; target: string; body: string };
 export type DelBody = { v: 1; target: string };
 export type PinBody = { v: 1; target: string; pinned: boolean };
 export type SfxBody = { v: 1; id: string };
-export type VoteKickBody = { v: 1; targetId: string; targetName: string };
+export type VoteKickBody = { v: 1; targetId: string; targetName: string; needed?: number; online?: number };
+
+/** Votes required to pass a votekick (majority of online at creation time). */
+export function voteKickVotesNeeded(onlineCount: number): number {
+  return Math.max(1, Math.ceil(Math.max(0, onlineCount) / 2));
+}
 export type KickBody = { v: 1; targetId: string; targetName: string };
 
 export type ParsedWireText =
@@ -44,7 +49,7 @@ export type ParsedWireText =
   | { kind: "delete"; target: string }
   | { kind: "pin"; target: string; pinned: boolean }
   | { kind: "sfx"; id: string }
-  | { kind: "votekick"; targetId: string; targetName: string }
+  | { kind: "votekick"; targetId: string; targetName: string; neededVotes: number; onlineSnapshot?: number }
   | { kind: "kick"; targetId: string; targetName: string }
   | { kind: "unknown"; raw: string };
 
@@ -103,8 +108,18 @@ export function encodeSfx(id: string): string {
   return `${SFX_PREFIX}${JSON.stringify({ v: 1, id } satisfies SfxBody)}`;
 }
 
-export function encodeVoteKick(targetId: string, targetName: string): string {
-  return `${VOTEKICK_PREFIX}${JSON.stringify({ v: 1, targetId, targetName } satisfies VoteKickBody)}`;
+export function encodeVoteKick(
+  targetId: string,
+  targetName: string,
+  meta?: { needed?: number; online?: number },
+): string {
+  return `${VOTEKICK_PREFIX}${JSON.stringify({
+    v: 1,
+    targetId,
+    targetName,
+    needed: meta?.needed,
+    online: meta?.online,
+  } satisfies VoteKickBody)}`;
 }
 
 export function encodeKickNotice(targetId: string, targetName: string): string {
@@ -155,7 +170,18 @@ export function parseWireText(text: string | null | undefined): ParsedWireText {
   if (text.startsWith(VOTEKICK_PREFIX)) {
     const data = parseJson<VoteKickBody>(text.slice(VOTEKICK_PREFIX.length));
     if (!data?.targetId || !data?.targetName) return { kind: "unknown", raw: text };
-    return { kind: "votekick", targetId: data.targetId, targetName: data.targetName };
+    const onlineSnapshot = typeof data.online === "number" ? data.online : undefined;
+    const neededVotes =
+      typeof data.needed === "number" && data.needed > 0
+        ? Math.floor(data.needed)
+        : voteKickVotesNeeded(onlineSnapshot ?? 1);
+    return {
+      kind: "votekick",
+      targetId: data.targetId,
+      targetName: data.targetName,
+      neededVotes,
+      onlineSnapshot,
+    };
   }
   if (text.startsWith(KICK_PREFIX)) {
     const data = parseJson<KickBody>(text.slice(KICK_PREFIX.length));
@@ -235,7 +261,7 @@ export type DisplayMessage = {
   reactions?: Record<string, string[]>; // emoji -> author names
   pinned?: boolean;
   sfxId?: string;
-  voteKick?: { targetId: string; targetName: string };
+  voteKick?: { targetId: string; targetName: string; neededVotes: number; onlineSnapshot?: number };
   kickNotice?: { targetId: string; targetName: string };
 };
 
@@ -263,10 +289,11 @@ export function foldChatMessages(
       if (!target || target.deleted) continue;
       const reactions = { ...(target.reactions ?? {}) };
       const list = new Set(reactions[parsed.emoji] ?? []);
-      if (parsed.op === "remove") list.delete(item.author);
-      else if (parsed.op === "add") list.add(item.author);
-      else if (list.has(item.author)) list.delete(item.author);
-      else list.add(item.author);
+      const reactorKey = item.authorId ?? item.author;
+      if (parsed.op === "remove") list.delete(reactorKey);
+      else if (parsed.op === "add") list.add(reactorKey);
+      else if (list.has(reactorKey)) list.delete(reactorKey);
+      else list.add(reactorKey);
       if (list.size) reactions[parsed.emoji] = [...list];
       else delete reactions[parsed.emoji];
       target.reactions = reactions;
@@ -275,9 +302,12 @@ export function foldChatMessages(
     if (parsed.kind === "edit") {
       const target = byId.get(parsed.target);
       if (!target || target.deleted) continue;
-      if (target.author !== item.author && !item.isCurrentUser) {
-        // only author edits counted if names match
-        if (target.author !== item.author) continue;
+      const editorId = item.authorId;
+      const ownerId = target.authorId;
+      if (ownerId && editorId) {
+        if (ownerId !== editorId) continue;
+      } else if (target.author !== item.author) {
+        continue;
       }
       target.content = parsed.body;
       target.edited = true;
@@ -286,11 +316,16 @@ export function foldChatMessages(
     if (parsed.kind === "delete") {
       const target = byId.get(parsed.target);
       if (!target) continue;
-      if (target.author !== item.author) continue;
-      target.deleted = true;
-      target.content = "Сообщение удалено";
-      target.imageUrl = undefined;
-      target.file = undefined;
+      const deleterId = item.authorId;
+      const ownerId = target.authorId;
+      if (ownerId && deleterId) {
+        if (ownerId !== deleterId) continue;
+      } else if (target.author !== item.author) {
+        continue;
+      }
+      byId.delete(parsed.target);
+      const idx = order.indexOf(parsed.target);
+      if (idx >= 0) order.splice(idx, 1);
       continue;
     }
     if (parsed.kind === "pin") {
@@ -323,7 +358,12 @@ export function foldChatMessages(
       base.mentions = parsed.mentions;
       base.file = parsed.file;
     } else if (parsed.kind === "votekick") {
-      base.voteKick = { targetId: parsed.targetId, targetName: parsed.targetName };
+      base.voteKick = {
+        targetId: parsed.targetId,
+        targetName: parsed.targetName,
+        neededVotes: parsed.neededVotes,
+        onlineSnapshot: parsed.onlineSnapshot,
+      };
       base.content = `Голосование: кикнуть ${parsed.targetName}`;
     } else if (parsed.kind === "kick") {
       base.kickNotice = { targetId: parsed.targetId, targetName: parsed.targetName };

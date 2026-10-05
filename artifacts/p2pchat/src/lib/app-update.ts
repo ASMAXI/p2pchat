@@ -46,7 +46,7 @@ export async function currentAppVersion(): Promise<string> {
   } catch {
     // fall through
   }
-  return "0.10.4";
+  return "0.10.5";
 }
 
 type GithubReleaseAsset = {

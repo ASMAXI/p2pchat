@@ -19,10 +19,19 @@ import { playUiSound } from '@/lib/ui-sounds';
 import { labelForHotkeyCode, loadDeafenHotkeyCode, loadMuteHotkeyCode, loadPttKeyCode, loadVoiceOverlayEnabled, loadVoiceOverlayInteractive, loadVoiceOverlayOpacity, loadVoiceTalkMode, hotkeyVkForCode, pttVkForCode, VOICE_OVERLAY_PAYLOAD_KEY, type PttKeyCode, type VoiceOverlayPayload, type VoiceTalkMode } from '@/lib/voice-settings';
 import { dismissOnboardingGuide, loadOnboardingGuide } from '@/lib/onboarding-guide';
 import { hideMessageLocally, loadHiddenMessageIds } from '@/lib/hidden-messages';
-import { applySlashCommandSuggestion, slashCommandSuggestions, tryParseChatCommand, type SlashCommandOption } from '@/lib/chat-commands';
+import { emitPendingInvite } from '@/lib/invite-deep-link';
+import {
+  applySlashCommandSuggestion,
+  applyVotekickMemberSuggestion,
+  slashCommandSuggestions,
+  tryParseChatCommand,
+  votekickMemberSuggestions,
+  type SlashCommandOption,
+  type VotekickMemberOption,
+} from '@/lib/chat-commands';
 import { type ChannelType, type Server, type Channel, type Message, type StoredVoice, SERVER_KEY, CHANNELS_KEY, MESSAGES_KEY, VOICE_KEY, PROFILE_NAME_KEY, CONNECTION_KEY, uid, readStore, writeStore, mergeChannelUnread, roomStateToClientState, seedServer, seedChannels, seedMessages, seedVoice } from '@/lib/app-shared';
 import { LIMITS } from '@workspace/p2p-protocol';
-import { CreatorCredit, AppVersionLabel, Toast, ConnectionStatusChips, PatriotName } from '@/components/app-brand';
+import { ChatName, CreatorCredit, AppVersionLabel, Toast, ConnectionStatusChips, PatriotName } from '@/components/app-brand';
 import { SettingsPage } from '@/components/settings-page';
 import { Diagnostics } from '@/components/diagnostics-panel';
 import { ScreenShareStage } from '@/components/screen-share-stage';
@@ -278,7 +287,7 @@ function ChannelPane({
                       >
                         <div
                           className={`member-avatar ${speaking ? 'ring-2 ring-[hsl(var(--primary))] ring-offset-1 ring-offset-[hsl(var(--background))]' : ''}`}
-                          style={{ width: 22, height: 22, fontSize: 8, ...avatarColors(person.name) }}
+                          style={{ width: 22, height: 22, fontSize: 8, ...avatarColors(person.id) }}
                         >
                           {avatarInitials(person.name)}
                         </div>
@@ -473,6 +482,8 @@ function renderMessageBody(content: string, memberNames: string[], deleted?: boo
 function MessageList({
   messages,
   memberNames,
+  members,
+  onlineCount,
   onReply,
   onReact,
   onEdit,
@@ -483,6 +494,8 @@ function MessageList({
 }: {
   messages: Message[];
   memberNames: string[];
+  members: Array<{ id: string; name: string }>;
+  onlineCount: number;
   onReply: (id: string) => void;
   onReact: (targetId: string, emoji: string) => void;
   onEdit: (targetId: string, body: string) => void;
@@ -491,6 +504,7 @@ function MessageList({
   onPin: (targetId: string, pinned: boolean) => void;
   onVoteYes: (targetId: string) => void;
 }) {
+  const memberLabel = (key: string) => members.find((member) => member.id === key)?.name ?? key;
   const folded = useMemo(
     () =>
       foldChatMessages(
@@ -509,9 +523,10 @@ function MessageList({
     [messages],
   );
   const byId = useMemo(() => new Map(folded.map((item) => [item.id, item])), [folded]);
-  const pinned = folded.filter((item) => item.pinned && !item.deleted);
+  const visible = folded.filter((item) => !item.deleted);
+  const pinned = visible.filter((item) => item.pinned);
 
-  if (!folded.length) {
+  if (!visible.length) {
     return (
       <div className="flex h-full flex-col items-center justify-center px-6 text-center">
         <div className="grid h-16 w-16 place-items-center rounded-2xl bg-[hsl(var(--primary)/.18)] text-[hsl(var(--secondary))]"><Sparkles size={25} /></div>
@@ -528,27 +543,27 @@ function MessageList({
           <div className="font-mono text-[9px] font-bold uppercase tracking-[.14em] text-[hsl(var(--primary))]">Закреплено</div>
           {pinned.map((item) => (
             <div key={`pin-${item.id}`} className="text-xs leading-5">
-              <strong><PatriotName name={item.author} /></strong>: {item.deleted ? item.content : item.imageUrl ? 'Изображение' : item.content.slice(0, 160)}
+              <strong><ChatName name={item.author} seed={item.authorId} /></strong>: {item.imageUrl ? 'Изображение' : item.content.slice(0, 160)}
             </div>
           ))}
         </div>
       )}
       <div className="mb-7 flex items-center gap-3 text-[11px] text-[hsl(var(--muted-foreground))]"><div className="diag-line" /><span>Сегодня</span><div className="diag-line" /></div>
-      {folded.map((message, index) => {
+      {visible.map((message, index) => {
         const reply = message.replyTo ? byId.get(message.replyTo) : undefined;
         return (
           <article className="message-item group" key={message.id} style={{ animationDelay: `${index * 45}ms` }} data-testid={`message-${message.id}`}>
-            <div className="message-avatar" style={avatarColors(message.author)}>{message.avatar}</div>
+            <div className="message-avatar" style={avatarColors(message.authorId ?? message.author)}>{message.avatar}</div>
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline gap-2">
-                <strong className="text-[13px]"><PatriotName name={message.author} /></strong>
+                <span className="text-[13px]"><ChatName name={message.author} seed={message.authorId} /></span>
                 <time className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">{message.timestamp}</time>
                 {message.edited && <span className="font-mono text-[8px] text-[hsl(var(--muted-foreground))]">изм.</span>}
                 {message.pinned && <span className="font-mono text-[8px] text-[hsl(var(--primary))]">📌</span>}
               </div>
               {reply && !reply.deleted && (
                 <div className="mt-1 border-l-2 border-[hsl(var(--border))] pl-2 text-[11px] text-[hsl(var(--muted-foreground))]" data-testid={`message-reply-${message.id}`}>
-                  <span className="font-semibold text-[hsl(var(--foreground)/.7)]"><PatriotName name={reply.author} /></span>
+                  <span className="font-semibold text-[hsl(var(--foreground)/.7)]"><ChatName name={reply.author} seed={reply.authorId} /></span>
                   <span className="ml-1">{reply.imageUrl ? 'Изображение' : reply.content.slice(0, 100)}</span>
                 </div>
               )}
@@ -566,9 +581,17 @@ function MessageList({
               ) : message.voteKick ? (
                 <div className="mt-2 rounded-xl border border-[hsl(var(--accent)/.35)] bg-[hsl(var(--accent)/.08)] px-3 py-2" data-testid={`message-votekick-${message.id}`}>
                   <p className="text-sm font-semibold">🗳️ Кикнуть {message.voteKick.targetName}?</p>
-                  <p className="mt-1 text-[11px] text-[hsl(var(--muted-foreground))]">Без бана — сможет зайти снова по ссылке. Нужно большинство онлайн.</p>
+                  <p className="mt-1 text-[11px] text-[hsl(var(--muted-foreground))]">
+                    Без бана — можно зайти снова по ссылке. Нужно <strong>{message.voteKick.neededVotes}</strong> «За»
+                    {message.voteKick.onlineSnapshot != null ? (
+                      <> (на момент голосования было {message.voteKick.onlineSnapshot} онлайн)</>
+                    ) : (
+                      <> (сейчас онлайн: {onlineCount})</>
+                    )}
+                    .
+                  </p>
                   <button type="button" className="primary-btn mt-2 !h-8 !px-3 text-xs" onClick={() => onVoteYes(message.id)} data-testid={`button-vote-yes-${message.id}`}>
-                    За ({(message.reactions?.['✅'] ?? []).length})
+                    За ({(message.reactions?.['✅'] ?? []).length}/{message.voteKick.neededVotes})
                   </button>
                 </div>
               ) : message.kickNotice ? (
@@ -579,7 +602,7 @@ function MessageList({
               {message.reactions && Object.keys(message.reactions).length > 0 && !message.voteKick && (
                 <div className="mt-2 flex flex-wrap gap-1" data-testid={`message-reactions-${message.id}`}>
                   {Object.entries(message.reactions).map(([emoji, authors]) => (
-                    <button key={emoji} type="button" className="rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.4)] px-2 py-0.5 text-[11px]" onClick={() => onReact(message.id, emoji)} title={authors.join(', ')}>
+                    <button key={emoji} type="button" className="rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.4)] px-2 py-0.5 text-[11px]" onClick={() => onReact(message.id, emoji)} title={authors.map(memberLabel).join(', ')}>
                       {emoji} {authors.length}
                     </button>
                   ))}
@@ -599,7 +622,7 @@ function MessageList({
                     <button type="button" className="ghost-btn !h-7 !px-2 text-[10px]" onClick={() => { const next = window.prompt('Новый текст сообщения', message.content); if (next != null && next.trim()) onEdit(message.id, next.trim()); }} data-testid={`button-edit-${message.id}`}>Изменить</button>
                   )}
                   {message.isCurrentUser && !message.voteKick && (
-                    <button type="button" className="ghost-btn !h-7 !px-2 text-[10px] text-[hsl(var(--accent))]" onClick={() => { if (window.confirm('Удалить сообщение у всех?')) onDelete(message.id); }} data-testid={`button-delete-${message.id}`}>Удалить у всех</button>
+                    <button type="button" className="ghost-btn !h-7 !px-2 text-[10px] text-[hsl(var(--accent))]" onClick={() => onDelete(message.id)} data-testid={`button-delete-${message.id}`}>Удалить у всех</button>
                   )}
                   <button type="button" className="ghost-btn !h-7 !px-2 text-[10px]" onClick={() => onHideLocal(message.id)} data-testid={`button-hide-local-${message.id}`}>Скрыть у себя</button>
                   {!message.voteKick && (
@@ -619,6 +642,8 @@ function MessageList({
 function ChatComposer({
   draft,
   memberNames,
+  votekickMembers,
+  selfPeerId,
   onDraftChange,
   onKeyDown,
   onSend,
@@ -635,6 +660,8 @@ function ChatComposer({
 }: {
   draft: string;
   memberNames: string[];
+  votekickMembers: Array<{ id: string; name: string; online?: boolean }>;
+  selfPeerId: string;
   onDraftChange: (value: string) => void;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onSend: () => void;
@@ -651,15 +678,19 @@ function ChatComposer({
 }) {
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [slashDismissed, setSlashDismissed] = useState(false);
+  const [votekickDismissed, setVotekickDismissed] = useState(false);
   const [sfxOpen, setSfxOpen] = useState(false);
   const slashOptions = slashCommandSuggestions(draft);
-  const showSlashMenu = Boolean(slashOptions && slashOptions.length > 0 && !slashDismissed);
+  const votekickOptions = votekickMemberSuggestions(draft, votekickMembers, selfPeerId);
+  const showVotekickMenu = Boolean(votekickOptions && votekickOptions.length > 0 && !votekickDismissed);
+  const showSlashMenu = Boolean(!showVotekickMenu && slashOptions && slashOptions.length > 0 && !slashDismissed);
   const mentionState = mentionSuggestions(draft, memberNames);
-  const showMentionMenu = Boolean(!showSlashMenu && mentionState && mentionState.matches.length > 0 && !mentionDismissed);
+  const showMentionMenu = Boolean(!showSlashMenu && !showVotekickMenu && mentionState && mentionState.matches.length > 0 && !mentionDismissed);
 
   useEffect(() => {
     setMentionDismissed(false);
     setSlashDismissed(false);
+    setVotekickDismissed(false);
   }, [draft]);
 
   const pickSlash = (option: SlashCommandOption) => {
@@ -667,7 +698,24 @@ function ChatComposer({
     setSlashDismissed(true);
   };
 
+  const pickVotekick = (option: VotekickMemberOption) => {
+    onDraftChange(applyVotekickMemberSuggestion(draft, option));
+    setVotekickDismissed(true);
+  };
+
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showVotekickMenu && votekickOptions?.[0]) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setVotekickDismissed(true);
+        return;
+      }
+      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+        event.preventDefault();
+        pickVotekick(votekickOptions[0]);
+        return;
+      }
+    }
     if (showSlashMenu && slashOptions?.[0]) {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -698,6 +746,25 @@ function ChatComposer({
 
   return (
     <div className="composer relative">
+      {showVotekickMenu && votekickOptions && (
+        <div className="mention-menu" role="listbox" aria-label="Кого кикнуть" data-testid="votekick-member-menu">
+          {votekickOptions.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              role="option"
+              className="flex w-full px-3 py-2 text-left text-sm font-semibold hover:bg-[hsl(var(--muted)/.55)]"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                pickVotekick(option);
+              }}
+              data-testid={`votekick-option-${option.id}`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
       {showSlashMenu && slashOptions && (
         <div className="mention-menu" role="listbox" aria-label="Команды" data-testid="slash-command-menu">
           {slashOptions.map((option) => (
@@ -818,6 +885,8 @@ export function Workspace() {
   const [voiceBannerDismissed, setVoiceBannerDismissed] = useState(false);
   const [sideAlerts, setSideAlerts] = useState<Array<{ id: string; title: string; body: string }>>([]);
   const executedKickVotesRef = useRef<Set<string>>(new Set());
+  const processedKickNoticesRef = useRef<Set<string>>(new Set());
+  const kickHistoryPrimedRef = useRef(false);
   const [hiddenMessageIds, setHiddenMessageIds] = useState<Set<string>>(() => loadHiddenMessageIds(readStore<Server>(SERVER_KEY, seedServer).roomId ?? ''));
   const [voicePeers, setVoicePeers] = useState<Array<{ id: string; name: string }>>([]);
   const [sharingScreen, setSharingScreen] = useState(false);
@@ -1515,12 +1584,20 @@ export function Workspace() {
     if (server.roomId) setHiddenMessageIds(loadHiddenMessageIds(server.roomId));
   }, [server.roomId]);
 
+  useEffect(() => {
+    kickHistoryPrimedRef.current = false;
+    processedKickNoticesRef.current = new Set();
+    executedKickVotesRef.current = new Set();
+  }, [server.roomId]);
+
   const sendMessage = () => {
     const body = draft.trim();
     if (!body) return;
+    const onlineCount = members.filter((member) => member.online).length;
     const command = tryParseChatCommand(body, {
       selfName: displayName,
       selfId: peerId,
+      onlineCount,
       members: members.map((member) => ({ id: member.id, name: member.name, online: member.online })),
     });
     if (command) {
@@ -1536,7 +1613,16 @@ export function Workspace() {
         return;
       }
       if (command.kind === 'votekick') {
-        if (!sendChatPayload(encodeVoteKick(command.targetId, command.targetName))) return;
+        if (
+          !sendChatPayload(
+            encodeVoteKick(command.targetId, command.targetName, {
+              needed: command.neededVotes,
+              online: command.onlineSnapshot,
+            }),
+          )
+        ) {
+          return;
+        }
         setDraft('');
         setReplyToId(null);
         setToast(`Голосование: кикнуть ${command.targetName}`);
@@ -1620,9 +1706,16 @@ export function Workspace() {
   const onMessagePin = (targetId: string, pinned: boolean) => {
     sendChatPayload(encodePin(targetId, pinned));
   };
+  const onlineMemberCount = members.filter((member) => member.online).length;
+  const votekickMembers = useMemo(
+    () => members.map((member) => ({ id: member.id, name: member.name, online: member.online })),
+    [members],
+  );
   const messageListProps = {
     messages: channelMessages,
     memberNames,
+    members: votekickMembers,
+    onlineCount: onlineMemberCount,
     onReply: onMessageReply,
     onReact: onMessageReact,
     onEdit: onMessageEdit,
@@ -1878,32 +1971,52 @@ export function Workspace() {
   };
 
   useEffect(() => {
-    const onlineCount = members.filter((member) => member.online).length;
-    const needed = Math.max(1, Math.ceil(onlineCount / 2));
+    const folded = foldChatMessages(
+      messages.map((item) => ({
+        id: item.id,
+        channelId: item.channelId,
+        author: item.author,
+        authorId: item.authorId,
+        avatar: item.avatar,
+        content: item.content,
+        timestamp: item.timestamp,
+        isCurrentUser: item.isCurrentUser,
+        delivery: item.delivery,
+      })),
+    );
+
+    if (!kickHistoryPrimedRef.current) {
+      for (const message of messages) {
+        const parsed = parseWireText(message.content);
+        if (parsed.kind === 'kick' && parsed.targetId === peerId) {
+          processedKickNoticesRef.current.add(message.id);
+        }
+        if (parsed.kind === 'votekick') {
+          const voteMsg = folded.find((item) => item.id === message.id);
+          const yes = voteMsg?.reactions?.['✅']?.length ?? 0;
+          const needed = voteMsg?.voteKick?.neededVotes ?? parsed.neededVotes;
+          if (yes >= needed) executedKickVotesRef.current.add(message.id);
+        }
+      }
+      kickHistoryPrimedRef.current = true;
+      return;
+    }
+
     for (const message of messages) {
       const parsed = parseWireText(message.content);
       if (parsed.kind === 'kick' && parsed.targetId === peerId) {
+        if (processedKickNoticesRef.current.has(message.id)) continue;
+        processedKickNoticesRef.current.add(message.id);
+        if (server.invite) emitPendingInvite(server.invite);
         setToast('Вас исключили голосованием. Можно зайти снова по ссылке.');
         leaveServer();
         return;
       }
       if (parsed.kind !== 'votekick') continue;
       if (executedKickVotesRef.current.has(message.id)) continue;
-      const folded = foldChatMessages(
-        messages.map((item) => ({
-          id: item.id,
-          channelId: item.channelId,
-          author: item.author,
-          authorId: item.authorId,
-          avatar: item.avatar,
-          content: item.content,
-          timestamp: item.timestamp,
-          isCurrentUser: item.isCurrentUser,
-          delivery: item.delivery,
-        })),
-      );
       const voteMsg = folded.find((item) => item.id === message.id);
       const yes = voteMsg?.reactions?.['✅']?.length ?? 0;
+      const needed = voteMsg?.voteKick?.neededVotes ?? parsed.neededVotes;
       if (yes < needed) continue;
       executedKickVotesRef.current.add(message.id);
       if (!sessionRef.current) continue;
@@ -2141,6 +2254,8 @@ export function Workspace() {
               <ChatComposer
                 draft={draft}
                 memberNames={memberNames}
+                votekickMembers={votekickMembers}
+                selfPeerId={peerId}
                 onDraftChange={setDraft}
                 onKeyDown={onComposerKeyDown}
                 onSend={sendMessage}
@@ -2164,6 +2279,8 @@ export function Workspace() {
           <ChatComposer
             draft={draft}
             memberNames={memberNames}
+            votekickMembers={votekickMembers}
+            selfPeerId={peerId}
             onDraftChange={setDraft}
             onKeyDown={onComposerKeyDown}
             onSend={sendMessage}
@@ -2193,7 +2310,7 @@ export function Workspace() {
         />
       )}
       <div className="mb-7"><div className="flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Комната</span><span className="h-2 w-2 rounded-full bg-[hsl(var(--primary))]" /></div><div className="mt-4 flex items-center gap-2"><div className="grid h-8 w-8 place-items-center rounded-lg text-xs font-extrabold" style={avatarColors(server.name)}>{avatarInitials(server.name)}</div><div><div className="text-xs font-bold">{server.name}</div><div className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">координатор: {server.hostName}</div></div></div></div>
-      <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.length === 0 ? <p className="text-xs text-[hsl(var(--muted-foreground))]">{connectionStatus === 'connected' ? 'Пока только вы' : 'Ждём подключения…'}</p> : visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={avatarColors(member.name)}>{avatarInitials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="min-w-0 truncate text-xs font-semibold"><PatriotName name={member.name} seed={member.id} /></span>{member.name === server.hostName && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">координатор</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
+      <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.length === 0 ? <p className="text-xs text-[hsl(var(--muted-foreground))]">{connectionStatus === 'connected' ? 'Пока только вы' : 'Ждём подключения…'}</p> : visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={avatarColors(member.id)}>{avatarInitials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="min-w-0 truncate text-xs font-semibold"><ChatName name={member.name} seed={member.id} /></span>{member.name === server.hostName && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">координатор</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
       {sideAlerts.length > 0 && (
         <div className="mt-auto space-y-2 pb-2" data-testid="side-alerts">
           {sideAlerts.map((alert) => (
