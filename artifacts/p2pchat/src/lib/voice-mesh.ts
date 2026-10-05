@@ -43,6 +43,14 @@ type VoiceSignal =
 
 export type VoicePeerStatus = "connecting" | "connected" | "failed" | "closed";
 
+export type VoiceQualitySnapshot = {
+  rttMs: number | null;
+  level: "ok" | "fair" | "bad";
+  path: "host" | "srflx" | "relay" | "unknown";
+  peerCount: number;
+  hasAudio: boolean;
+};
+
 export type MicProcessing = {
   echoCancellation: boolean;
   noiseSuppression: boolean;
@@ -199,6 +207,50 @@ export class VoiceMesh {
       })),
     });
     return report;
+  }
+
+  /** Lightweight RTT / path snapshot for the in-call quality chip. */
+  async collectQualitySnapshot(): Promise<VoiceQualitySnapshot | null> {
+    if (this.peers.size === 0) return null;
+    const peers = await Promise.all(
+      [...this.peers.entries()].map(([peerId, runtime]) => this.snapshotRuntime(peerId, runtime)),
+    );
+    const connected = peers.filter((peer) => peer.connectionState === "connected");
+    const pool = connected.length > 0 ? connected : peers;
+    let bestMs: number | null = null;
+    let path: VoiceQualitySnapshot["path"] = "unknown";
+    let anyAudio = false;
+    for (const peer of pool) {
+      const rtt = peer.selected?.currentRoundTripTime;
+      if (typeof rtt === "number" && Number.isFinite(rtt)) {
+        const ms = Math.round(rtt * 1000);
+        if (bestMs === null || ms < bestMs) bestMs = ms;
+      }
+      const localType = peer.selected?.localType;
+      if (localType === "relay" || peer.sawLocalRelay) path = "relay";
+      else if (localType === "srflx") path = path === "relay" ? "relay" : "srflx";
+      else if (localType === "host") path = path === "unknown" || path === "host" ? "host" : path;
+      if ((peer.audio?.inboundBytes ?? 0) > 0 || (peer.audio?.outboundBytes ?? 0) > 0 || peer.audio?.hasRemoteAudioTrack) {
+        anyAudio = true;
+      }
+    }
+    const level: VoiceQualitySnapshot["level"] =
+      bestMs == null
+        ? pool.some((peer) => peer.connectionState === "connected")
+          ? "ok"
+          : "bad"
+        : bestMs <= 80
+          ? "ok"
+          : bestMs <= 180
+            ? "fair"
+            : "bad";
+    return {
+      rttMs: bestMs,
+      level,
+      path,
+      peerCount: this.peers.size,
+      hasAudio: anyAudio,
+    };
   }
 
   private async snapshotRuntime(peerId: string, runtime: PeerRuntime) {

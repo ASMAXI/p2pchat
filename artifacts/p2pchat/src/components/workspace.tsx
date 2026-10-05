@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useMemo, type CSSProperties, type FormEven
 import { Link, useLocation } from 'wouter';
 import { Activity, ChevronDown, Copy, Download, Hash, Headphones, LockKeyhole, Menu, Mic, MicOff, Plus, Radio, Send, Settings, Signal, Sparkles, UserPlus, Users, Volume2, VolumeX, X, ImageIcon, Monitor, MonitorOff, Music2, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { PatriotJoinPopup, shouldShowPatriotPopup } from '@/components/patriot-join-popup';
-import { getPeerId, getPublicUrl, isDesktopShell, isLocalhostOrigin, leaveCurrentRoom, openRoomSession, refreshCoordinatorInvite, restartPublicTunnel, setPublicUrl, statusLabel, VoiceMesh, getActiveVoiceMesh, type RoomMember as ApiRoomMember, type VoicePeerStatus } from '@/lib/p2p-client';
+import { getPeerId, getPublicUrl, isDesktopShell, isLocalhostOrigin, leaveCurrentRoom, openRoomSession, refreshCoordinatorInvite, restartPublicTunnel, setPublicUrl, statusLabel, VoiceMesh, getActiveVoiceMesh, type RoomMember as ApiRoomMember, type VoicePeerStatus, type VoiceQualitySnapshot } from '@/lib/p2p-client';
 import type { RoomSession } from '@workspace/p2p-room';
 import type { SessionStatus } from '@workspace/p2p-room';
 import { debugLog } from '@/lib/debug-log';
@@ -16,7 +16,8 @@ import { FUN_SOUNDS, funSoundLabel, isFunSoundId, playFunSound, type FunSoundId 
 import { loadChannelPaneWidth, loadMemberPaneCollapsed, loadMemberPaneWidth, saveMemberPaneCollapsed, saveChannelPaneWidth, saveMemberPaneWidth } from '@/lib/layout-settings';
 import { loadAudioInputId, loadAudioOutputId } from '@/lib/audio-settings';
 import { playUiSound } from '@/lib/ui-sounds';
-import { loadDeafenHotkeyCode, loadMuteHotkeyCode, loadPttKeyCode, loadVoiceOverlayEnabled, loadVoiceOverlayInteractive, loadVoiceOverlayOpacity, loadVoiceTalkMode, hotkeyVkForCode, pttVkForCode, VOICE_OVERLAY_PAYLOAD_KEY, type PttKeyCode, type VoiceOverlayPayload, type VoiceTalkMode } from '@/lib/voice-settings';
+import { labelForHotkeyCode, loadDeafenHotkeyCode, loadMuteHotkeyCode, loadPttKeyCode, loadVoiceOverlayEnabled, loadVoiceOverlayInteractive, loadVoiceOverlayOpacity, loadVoiceTalkMode, hotkeyVkForCode, pttVkForCode, VOICE_OVERLAY_PAYLOAD_KEY, type PttKeyCode, type VoiceOverlayPayload, type VoiceTalkMode } from '@/lib/voice-settings';
+import { dismissOnboardingGuide, loadOnboardingGuide } from '@/lib/onboarding-guide';
 import { type ChannelType, type Server, type Channel, type Message, type StoredVoice, SERVER_KEY, CHANNELS_KEY, MESSAGES_KEY, VOICE_KEY, PROFILE_NAME_KEY, CONNECTION_KEY, uid, readStore, writeStore, mergeChannelUnread, roomStateToClientState, seedServer, seedChannels, seedMessages, seedVoice } from '@/lib/app-shared';
 import { CreatorCredit, AppVersionLabel, Toast, ConnectionStatusChips, PatriotName } from '@/components/app-brand';
 import { SettingsPage } from '@/components/settings-page';
@@ -174,6 +175,10 @@ function ChannelPane({
   onLeaveVoice,
   onPeerContextMenu,
   onChannelResizeMouseDown,
+  voiceTalkMode,
+  pttHeld,
+  pttKeyLabel,
+  voiceQuality,
 }: {
   server: Server;
   channels: Channel[];
@@ -206,6 +211,10 @@ function ChannelPane({
   onLeaveVoice?: () => void;
   onPeerContextMenu?: (event: ReactMouseEvent, peerId: string) => void;
   onChannelResizeMouseDown?: (event: ReactMouseEvent) => void;
+  voiceTalkMode?: VoiceTalkMode;
+  pttHeld?: boolean;
+  pttKeyLabel?: string;
+  voiceQuality?: VoiceQualitySnapshot | null;
 }) {
   const textChannels = channels.filter((channel) => channel.type === 'text');
   const voiceChannels = channels.filter((channel) => channel.type === 'voice');
@@ -297,6 +306,37 @@ function ChannelPane({
     <div className="channel-footer space-y-1">
       {activeVoiceChannelId && onMute && onDeafen && (
         <div className="mb-2 space-y-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.35)] p-2" data-testid="channel-voice-controls">
+          {voiceQuality && (
+            <div
+              className="flex items-center gap-2 rounded-md bg-[hsl(var(--background)/.55)] px-2 py-1.5 font-mono text-[11px]"
+              data-testid="voice-quality-chip"
+              title={voiceQuality.path === 'relay' ? 'Через TURN' : voiceQuality.path === 'srflx' ? 'Через интернет (STUN)' : voiceQuality.path === 'host' ? 'Прямой / LAN' : 'Путь ещё считается'}
+            >
+              <span aria-hidden>
+                {voiceQuality.level === 'ok' ? '🟢' : voiceQuality.level === 'fair' ? '🟡' : '🔴'}
+              </span>
+              <span className="font-semibold text-[hsl(var(--foreground))]">
+                {voiceQuality.rttMs != null ? `${voiceQuality.rttMs} ms` : '… ms'}
+              </span>
+              <span className="ml-auto text-[10px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+                {voiceQuality.path === 'relay' ? 'TURN' : voiceQuality.path === 'srflx' ? 'STUN' : voiceQuality.path === 'host' ? 'P2P' : 'ICE'}
+              </span>
+            </div>
+          )}
+          {voiceTalkMode === 'ptt' && (
+            <div
+              className={`rounded-md px-2 py-1.5 text-[11px] font-semibold transition ${
+                pttHeld
+                  ? 'bg-[hsl(var(--primary)/.22)] text-[hsl(var(--foreground))]'
+                  : 'bg-[hsl(var(--background)/.45)] text-[hsl(var(--muted-foreground))]'
+              }`}
+              data-testid="ptt-indicator"
+            >
+              {pttHeld
+                ? `Говорите · ${pttKeyLabel || 'PTT'}`
+                : `Зажмите ${pttKeyLabel || 'клавишу'}, чтобы говорить`}
+            </div>
+          )}
           <div className="flex flex-wrap gap-1">
             <button className={`icon-btn ${muted ? 'bg-[hsl(var(--accent)/.18)] text-[hsl(var(--accent))]' : ''}`} onClick={onMute} aria-label={muted ? 'Включить микрофон' : 'Выключить микрофон'} data-testid="button-toggle-mute">{muted ? <MicOff size={15} /> : <Mic size={15} />}</button>
             <button className={`icon-btn ${deafened ? 'bg-[hsl(var(--accent)/.18)] text-[hsl(var(--accent))]' : ''}`} onClick={onDeafen} aria-label={deafened ? 'Включить звук' : 'Отключить звук'} data-testid="button-toggle-deafen">{deafened ? <VolumeX size={15} /> : <Headphones size={15} />}</button>
@@ -721,6 +761,8 @@ export function Workspace() {
   const [deafenHotkeyCode, setDeafenHotkeyCode] = useState<PttKeyCode>(() => loadDeafenHotkeyCode());
   const [pttHeld, setPttHeld] = useState(false);
   const pttHeldRef = useRef(false);
+  const [voiceQuality, setVoiceQuality] = useState<VoiceQualitySnapshot | null>(null);
+  const [showSetupGuide, setShowSetupGuide] = useState(() => Boolean(loadOnboardingGuide(readStore<Server>(SERVER_KEY, seedServer).roomId)));
   const voiceTalkModeRef = useRef(voiceTalkMode);
   const pttKeyCodeRef = useRef(pttKeyCode);
   const muteHotkeyCodeRef = useRef(muteHotkeyCode);
@@ -975,6 +1017,35 @@ export function Workspace() {
     }, 4000);
     return () => window.clearInterval(timer);
   }, [activeVoice, voiceOverlayEnabled]);
+
+  useEffect(() => {
+    if (!activeVoice) {
+      setVoiceQuality(null);
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      const mesh = voiceMeshRef.current ?? getActiveVoiceMesh();
+      if (!mesh) {
+        if (!cancelled) setVoiceQuality(null);
+        return;
+      }
+      try {
+        const snap = await mesh.collectQualitySnapshot();
+        if (!cancelled) setVoiceQuality(snap);
+      } catch {
+        if (!cancelled) setVoiceQuality(null);
+      }
+    };
+    void tick();
+    const timer = window.setInterval(() => {
+      void tick();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeVoice, voicePeerStatus]);
 
   useEffect(() => {
     if (!activeVoice) {
@@ -1502,6 +1573,7 @@ export function Workspace() {
     stickyVoiceNamesRef.current.clear();
     setVoiceHint('');
     setVoicePeerStatus(null);
+    setVoiceQuality(null);
     setVoicePeers([]);
     setSpeakingPeers({});
     setPeerVoiceStates({});
@@ -1645,6 +1717,10 @@ export function Workspace() {
       onLeaveVoice={activeVoice ? leaveVoice : undefined}
       onPeerContextMenu={openPeerVolumeMenu}
       onChannelResizeMouseDown={(event) => { event.preventDefault(); layoutDragRef.current = 'channel'; }}
+      voiceTalkMode={voiceTalkMode}
+      pttHeld={pttHeld}
+      pttKeyLabel={labelForHotkeyCode(pttKeyCode)}
+      voiceQuality={activeVoice ? voiceQuality : null}
     />
     <main className="content-pane">
       <header className="topbar">
@@ -1670,6 +1746,50 @@ export function Workspace() {
           <button className="icon-btn" onClick={() => setOverlay('diagnostics')} aria-label="Открыть диагностику" data-testid="button-open-diagnostics"><Activity size={17} /></button>
         </div>
       </header>
+      {showSetupGuide && (
+        <div className="mx-4 mt-3 rounded-xl border border-[hsl(var(--primary)/.4)] bg-[hsl(var(--primary)/.1)] px-4 py-3 text-sm" data-testid="banner-setup-guide">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="font-semibold">Сервер создан — три шага</div>
+              <ol className="mt-2 list-decimal space-y-1 pl-4 text-xs leading-5 text-[hsl(var(--muted-foreground))]">
+                <li className={getPublicUrl() ? 'text-[hsl(var(--foreground))]' : ''}>
+                  Туннель {getPublicUrl() ? 'готов ✓' : 'поднимается…'}
+                </li>
+                <li>Нажмите «Пригласить» и отправьте ссылку другу</li>
+                <li>Оба зайдите в голосовой канал — чат уже работает без голоса</li>
+              </ol>
+            </div>
+            <button
+              type="button"
+              className="icon-btn shrink-0"
+              aria-label="Скрыть подсказку"
+              onClick={() => {
+                dismissOnboardingGuide();
+                setShowSetupGuide(false);
+              }}
+              data-testid="button-dismiss-setup-guide"
+            >
+              <X size={16} />
+            </button>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button type="button" className="primary-btn !py-2 text-xs" onClick={() => setShowInviteDialog(true)} data-testid="button-guide-invite">
+              Пригласить друзей
+            </button>
+            <button
+              type="button"
+              className="ghost-btn !py-2 text-xs"
+              onClick={() => {
+                dismissOnboardingGuide();
+                setShowSetupGuide(false);
+              }}
+              data-testid="button-guide-dismiss"
+            >
+              Понятно
+            </button>
+          </div>
+        </div>
+      )}
       {needsPublicUrlBanner && (
         <div className="mx-4 mt-3 rounded-xl border border-[hsl(var(--accent)/.45)] bg-[hsl(var(--accent)/.12)] px-4 py-3 text-sm" data-testid="banner-public-url">
           <div className="font-semibold">Авто-туннель не поднялся</div>
@@ -1724,6 +1844,21 @@ export function Workspace() {
                   <h2 className="font-display text-2xl font-bold tracking-[-.06em] sm:text-xl">{selectedVoice.name}</h2>
                   {activeVoice === selectedVoice.id && voiceStatusLabel && (
                     <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]" data-testid="text-voice-status">{voiceStatusLabel}</p>
+                  )}
+                  {activeVoice === selectedVoice.id && voiceQuality && (
+                    <p className="mt-1 font-mono text-[11px]" data-testid="text-voice-quality">
+                      <span aria-hidden>{voiceQuality.level === 'ok' ? '🟢' : voiceQuality.level === 'fair' ? '🟡' : '🔴'}</span>
+                      {' '}
+                      {voiceQuality.rttMs != null ? `${voiceQuality.rttMs} ms` : 'измеряем…'}
+                      <span className="ml-2 text-[hsl(var(--muted-foreground))]">
+                        {voiceQuality.path === 'relay' ? 'через TURN' : voiceQuality.path === 'srflx' ? 'STUN' : voiceQuality.path === 'host' ? 'прямой P2P' : ''}
+                      </span>
+                    </p>
+                  )}
+                  {activeVoice === selectedVoice.id && voiceTalkMode === 'ptt' && (
+                    <p className={`mt-1 text-xs font-semibold ${pttHeld ? 'text-[hsl(var(--primary))]' : 'text-[hsl(var(--muted-foreground))]'}`} data-testid="text-ptt-hint">
+                      {pttHeld ? `Говорите · ${labelForHotkeyCode(pttKeyCode)}` : `PTT: зажмите ${labelForHotkeyCode(pttKeyCode)}`}
+                    </p>
                   )}
                   {activeVoice !== selectedVoice.id && (
                     <p className="mt-2 max-w-sm text-sm leading-6 text-[hsl(var(--muted-foreground))]">Нажмите «войти», чтобы разрешить микрофон и подключиться по WebRTC.</p>

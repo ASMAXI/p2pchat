@@ -10,6 +10,7 @@ import { HOTKEY_NONE, isHotkeyCodeSupported, labelForHotkeyCode, loadDeafenHotke
 import { TUNNEL_PROVIDER_OPTIONS, loadNgrokAuthToken, loadTunnelProvider, loadZrokToken, saveNgrokAuthToken, saveTunnelProvider, saveZrokToken, type TunnelProviderId } from '@/lib/tunnel-settings';
 import { SERVER_KEY, readStore, writeStore, seedServer } from '@/lib/app-shared';
 import { BrandName } from '@/components/app-brand';
+import { NetworkHealthPanel } from '@/components/network-health-panel';
 
 function HotkeyBindControl({
   label,
@@ -726,8 +727,9 @@ export function SettingsPage({ onClose }: { onClose?: () => void }) {
             </div>
           </SettingsSection>
 
-          <SettingsSection id="network" title="Сеть и туннель" hint="Cloudflare / ngrok / localhost.run" open={openSection === 'network'} onToggle={toggleSection} testId="settings-section-network">
-            <p className="text-xs text-[hsl(var(--muted-foreground))]">
+          <SettingsSection id="network" title="Сеть" hint="Network Health · туннель" open={openSection === 'network'} onToggle={toggleSection} testId="settings-section-network">
+            <NetworkHealthPanel />
+            <p className="mt-4 text-xs text-[hsl(var(--muted-foreground))]">
               Чат и signaling — через туннель. Голос — отдельно (TURN/Metered).
             </p>
             <div className="mt-3 flex flex-col gap-2">

@@ -40,6 +40,7 @@ export {
   getActiveVoiceMesh,
   type VoiceMeshOptions,
   type VoicePeerStatus,
+  type VoiceQualitySnapshot,
   type MicProcessing,
 } from "@/lib/voice-mesh";
 export {

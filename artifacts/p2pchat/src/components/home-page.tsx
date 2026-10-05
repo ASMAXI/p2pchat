@@ -5,6 +5,7 @@ import { activateSavedServer, createLocalRoom, getBootstrapOrigin, getPeerId, is
 import { isValidDisplayName, normalizeDisplayName, PENDING_INVITE_EVENT, takePendingInvite } from '@/lib/invite-deep-link';
 import { avatarColors, avatarInitials } from '@/lib/avatar';
 import { type Server, SERVER_KEY, CHANNELS_KEY, MESSAGES_KEY, VOICE_KEY, PROFILE_NAME_KEY, readStore, writeStore, roomStateToClientState } from '@/lib/app-shared';
+import { markServerCreatedGuide } from '@/lib/onboarding-guide';
 import { LogoMark, CreatorCredit, AppVersionLabel, Toast } from '@/components/app-brand';
 import { SettingsPage } from '@/components/settings-page';
 
@@ -80,6 +81,7 @@ export function Home() {
       writeStore(MESSAGES_KEY, []);
       writeStore(VOICE_KEY, clientState.voiceRooms);
       setSavedServers(loadSavedServers());
+      markServerCreatedGuide(created.meta.roomId);
       setLocation('/server');
     } catch (error) {
       setToast(error instanceof Error ? error.message : 'Не удалось создать комнату');
