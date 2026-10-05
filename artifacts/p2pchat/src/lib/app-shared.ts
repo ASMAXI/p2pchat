@@ -9,6 +9,8 @@ export type Server = {
   role: string;
   connectivityState: ConnectivityState;
   hostName: string;
+  /** Current coordinator peer id — use for badges, not hostName (nicks can collide). */
+  hostId?: string;
   roomId?: string;
   inviteToken?: string;
   invite?: string;
@@ -80,6 +82,7 @@ export const roomStateToClientState = (state: ApiRoomState, peerId: string, invi
     role: state.ownerId === peerId ? 'Владелец' : 'Участник',
     connectivityState: 'connected',
     hostName: state.hostName,
+    hostId: state.hostId,
     peerId,
     invite,
   };

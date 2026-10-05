@@ -143,6 +143,10 @@ export class VoiceMesh {
   private muted = false;
   private deafened = false;
   private peers = new Map<string, PeerRuntime>();
+  /** Coalesce concurrent addPeer(same id) while warmIceServers/start is in flight. */
+  private peerSetup = new Map<string, Promise<void>>();
+  /** Serialize SDP/ICE handling per remote peer (avoid parallel setRemoteDescription). */
+  private signalQueues = new Map<string, Promise<void>>();
   /** Same PC as voice: screen is an extra video track + renegotiation (not a second mesh). */
   private screenStream: MediaStream | null = null;
   private screenSharing = false;
@@ -700,10 +704,48 @@ export class VoiceMesh {
 
   async addPeer(peerId: string, initiator: boolean): Promise<void> {
     if (peerId === this.selfId) return;
+    const inflight = this.peerSetup.get(peerId);
+    if (inflight) {
+      await inflight;
+      const existing = this.peers.get(peerId);
+      if (existing) {
+        const state = existing.connection.connectionState;
+        if (state === "connected" || state === "connecting" || state === "new") {
+          // Setup already owns this PC — don't recreate mid-offer.
+          if (initiator && existing.connection.signalingState === "stable" && !existing.makingOffer) {
+            const hasLocalOffer =
+              existing.connection.localDescription?.type === "offer" ||
+              existing.connection.signalingState === "have-local-offer";
+            if (!hasLocalOffer && !existing.remoteReady) {
+              try {
+                existing.makingOffer = true;
+                const offer = await existing.connection.createOffer();
+                await existing.connection.setLocalDescription(offer);
+                this.emitSignal(peerId, { kind: "offer", description: offer });
+              } finally {
+                existing.makingOffer = false;
+              }
+            }
+          }
+          return;
+        }
+      }
+    }
+    const run = this.addPeerInner(peerId, initiator);
+    this.peerSetup.set(peerId, run);
+    try {
+      await run;
+    } finally {
+      if (this.peerSetup.get(peerId) === run) this.peerSetup.delete(peerId);
+    }
+  }
+
+  private async addPeerInner(peerId: string, initiator: boolean): Promise<void> {
     const existing = this.peers.get(peerId);
     if (existing) {
       const state = existing.connection.connectionState;
-      if (state === "connected" || state === "connecting") return;
+      // "new" is normal right after create — recreating orphans the first offer.
+      if (state === "connected" || state === "connecting" || state === "new") return;
       debugLog(
         "voice",
         "recreate stale peer",
@@ -714,6 +756,12 @@ export class VoiceMesh {
     }
     if (!this.outboundStream) await this.start();
     const iceServers = await warmIceServers();
+    // Another addPeer may have won while we awaited ICE.
+    const raced = this.peers.get(peerId);
+    if (raced) {
+      const state = raced.connection.connectionState;
+      if (state === "connected" || state === "connecting" || state === "new") return;
+    }
     const iceSummary = summarizeIceServers(iceServers.length > 0 ? iceServers : buildIceServers());
     rememberIceServerSummary(iceSummary);
     debugLog("voice", "addPeer", {
@@ -941,6 +989,19 @@ export class VoiceMesh {
   }
 
   async handleSignal(fromPeerId: string, data: unknown): Promise<void> {
+    const prev = this.signalQueues.get(fromPeerId) ?? Promise.resolve();
+    const next = prev
+      .catch(() => undefined)
+      .then(() => this.handleSignalInner(fromPeerId, data));
+    this.signalQueues.set(fromPeerId, next);
+    try {
+      await next;
+    } finally {
+      if (this.signalQueues.get(fromPeerId) === next) this.signalQueues.delete(fromPeerId);
+    }
+  }
+
+  private async handleSignalInner(fromPeerId: string, data: unknown): Promise<void> {
     const signal = data as Partial<VoiceSignal> & { kind?: string };
     if (!signal.kind) return;
     if (signal.kind === "voice-state") {

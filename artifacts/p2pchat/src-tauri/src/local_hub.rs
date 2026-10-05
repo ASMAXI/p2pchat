@@ -47,7 +47,7 @@ const MAX_TEXT_CHANNELS: usize = 5;
 const MAX_VOICE_CHANNELS: usize = 5;
 const RATE_WINDOW_MS: i64 = 5_000;
 const RATE_MAX_MESSAGES: usize = 12;
-const RATE_MAX_SIGNALS: usize = 80;
+const RATE_MAX_SIGNALS: usize = 400;
 const JOIN_CLOCK_SKEW_MS: i64 = 10 * 60 * 1_000;
 pub const PREFERRED_PORT: u16 = 47_821;
 
@@ -998,10 +998,14 @@ fn relay_signal(hub: &mut Hub, room_id: &str, peer_id: &str, command: &Value) ->
     if let Err(message) = validate_voice_signal(&data) {
         return Err(HubError::new("INVALID", message));
     }
+    let kind = data.get("kind").and_then(Value::as_str).unwrap_or("");
+    // Never rate-limit SDP — dropping offer/answer leaves half the mesh deaf.
+    // ICE / voice-state still share the burst budget.
+    let counts_toward_limit = !matches!(kind, "offer" | "answer");
     let Some(room) = hub.rooms.get_mut(room_id) else {
         return Ok(());
     };
-    {
+    if counts_toward_limit {
         let Some(client) = room.clients.get_mut(peer_id) else {
             return Ok(());
         };
@@ -1014,6 +1018,8 @@ fn relay_signal(hub: &mut Hub, room_id: &str, peer_id: &str, command: &Value) ->
             ));
         }
         client.signal_sent_at.push(now);
+    } else if room.clients.get(peer_id).is_none() {
+        return Ok(());
     }
     let target = command.get("toPeerId").and_then(Value::as_str).unwrap_or("");
     if let Some(target_client) = room.clients.get(target) {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import { Link, useLocation } from 'wouter';
-import { Activity, ChevronDown, Copy, Download, Hash, Headphones, LockKeyhole, Menu, Mic, MicOff, Plus, Radio, Send, Settings, Signal, Sparkles, UserPlus, Users, Volume2, VolumeX, X, ImageIcon, Monitor, MonitorOff, Music2, PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { Activity, AlarmClock, ChevronDown, Copy, Download, Hash, Headphones, LockKeyhole, Menu, Mic, MicOff, Plus, Radio, Send, Settings, Signal, Sparkles, UserPlus, Users, Volume2, VolumeX, X, ImageIcon, Monitor, MonitorOff, Music2, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { PatriotJoinPopup, shouldShowPatriotPopup } from '@/components/patriot-join-popup';
 import { getPeerId, getPublicUrl, isDesktopShell, isLocalhostOrigin, leaveCurrentRoom, openRoomSession, refreshCoordinatorInvite, restartPublicTunnel, setPublicUrl, statusLabel, VoiceMesh, getActiveVoiceMesh, type RoomMember as ApiRoomMember, type VoicePeerStatus, type VoiceQualitySnapshot } from '@/lib/p2p-client';
 import type { RoomSession } from '@workspace/p2p-room';
@@ -12,7 +12,8 @@ import { notifyDesktop } from '@/lib/desktop-notify';
 import { cacheRoomMessages, loadCachedRoomMessages, mergeMessagesWithCache } from '@/lib/message-cache';
 import { useAppTheme } from '@/lib/theme';
 import { refreshPatriotRankSalt } from '@/lib/patriot-ranks';
-import { FUN_SOUNDS, funSoundLabel, isFunSoundId, playFunSound, type FunSoundId } from '@/lib/fun-sounds';
+import { AGENT_ALARM_SOUND, FUN_SOUNDS, funSoundEmoji, funSoundLabel, isFunSoundId, playFunSound, type FunSoundId } from '@/lib/fun-sounds';
+import { agentAlarmCooldownMs, canSendAgentAlarm, formatAlarmCooldown, markAgentAlarmSent } from '@/lib/agent-alarm-cooldown';
 import { loadChannelPaneWidth, loadMemberPaneCollapsed, loadMemberPaneWidth, saveMemberPaneCollapsed, saveChannelPaneWidth, saveMemberPaneWidth } from '@/lib/layout-settings';
 import { loadAudioInputId, loadAudioOutputId } from '@/lib/audio-settings';
 import { playUiSound } from '@/lib/ui-sounds';
@@ -575,7 +576,7 @@ function MessageList({
                 </a>
               ) : message.sfxId ? (
                 <div className="mt-1 inline-flex items-center gap-2 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card)/.92)] px-3 py-1.5 text-xs font-semibold" data-testid={`message-sfx-${message.id}`}>
-                  <span>{FUN_SOUNDS.find((s) => s.id === message.sfxId)?.emoji ?? '🔊'}</span>
+                  <span>{isFunSoundId(message.sfxId) ? funSoundEmoji(message.sfxId) : '🔊'}</span>
                   <span>{isFunSoundId(message.sfxId) ? funSoundLabel(message.sfxId) : message.sfxId}</span>
                 </div>
               ) : message.voteKick ? (
@@ -657,6 +658,8 @@ function ChatComposer({
   fileInputTestId,
   attachTestId,
   onPlayFunSound,
+  onAgentAlarm,
+  agentAlarmCooldownSec,
 }: {
   draft: string;
   memberNames: string[];
@@ -675,6 +678,8 @@ function ChatComposer({
   fileInputTestId: string;
   attachTestId: string;
   onPlayFunSound?: (id: FunSoundId) => void;
+  onAgentAlarm?: () => void;
+  agentAlarmCooldownSec?: number;
 }) {
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [slashDismissed, setSlashDismissed] = useState(false);
@@ -851,6 +856,19 @@ function ChatComposer({
         )}
         <textarea value={draft} onChange={(event) => onDraftChange(event.target.value)} onKeyDown={handleKeyDown} placeholder={placeholder} aria-label="Новое сообщение" data-testid="input-message" rows={1} />
         <button className="primary-btn !h-9 !w-9 !p-0" onClick={onSend} aria-label="Отправить сообщение" data-testid="button-send-message"><Send size={15} /></button>
+        {onAgentAlarm && (
+          <button
+            type="button"
+            className={`icon-btn shrink-0 !h-9 !w-9 ${agentAlarmCooldownSec ? 'opacity-45' : 'text-[hsl(var(--accent))]'}`}
+            onClick={onAgentAlarm}
+            disabled={Boolean(agentAlarmCooldownSec)}
+            aria-label={agentAlarmCooldownSec ? `Будильник через ${agentAlarmCooldownSec} сек` : 'Будильник в чат'}
+            title={agentAlarmCooldownSec ? `Можно снова через ${formatAlarmCooldown(agentAlarmCooldownSec * 1000)}` : 'Будильник для всех (раз в 5 мин)'}
+            data-testid="button-agent-alarm"
+          >
+            <AlarmClock size={17} />
+          </button>
+        )}
       </div>
       <div className="mt-2 flex items-center gap-1.5 px-1 font-mono text-[9px] uppercase tracking-wider text-[hsl(var(--muted-foreground))]"><LockKeyhole size={10} /> {footerHint} <span className="ml-auto">enter — отправить</span></div>
     </div>
@@ -869,6 +887,7 @@ export function Workspace() {
   const [showInviteDialog, setShowInviteDialog] = useState(false);
   const [overlay, setOverlay] = useState<null | 'diagnostics' | 'settings'>(null);
   const [toast, setToast] = useState('');
+  const [agentAlarmCooldownSec, setAgentAlarmCooldownSec] = useState(0);
   const [activeVoice, setActiveVoice] = useState<string | null>(null);
   const [joiningVoice, setJoiningVoice] = useState(false);
   const joiningVoiceRef = useRef(false);
@@ -1337,25 +1356,29 @@ export function Workspace() {
           }));
           setChannels((prev) => mergeChannelUnread(prev, next.channels as Channel[]));
           const nextMembers = view.state.members;
-          const mergedVoiceRooms = next.voiceRooms.map((room) => {
-            if (room.id !== voiceChannelRef.current) return room;
-            const byId = new Map(room.participants.map((person) => [person.id, person]));
-            if (peerId) byId.set(peerId, { id: peerId, name: displayName });
-            for (const [id, name] of stickyVoiceNamesRef.current) {
-              if (!byId.has(id)) byId.set(id, { id, name });
-            }
-            const mesh = voiceMeshRef.current;
-            if (mesh) {
-              for (const id of mesh.listLivePeerIds()) {
-                if (id === peerId || byId.has(id)) continue;
-                byId.set(id, {
-                  id,
-                  name:
-                    stickyVoiceNamesRef.current.get(id) ??
-                    nextMembers.find((member) => member.id === id)?.name ??
-                    id.slice(0, 8),
-                });
+          const activeVoiceId = voiceChannelRef.current;
+          const serverVoiceByChannel = view.state.voiceParticipants ?? {};
+          // Prune WebRTC mesh to peers that actually share our current channel.
+          // Keeping old mesh peers after a channel hop made the UI look like
+          // everyone moved with you.
+          if (activeVoiceId && voiceMeshRef.current) {
+            const allowed = new Set((serverVoiceByChannel[activeVoiceId] ?? []).map((peer) => peer.id));
+            for (const id of voiceMeshRef.current.listLivePeerIds()) {
+              if (id === peerId) continue;
+              if (!allowed.has(id)) {
+                stickyVoiceNamesRef.current.delete(id);
+                voiceMeshRef.current.removePeer(id);
               }
+            }
+          }
+          const mergedVoiceRooms = next.voiceRooms.map((room) => {
+            const serverParticipants = serverVoiceByChannel[room.id] ?? room.participants;
+            const byId = new Map(serverParticipants.map((person) => [person.id, { id: person.id, name: person.name }]));
+            // Only inject self into the channel we are actually in (presence can lag).
+            if (peerId && room.id === activeVoiceId) {
+              byId.set(peerId, { id: peerId, name: displayName });
+            } else if (peerId) {
+              byId.delete(peerId);
             }
             const participants = [...byId.values()];
             return {
@@ -1367,21 +1390,14 @@ export function Workspace() {
           });
           setVoiceRooms((prev) => {
             const byId = new Map(mergedVoiceRooms.map((room) => [room.id, room]));
-            const activeId = voiceChannelRef.current;
-            if (activeId && !byId.has(activeId)) {
-              const sticky = prev.find((room) => room.id === activeId);
+            if (activeVoiceId && !byId.has(activeVoiceId)) {
+              const sticky = prev.find((room) => room.id === activeVoiceId);
               if (sticky) {
-                const byPeer = new Map(sticky.participants.map((person) => [person.id, person]));
-                if (peerId) byPeer.set(peerId, { id: peerId, name: displayName });
-                for (const [id, name] of stickyVoiceNamesRef.current) {
-                  if (!byPeer.has(id)) byPeer.set(id, { id, name });
-                }
-                const participants = [...byPeer.values()];
-                byId.set(activeId, {
+                byId.set(activeVoiceId, {
                   ...sticky,
-                  participants,
-                  participantCount: participants.length,
-                  state: participants.length > 0 ? ('live' as const) : ('ready' as const),
+                  participants: peerId ? [{ id: peerId, name: displayName }] : [],
+                  participantCount: peerId ? 1 : 0,
+                  state: peerId ? ('live' as const) : ('ready' as const),
                 });
               }
             }
@@ -1402,26 +1418,14 @@ export function Workspace() {
             knownMemberIdsRef.current = new Set(nextMembers.map((member) => member.id));
           }
           setMembers(nextMembers);
-          if (voiceChannelRef.current) {
-            const fromState = view.state.voiceParticipants[voiceChannelRef.current] ?? [];
-            for (const peer of fromState) stickyVoiceNamesRef.current.set(peer.id, peer.name);
-            const mesh = voiceMeshRef.current;
-            if (!mesh) {
-              setVoicePeers(fromState);
-            } else {
-              const ids = new Set(fromState.map((peer) => peer.id));
-              const extras = mesh
-                .listLivePeerIds()
-                .filter((id) => id !== peerId && !ids.has(id))
-                .map((id) => ({
-                  id,
-                  name:
-                    stickyVoiceNamesRef.current.get(id) ??
-                    nextMembers.find((member) => member.id === id)?.name ??
-                    id.slice(0, 8),
-                }));
-              setVoicePeers([...fromState, ...extras]);
-            }
+          if (activeVoiceId) {
+            const fromState = serverVoiceByChannel[activeVoiceId] ?? [];
+            stickyVoiceNamesRef.current = new Map(fromState.map((peer) => [peer.id, peer.name]));
+            if (peerId) stickyVoiceNamesRef.current.set(peerId, displayName);
+            setVoicePeers(fromState.filter((peer) => peer.id !== peerId));
+          } else {
+            stickyVoiceNamesRef.current.clear();
+            setVoicePeers([]);
           }
         }
         const liveMessages: Message[] = view.messages.map((message) => ({
@@ -1528,8 +1532,8 @@ export function Workspace() {
         if (!closed) setToast(message);
       },
       onVoice: (event) => {
-        if (event.channelId !== voiceChannelRef.current) return;
         if (event.joined) {
+          if (event.channelId !== voiceChannelRef.current) return;
           stickyVoiceNamesRef.current.set(event.peerId, event.displayName);
           if (event.peerId !== peerId && !deafenedRef.current) {
             playUiSound('voice-join');
@@ -1539,16 +1543,60 @@ export function Workspace() {
           void voiceMeshRef.current?.addPeer(event.peerId, peerId < event.peerId).catch((error) => {
             setToast(error instanceof Error ? error.message : 'Не удалось подключить голосовой канал');
           });
+          setVoicePeers((current) => {
+            if (event.peerId === peerId || current.some((peer) => peer.id === event.peerId)) return current;
+            return [...current, { id: event.peerId, name: event.displayName }];
+          });
+          setVoiceRooms((current) =>
+            current.map((item) => {
+              if (item.id !== event.channelId) {
+                if (!item.participants.some((person) => person.id === event.peerId)) return item;
+                const participants = item.participants.filter((person) => person.id !== event.peerId);
+                return {
+                  ...item,
+                  participants,
+                  participantCount: participants.length,
+                  state: participants.length > 0 ? ('live' as const) : ('ready' as const),
+                };
+              }
+              if (item.participants.some((person) => person.id === event.peerId)) return item;
+              const participants = [...item.participants, { id: event.peerId, name: event.displayName }];
+              return {
+                ...item,
+                participants,
+                participantCount: participants.length,
+                state: 'live' as const,
+              };
+            }),
+          );
         } else {
           stickyVoiceNamesRef.current.delete(event.peerId);
-          // Intentional voice_leave: tear down mesh. WS-only drops don't emit this —
-          // presence clears voiceParticipants while WebRTC may still be live (kept via merge).
-          if (event.peerId !== peerId && !deafenedRef.current) {
-            playUiSound('voice-leave');
-            void notifyDesktop('voice-leave', event.displayName, 'Вышел из голосового канала');
-          }
-          if (event.peerId !== peerId) triggerPatriotPopup();
+          // Always drop mesh on leave — even if we already hopped channels,
+          // otherwise ghost peers linger and get painted into the new channel.
           voiceMeshRef.current?.removePeer(event.peerId);
+          setVoicePeers((current) => current.filter((peer) => peer.id !== event.peerId));
+          setVoiceRooms((current) =>
+            current.map((item) => {
+              if (item.id !== event.channelId && !item.participants.some((person) => person.id === event.peerId)) {
+                return item;
+              }
+              if (!item.participants.some((person) => person.id === event.peerId)) return item;
+              const participants = item.participants.filter((person) => person.id !== event.peerId);
+              return {
+                ...item,
+                participants,
+                participantCount: participants.length,
+                state: participants.length > 0 ? ('live' as const) : ('ready' as const),
+              };
+            }),
+          );
+          if (event.channelId === voiceChannelRef.current && event.peerId !== peerId) {
+            if (!deafenedRef.current) {
+              playUiSound('voice-leave');
+              void notifyDesktop('voice-leave', event.displayName, 'Вышел из голосового канала');
+            }
+            triggerPatriotPopup();
+          }
         }
       },
       onSignal: (event) => {
@@ -1583,6 +1631,14 @@ export function Workspace() {
   useEffect(() => {
     if (server.roomId) setHiddenMessageIds(loadHiddenMessageIds(server.roomId));
   }, [server.roomId]);
+
+  useEffect(() => {
+    const roomId = server.roomId ?? '';
+    const tick = () => setAgentAlarmCooldownSec(Math.ceil(agentAlarmCooldownMs(roomId, peerId) / 1000));
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [server.roomId, peerId]);
 
   useEffect(() => {
     kickHistoryPrimedRef.current = false;
@@ -1653,6 +1709,18 @@ export function Workspace() {
   const sendFunSound = (id: FunSoundId) => {
     playFunSound(id);
     sendChatPayload(encodeSfx(id));
+  };
+  const sendAgentAlarm = () => {
+    const roomId = server.roomId ?? '';
+    const gate = canSendAgentAlarm(roomId, peerId);
+    if (!gate.ok) {
+      setToast(`Будильник снова через ${formatAlarmCooldown(gate.remainingMs)}`);
+      return;
+    }
+    if (!sendChatPayload(encodeSfx(AGENT_ALARM_SOUND))) return;
+    markAgentAlarmSent(roomId, peerId);
+    playFunSound(AGENT_ALARM_SOUND);
+    setAgentAlarmCooldownSec(Math.ceil(agentAlarmCooldownMs(roomId, peerId) / 1000));
   };
   const onChatFilePick = async (file: File | undefined) => {
     if (!file) return;
@@ -1768,7 +1836,25 @@ export function Workspace() {
       try {
         if (activeVoice && activeVoice !== room.id) {
           sessionRef.current?.setVoiceChannel(null);
-          // keep mesh; just switch channel membership after start
+          stickyVoiceNamesRef.current.clear();
+          setVoicePeers([]);
+          setSpeakingPeers({});
+          const mesh = voiceMeshRef.current;
+          if (mesh) {
+            for (const id of mesh.listLivePeerIds()) mesh.removePeer(id);
+          }
+          setVoiceRooms((current) =>
+            current.map((item) => {
+              if (item.id !== activeVoice) return item;
+              const participants = item.participants.filter((person) => person.id !== peerId);
+              return {
+                ...item,
+                participants,
+                participantCount: participants.length,
+                state: participants.length > 0 ? ('live' as const) : ('ready' as const),
+              };
+            }),
+          );
         }
         const mesh = voiceMeshRef.current ?? new VoiceMesh(
           peerId,
@@ -1849,16 +1935,25 @@ export function Workspace() {
     setActiveVoice(room.id);
     setVoiceBannerDismissed(false);
     setVoiceRooms((current) => current.map((item) => {
-      if (item.id !== room.id) return item;
-      const already = item.participants.some((person) => person.id === peerId);
-      const participants = already
-        ? item.participants
-        : [...item.participants, { id: peerId, name: displayName }];
+      if (item.id === room.id) {
+        const already = item.participants.some((person) => person.id === peerId);
+        const participants = already
+          ? item.participants
+          : [...item.participants, { id: peerId, name: displayName }];
+        return {
+          ...item,
+          participantCount: participants.length,
+          state: 'live' as const,
+          participants,
+        };
+      }
+      if (!item.participants.some((person) => person.id === peerId)) return item;
+      const participants = item.participants.filter((person) => person.id !== peerId);
       return {
         ...item,
-        participantCount: participants.length,
-        state: 'live',
         participants,
+        participantCount: participants.length,
+        state: participants.length > 0 ? ('live' as const) : ('ready' as const),
       };
     }));
     playUiSound('voice-enter');
@@ -2269,6 +2364,8 @@ export function Workspace() {
                 fileInputTestId="input-voice-image-file"
                 attachTestId="button-voice-image-attach"
                 onPlayFunSound={sendFunSound}
+                onAgentAlarm={sendAgentAlarm}
+                agentAlarmCooldownSec={agentAlarmCooldownSec}
               />
             </div>
           )}
@@ -2294,6 +2391,8 @@ export function Workspace() {
             fileInputTestId="input-chat-image-file"
             attachTestId="button-add-attachment"
             onPlayFunSound={sendFunSound}
+            onAgentAlarm={sendAgentAlarm}
+            agentAlarmCooldownSec={agentAlarmCooldownSec}
           />
         </div>
       )}
@@ -2310,7 +2409,7 @@ export function Workspace() {
         />
       )}
       <div className="mb-7"><div className="flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Комната</span><span className="h-2 w-2 rounded-full bg-[hsl(var(--primary))]" /></div><div className="mt-4 flex items-center gap-2"><div className="grid h-8 w-8 place-items-center rounded-lg text-xs font-extrabold" style={avatarColors(server.name)}>{avatarInitials(server.name)}</div><div><div className="text-xs font-bold">{server.name}</div><div className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">координатор: {server.hostName}</div></div></div></div>
-      <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.length === 0 ? <p className="text-xs text-[hsl(var(--muted-foreground))]">{connectionStatus === 'connected' ? 'Пока только вы' : 'Ждём подключения…'}</p> : visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={avatarColors(member.id)}>{avatarInitials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="min-w-0 truncate text-xs font-semibold"><ChatName name={member.name} seed={member.id} /></span>{member.name === server.hostName && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">координатор</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
+      <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.length === 0 ? <p className="text-xs text-[hsl(var(--muted-foreground))]">{connectionStatus === 'connected' ? 'Пока только вы' : 'Ждём подключения…'}</p> : visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={avatarColors(member.id)}>{avatarInitials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="min-w-0 truncate text-xs font-semibold"><ChatName name={member.name} seed={member.id} /></span>{member.id === server.hostId && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">координатор</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
       {sideAlerts.length > 0 && (
         <div className="mt-auto space-y-2 pb-2" data-testid="side-alerts">
           {sideAlerts.map((alert) => (

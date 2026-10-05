@@ -27,7 +27,11 @@ export type FunSoundId =
   | "sneeze"
   | "whistle"
   | "boing"
-  | "wow";
+  | "wow"
+  | "agentAlarm";
+
+/** Classic alarm — separate button in chat, not in the soundboard grid. */
+export const AGENT_ALARM_SOUND: FunSoundId = "agentAlarm";
 
 export const FUN_SOUNDS: Array<{ id: FunSoundId; label: string; emoji: string }> = [
   { id: "fart", label: "Пердёж", emoji: "💨" },
@@ -54,18 +58,29 @@ export const FUN_SOUNDS: Array<{ id: FunSoundId; label: string; emoji: string }>
   { id: "wow", label: "Wow", emoji: "😮" },
 ];
 
-const FUN_SOUND_SET = new Set(FUN_SOUNDS.map((item) => item.id));
+const FUN_SOUND_SET = new Set<FunSoundId>([...FUN_SOUNDS.map((item) => item.id), AGENT_ALARM_SOUND]);
 
 export function isFunSoundId(value: string): value is FunSoundId {
   return FUN_SOUND_SET.has(value as FunSoundId);
 }
 
 export function funSoundLabel(id: FunSoundId): string {
+  if (id === AGENT_ALARM_SOUND) return "Будильник";
   return FUN_SOUNDS.find((item) => item.id === id)?.label ?? id;
 }
 
+export function funSoundEmoji(id: FunSoundId): string {
+  if (id === AGENT_ALARM_SOUND) return "⏰";
+  return FUN_SOUNDS.find((item) => item.id === id)?.emoji ?? "🔊";
+}
+
+function sfxFileBase(id: FunSoundId): string {
+  if (id === AGENT_ALARM_SOUND) return "agent-alarm";
+  return id;
+}
+
 function sfxUrl(id: FunSoundId): string {
-  return new URL(`/sfx/${id}.mp3`, window.location.origin).href;
+  return new URL(`/sfx/${sfxFileBase(id)}.mp3`, window.location.origin).href;
 }
 
 let lastAudio: HTMLAudioElement | null = null;
@@ -80,8 +95,20 @@ export function playFunSound(id: FunSoundId): void {
       lastAudio = null;
     }
     const audio = new Audio(sfxUrl(id));
-    audio.volume = 0.45;
+    audio.volume = id === AGENT_ALARM_SOUND ? 0.55 : 0.45;
     lastAudio = audio;
+    if (id === AGENT_ALARM_SOUND) {
+      const stopAt = window.setTimeout(() => {
+        audio.pause();
+      }, 2250);
+      audio.addEventListener(
+        "ended",
+        () => {
+          window.clearTimeout(stopAt);
+        },
+        { once: true },
+      );
+    }
     void audio.play().catch(() => {
       // Autoplay may be blocked until a user gesture; ignore.
     });

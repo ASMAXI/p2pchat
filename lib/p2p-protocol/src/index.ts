@@ -16,8 +16,11 @@ export const LIMITS = {
   maxVoiceChannels: 5,
   rateWindowMs: 5000,
   rateMaxMessages: 12,
-  /** ICE can burst; keep well above chat rate but capped against flood. */
-  rateMaxSignals: 80,
+  /**
+   * Mesh voice: N peers ≈ N offers + many ICE. At 6 participants a joiner fans out
+   * to 5 PCs; 80/5s silently dropped offers so some existing peers never heard them.
+   */
+  rateMaxSignals: 400,
   joinClockSkewMs: 10 * 60 * 1000,
   /** Max JSON size for a single voice WebRTC signal (offer/answer/ICE/state). */
   maxSignalJsonBytes: 64_000,

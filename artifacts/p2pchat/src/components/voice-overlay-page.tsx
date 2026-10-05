@@ -29,10 +29,8 @@ function parsePayload(raw: string | null): VoiceOverlayPayload | null {
       typeof data.interactive === "boolean" ? data.interactive : loadVoiceOverlayInteractive();
     const seen = new Set<string>();
     const peers = data.peers.filter((peer) => {
-      const key = `${peer.id}|${peer.name}`;
-      if (seen.has(key) || seen.has(peer.name)) return false;
-      seen.add(key);
-      seen.add(peer.name);
+      if (!peer?.id || seen.has(peer.id)) return false;
+      seen.add(peer.id);
       return true;
     });
     return { ...data, opacity, interactive, peers };

@@ -477,12 +477,20 @@ export class RoomHub {
       case "signal": {
         const invalid = validateVoiceSignalData(command.data);
         if (invalid) throw new HubError("INVALID", invalid);
-        const nowMs = Date.now();
-        client.signalSentAt = client.signalSentAt.filter((at) => nowMs - at < LIMITS.rateWindowMs);
-        if (client.signalSentAt.length >= LIMITS.rateMaxSignals) {
-          throw new HubError("RATE_LIMIT", "Слишком много голосовых сигналов — подождите секунду");
+        const kind =
+          command.data && typeof command.data === "object" && "kind" in command.data
+            ? String((command.data as { kind?: unknown }).kind ?? "")
+            : "";
+        // SDP must not be dropped — ICE floods are what trip the limit at N≈6.
+        const countsTowardLimit = kind !== "offer" && kind !== "answer";
+        if (countsTowardLimit) {
+          const nowMs = Date.now();
+          client.signalSentAt = client.signalSentAt.filter((at) => nowMs - at < LIMITS.rateWindowMs);
+          if (client.signalSentAt.length >= LIMITS.rateMaxSignals) {
+            throw new HubError("RATE_LIMIT", "Слишком много голосовых сигналов — подождите секунду");
+          }
+          client.signalSentAt.push(nowMs);
         }
-        client.signalSentAt.push(nowMs);
         const target = room.clients.get(command.toPeerId);
         if (target) this.sendTo(target.socket, { type: "signal", fromPeerId: client.peerId, data: command.data });
         return;
