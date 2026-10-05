@@ -425,11 +425,20 @@ export class RoomHub {
         if (!name || name.length > LIMITS.maxChannelNameLength) {
           throw new HubError("INVALID", "Название канала должно содержать от 1 до 50 символов");
         }
+        const channelType = command.channelType === "voice" ? "voice" : "text";
+        const sameKind = room.state.channels.filter((item) => item.type === channelType).length;
+        const typeLimit = channelType === "voice" ? LIMITS.maxVoiceChannels : LIMITS.maxTextChannels;
+        if (sameKind >= typeLimit) {
+          throw new HubError(
+            "INVALID",
+            channelType === "voice" ? "Лимит голосовых каналов: 5" : "Лимит текстовых каналов: 5",
+          );
+        }
         if (room.state.channels.length >= LIMITS.maxChannels) throw new HubError("INVALID", "Слишком много каналов");
         const channel: WireChannel = {
           id: `channel-${randomToken(9)}`,
           name,
-          type: command.channelType === "voice" ? "voice" : "text",
+          type: channelType,
           unreadCount: 0,
           members: 0,
         };

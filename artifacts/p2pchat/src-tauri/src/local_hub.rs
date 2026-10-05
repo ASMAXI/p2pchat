@@ -43,7 +43,8 @@ const PROTOCOL_VERSION: u64 = 1;
 const MAX_CIPHERTEXT_LENGTH: usize = 400_000;
 const MAX_STORED_MESSAGES: usize = 1_000;
 const MAX_CHANNEL_NAME_CHARS: usize = 50;
-const MAX_CHANNELS: usize = 50;
+const MAX_TEXT_CHANNELS: usize = 5;
+const MAX_VOICE_CHANNELS: usize = 5;
 const RATE_WINDOW_MS: i64 = 5_000;
 const RATE_MAX_MESSAGES: usize = 12;
 const RATE_MAX_SIGNALS: usize = 80;
@@ -554,13 +555,18 @@ fn reconcile(room: &mut Room, snapshot: &PersistedRoom) -> Vec<WireMessage> {
         sort_and_trim(&mut room.state.messages);
     }
     for channel in &snapshot.channels {
-        if room.state.channels.len() >= MAX_CHANNELS {
+        if room.state.channels.len() >= MAX_TEXT_CHANNELS + MAX_VOICE_CHANNELS {
             break;
         }
         if !bounded(&channel.id, 120) || room.state.channels.iter().any(|item| item.id == channel.id) {
             continue;
         }
         if channel.kind != "text" && channel.kind != "voice" {
+            continue;
+        }
+        let same_kind = room.state.channels.iter().filter(|item| item.kind == channel.kind).count();
+        let limit = if channel.kind == "voice" { MAX_VOICE_CHANNELS } else { MAX_TEXT_CHANNELS };
+        if same_kind >= limit {
             continue;
         }
         room.state.channels.push(Channel {
@@ -865,10 +871,22 @@ fn create_channel(hub: &mut Hub, room_id: &str, command: &Value) -> Result<(), H
     let Some(room) = rooms.get_mut(room_id) else {
         return Ok(());
     };
-    if room.state.channels.len() >= MAX_CHANNELS {
+    if room.state.channels.len() >= MAX_TEXT_CHANNELS + MAX_VOICE_CHANNELS {
         return Err(HubError::new("INVALID", "Слишком много каналов"));
     }
     let kind = if command.get("channelType").and_then(Value::as_str) == Some("voice") { "voice" } else { "text" };
+    let same_kind = room.state.channels.iter().filter(|channel| channel.kind == kind).count();
+    let limit = if kind == "voice" { MAX_VOICE_CHANNELS } else { MAX_TEXT_CHANNELS };
+    if same_kind >= limit {
+        return Err(HubError::new(
+            "INVALID",
+            if kind == "voice" {
+                "Лимит голосовых каналов: 5"
+            } else {
+                "Лимит текстовых каналов: 5"
+            },
+        ));
+    }
     let channel = Channel {
         id: format!("channel-{}", random_token(9)),
         name,

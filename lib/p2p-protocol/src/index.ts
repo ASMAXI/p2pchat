@@ -11,6 +11,9 @@ export const LIMITS = {
   maxStoredMessages: 1000,
   maxChannelNameLength: 50,
   maxChannels: 50,
+  /** Soft product caps (text / voice separately). */
+  maxTextChannels: 5,
+  maxVoiceChannels: 5,
   rateWindowMs: 5000,
   rateMaxMessages: 12,
   /** ICE can burst; keep well above chat rate but capped against flood. */

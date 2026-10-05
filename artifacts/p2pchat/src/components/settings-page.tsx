@@ -6,6 +6,7 @@ import { getAutostartEnabled, setAutostartEnabled } from '@/lib/autostart';
 import { APP_THEMES, loadTheme, saveTheme, type AppThemeId } from '@/lib/theme';
 import { listAudioDevices, loadAudioInputId, loadAudioOutputId, saveAudioInputId, saveAudioOutputId } from '@/lib/audio-settings';
 import { STARTUP_SOUND_OPTIONS, loadStartupSoundId, loadUiSoundsEnabled, playUiSound, previewStartupSound, saveStartupSoundId, saveUiSoundsEnabled, type StartupSoundId } from '@/lib/ui-sounds';
+import { loadDesktopNotifyEnabled, loadFunSoundsEnabled, saveDesktopNotifyEnabled, saveFunSoundsEnabled } from '@/lib/notify-settings';
 import { HOTKEY_NONE, isHotkeyCodeSupported, labelForHotkeyCode, loadDeafenHotkeyCode, loadMuteHotkeyCode, loadPttKeyCode, loadVoiceOverlayEnabled, loadVoiceOverlayInteractive, loadVoiceOverlayOpacity, loadVoiceTalkMode, hotkeyVkForCode, mouseButtonToHotkeyCode, pttVkForCode, saveDeafenHotkeyCode, saveMuteHotkeyCode, savePttKeyCode, saveVoiceOverlayEnabled, saveVoiceOverlayInteractive, saveVoiceOverlayOpacity, saveVoiceTalkMode, VOICE_OVERLAY_PAYLOAD_KEY, type PttKeyCode, type VoiceOverlayPayload, type VoiceTalkMode } from '@/lib/voice-settings';
 import { TUNNEL_PROVIDER_OPTIONS, loadNgrokAuthToken, loadTunnelProvider, loadZrokToken, saveNgrokAuthToken, saveTunnelProvider, saveZrokToken, type TunnelProviderId } from '@/lib/tunnel-settings';
 import { SERVER_KEY, readStore, writeStore, seedServer } from '@/lib/app-shared';
@@ -223,6 +224,8 @@ export function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [audioInputId, setAudioInputId] = useState(() => loadAudioInputId());
   const [audioOutputId, setAudioOutputId] = useState(() => loadAudioOutputId());
   const [uiSoundsEnabled, setUiSoundsEnabled] = useState(() => loadUiSoundsEnabled());
+  const [funSoundsEnabled, setFunSoundsEnabled] = useState(() => loadFunSoundsEnabled());
+  const [desktopNotifyEnabled, setDesktopNotifyEnabled] = useState(() => loadDesktopNotifyEnabled());
   const [startupSoundId, setStartupSoundId] = useState<StartupSoundId>(() => loadStartupSoundId());
   const [voiceTalkMode, setVoiceTalkMode] = useState<VoiceTalkMode>(() => loadVoiceTalkMode());
   const [pttKeyCode, setPttKeyCode] = useState<PttKeyCode>(() => loadPttKeyCode());
@@ -622,7 +625,7 @@ export function SettingsPage({ onClose }: { onClose?: () => void }) {
             )}
           </SettingsSection>
 
-          <SettingsSection id="sounds" title="Звуки" hint="События и звук запуска" open={openSection === 'sounds'} onToggle={toggleSection} testId="settings-section-sounds">
+          <SettingsSection id="sounds" title="Звуки" hint="События, пад и уведомления" open={openSection === 'sounds'} onToggle={toggleSection} testId="settings-section-sounds">
             <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
               <input
                 type="checkbox"
@@ -637,9 +640,47 @@ export function SettingsPage({ onClose }: { onClose?: () => void }) {
                 data-testid="checkbox-ui-sounds"
               />
               <span>
-                <span className="block text-xs font-bold">Звуки событий</span>
+                <span className="block text-xs font-bold">Звуки событий чата</span>
                 <span className="mt-0.5 block text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
-                  Вход участников на сервер, вход в голос, чат. Ваш вход в голосовой канал — отдельный звук.
+                  Вход участников, голос, сообщения и упоминания.
+                </span>
+              </span>
+            </label>
+            <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={funSoundsEnabled}
+                onChange={(event) => {
+                  const next = event.target.checked;
+                  setFunSoundsEnabled(next);
+                  saveFunSoundsEnabled(next);
+                }}
+                data-testid="checkbox-fun-sounds"
+              />
+              <span>
+                <span className="block text-xs font-bold">Звуки с пада</span>
+                <span className="mt-0.5 block text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
+                  Шутки / sfx из панели в чате (пердёж, гачи и т.д.).
+                </span>
+              </span>
+            </label>
+            <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={desktopNotifyEnabled}
+                onChange={(event) => {
+                  const next = event.target.checked;
+                  setDesktopNotifyEnabled(next);
+                  saveDesktopNotifyEnabled(next);
+                }}
+                data-testid="checkbox-desktop-notify"
+              />
+              <span>
+                <span className="block text-xs font-bold">Уведомления Windows</span>
+                <span className="mt-0.5 block text-[11px] leading-4 text-[hsl(var(--muted-foreground))]">
+                  Всплывающие тосты справа, когда Drift свёрнут: сообщения, вход в голос.
                 </span>
               </span>
             </label>

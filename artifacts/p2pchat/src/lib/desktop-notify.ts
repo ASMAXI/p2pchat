@@ -1,4 +1,5 @@
 import { debugLog } from "@/lib/debug-log";
+import { loadDesktopNotifyEnabled } from "@/lib/notify-settings";
 
 export type NotifyKind = "message" | "voice-join" | "voice-leave" | "mention";
 
@@ -19,6 +20,7 @@ async function windowHidden(): Promise<boolean> {
 
 /** Windows toast / Notification API when the app is in background. */
 export async function notifyDesktop(kind: NotifyKind, title: string, body: string): Promise<void> {
+  if (!loadDesktopNotifyEnabled()) return;
   if (!(await windowHidden())) return;
   try {
     if (isDesktop()) {

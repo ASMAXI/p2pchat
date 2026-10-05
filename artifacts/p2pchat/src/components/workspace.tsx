@@ -7,7 +7,7 @@ import type { RoomSession } from '@workspace/p2p-room';
 import type { SessionStatus } from '@workspace/p2p-room';
 import { debugLog } from '@/lib/debug-log';
 import { avatarColors, avatarInitials, fileToChatImageDataUrl } from '@/lib/avatar';
-import { encodeRichMessage, encodeReact, encodeEdit, encodeDelete, encodePin, encodeSfx, foldChatMessages, extractMentions, mentionSuggestions, applyMentionSuggestion, splitMentionSpans, fileToChatAttachment, parseWireText, IMAGE_MESSAGE_PREFIX } from '@/lib/chat-payload';
+import { encodeRichMessage, encodeReact, encodeEdit, encodeDelete, encodePin, encodeSfx, encodeVoteKick, encodeKickNotice, foldChatMessages, extractMentions, mentionSuggestions, applyMentionSuggestion, splitMentionSpans, fileToChatAttachment, parseWireText, IMAGE_MESSAGE_PREFIX } from '@/lib/chat-payload';
 import { notifyDesktop } from '@/lib/desktop-notify';
 import { cacheRoomMessages, loadCachedRoomMessages, mergeMessagesWithCache } from '@/lib/message-cache';
 import { useAppTheme } from '@/lib/theme';
@@ -18,7 +18,10 @@ import { loadAudioInputId, loadAudioOutputId } from '@/lib/audio-settings';
 import { playUiSound } from '@/lib/ui-sounds';
 import { labelForHotkeyCode, loadDeafenHotkeyCode, loadMuteHotkeyCode, loadPttKeyCode, loadVoiceOverlayEnabled, loadVoiceOverlayInteractive, loadVoiceOverlayOpacity, loadVoiceTalkMode, hotkeyVkForCode, pttVkForCode, VOICE_OVERLAY_PAYLOAD_KEY, type PttKeyCode, type VoiceOverlayPayload, type VoiceTalkMode } from '@/lib/voice-settings';
 import { dismissOnboardingGuide, loadOnboardingGuide } from '@/lib/onboarding-guide';
+import { hideMessageLocally, loadHiddenMessageIds } from '@/lib/hidden-messages';
+import { applySlashCommandSuggestion, slashCommandSuggestions, tryParseChatCommand, type SlashCommandOption } from '@/lib/chat-commands';
 import { type ChannelType, type Server, type Channel, type Message, type StoredVoice, SERVER_KEY, CHANNELS_KEY, MESSAGES_KEY, VOICE_KEY, PROFILE_NAME_KEY, CONNECTION_KEY, uid, readStore, writeStore, mergeChannelUnread, roomStateToClientState, seedServer, seedChannels, seedMessages, seedVoice } from '@/lib/app-shared';
+import { LIMITS } from '@workspace/p2p-protocol';
 import { CreatorCredit, AppVersionLabel, Toast, ConnectionStatusChips, PatriotName } from '@/components/app-brand';
 import { SettingsPage } from '@/components/settings-page';
 import { Diagnostics } from '@/components/diagnostics-panel';
@@ -179,6 +182,8 @@ function ChannelPane({
   pttHeld,
   pttKeyLabel,
   voiceQuality,
+  sharingScreen,
+  onToggleScreenShare,
 }: {
   server: Server;
   channels: Channel[];
@@ -215,6 +220,8 @@ function ChannelPane({
   pttHeld?: boolean;
   pttKeyLabel?: string;
   voiceQuality?: VoiceQualitySnapshot | null;
+  sharingScreen?: boolean;
+  onToggleScreenShare?: () => void;
 }) {
   const textChannels = channels.filter((channel) => channel.type === 'text');
   const voiceChannels = channels.filter((channel) => channel.type === 'voice');
@@ -255,32 +262,27 @@ function ChannelPane({
                 <div className="mb-1 ml-2 space-y-0.5 border-l border-[hsl(var(--border))] pl-2" data-testid={`voice-members-${channel.id}`}>
                   {people.map((person) => {
                     const voiceUi = channel.id === activeVoiceChannelId;
-                    const peer = voiceUi ? voicePeers?.find((item) => item.name === person) : undefined;
-                    const isSelf = person === selfDisplayName;
+                    const isSelf = person.id === selfPeerId;
                     const voiceState = voiceUi
                       ? isSelf
                         ? { muted: selfMuted ?? false, deafened: selfDeafened ?? false }
-                        : peer ? peerVoiceStates?.[peer.id] : undefined
+                        : peerVoiceStates?.[person.id]
                       : undefined;
-                    const speaking = voiceUi
-                      ? isSelf
-                        ? Boolean(speakingPeers?.[selfPeerId ?? ''])
-                        : peer ? Boolean(speakingPeers?.[peer.id]) : false
-                      : false;
-                    const rowPeerId = isSelf ? undefined : peer?.id;
+                    const speaking = voiceUi ? Boolean(speakingPeers?.[person.id]) : false;
+                    const rowPeerId = isSelf ? undefined : person.id;
                     return (
                       <div
-                        key={`${channel.id}-${person}`}
+                        key={`${channel.id}-${person.id}`}
                         className="flex items-center gap-2 rounded-md px-2 py-1 text-[12px] text-[hsl(var(--foreground)/.85)]"
                         onContextMenu={rowPeerId && onPeerContextMenu ? (event) => { event.preventDefault(); onPeerContextMenu(event, rowPeerId); } : undefined}
                       >
                         <div
                           className={`member-avatar ${speaking ? 'ring-2 ring-[hsl(var(--primary))] ring-offset-1 ring-offset-[hsl(var(--background))]' : ''}`}
-                          style={{ width: 22, height: 22, fontSize: 8, ...avatarColors(person) }}
+                          style={{ width: 22, height: 22, fontSize: 8, ...avatarColors(person.name) }}
                         >
-                          {avatarInitials(person)}
+                          {avatarInitials(person.name)}
                         </div>
-                        <span className="min-w-0 flex-1 truncate font-semibold"><PatriotName name={person} seed={peer?.id ?? person} /></span>
+                        <span className="min-w-0 flex-1 truncate font-semibold"><PatriotName name={person.name} seed={person.id} /></span>
                         {voiceState?.muted && <MicOff size={12} className="shrink-0 text-[hsl(var(--muted-foreground))]" aria-label="Микрофон выкл" />}
                         {voiceState?.deafened && <Headphones size={12} className="shrink-0 text-[hsl(var(--muted-foreground))]" aria-label="Звук выкл" />}
                       </div>
@@ -340,6 +342,16 @@ function ChannelPane({
           <div className="flex flex-wrap gap-1">
             <button className={`icon-btn ${muted ? 'bg-[hsl(var(--accent)/.18)] text-[hsl(var(--accent))]' : ''}`} onClick={onMute} aria-label={muted ? 'Включить микрофон' : 'Выключить микрофон'} data-testid="button-toggle-mute">{muted ? <MicOff size={15} /> : <Mic size={15} />}</button>
             <button className={`icon-btn ${deafened ? 'bg-[hsl(var(--accent)/.18)] text-[hsl(var(--accent))]' : ''}`} onClick={onDeafen} aria-label={deafened ? 'Включить звук' : 'Отключить звук'} data-testid="button-toggle-deafen">{deafened ? <VolumeX size={15} /> : <Headphones size={15} />}</button>
+            {onToggleScreenShare && (
+              <button
+                className={`icon-btn ${sharingScreen ? 'bg-[hsl(var(--primary)/.18)] text-[hsl(var(--primary))]' : ''}`}
+                onClick={onToggleScreenShare}
+                aria-label={sharingScreen ? 'Остановить демонстрацию экрана' : 'Поделиться экраном'}
+                data-testid="button-toggle-screen-share"
+              >
+                {sharingScreen ? <MonitorOff size={15} /> : <Monitor size={15} />}
+              </button>
+            )}
             {onToggleNoise && (
               <button className={`ghost-btn !h-8 !px-2 text-[10px] ${noiseSuppression ? '' : 'opacity-50'}`} onClick={onToggleNoise} data-testid="button-toggle-noise">Шум {noiseSuppression ? 'вкл' : 'выкл'}</button>
             )}
@@ -355,10 +367,24 @@ function ChannelPane({
               <input type="range" min={0} max={100} value={Math.round(micVolume * 100)} onChange={(e) => onMicVolume(Number(e.target.value) / 100)} className="mt-1 w-full" data-testid="input-mic-volume" />
             </label>
           )}
+          {onToggleScreenShare && (
+            <button
+              type="button"
+              className={`flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[10px] font-semibold transition ${
+                sharingScreen
+                  ? 'bg-[hsl(var(--primary)/.16)] text-[hsl(var(--primary))]'
+                  : 'hover:bg-[hsl(var(--muted)/.55)] text-[hsl(var(--muted-foreground))]'
+              }`}
+              onClick={onToggleScreenShare}
+              data-testid="button-screen-share-footer"
+            >
+              {sharingScreen ? <><MonitorOff size={12} /> Стоп экран</> : <><Monitor size={12} /> Поделиться экраном</>}
+            </button>
+          )}
         </div>
       )}
       {activeVoiceChannelId && onLeaveVoice && (
-        <button className="mb-1 flex w-full items-center gap-2 rounded-lg px-2 py-2 text-xs font-semibold text-[hsl(var(--primary))] transition hover:bg-[hsl(var(--primary)/.12)]" onClick={onLeaveVoice} data-testid="button-leave-voice-channel"><VolumeX size={15} /> Покинуть голосовой канал</button>
+        <button className="mb-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-[hsl(var(--primary))] transition hover:bg-[hsl(var(--primary)/.12)]" onClick={onLeaveVoice} data-testid="button-leave-voice-channel"><VolumeX size={14} /> Покинуть голосовой</button>
       )}
       <button className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-xs font-semibold text-[hsl(var(--muted-foreground))] transition hover:bg-[hsl(var(--muted))] hover:text-[hsl(var(--foreground))]" onClick={onInvite} data-testid="button-invite-members"><UserPlus size={15} /> Пригласить друзей</button>
       <button className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-xs font-semibold text-[hsl(var(--accent))] transition hover:bg-[hsl(var(--accent)/.12)]" onClick={onLeaveServer} data-testid="button-leave-server"><X size={15} /> Покинуть сервер</button>
@@ -451,7 +477,9 @@ function MessageList({
   onReact,
   onEdit,
   onDelete,
+  onHideLocal,
   onPin,
+  onVoteYes,
 }: {
   messages: Message[];
   memberNames: string[];
@@ -459,7 +487,9 @@ function MessageList({
   onReact: (targetId: string, emoji: string) => void;
   onEdit: (targetId: string, body: string) => void;
   onDelete: (targetId: string) => void;
+  onHideLocal: (targetId: string) => void;
   onPin: (targetId: string, pinned: boolean) => void;
+  onVoteYes: (targetId: string) => void;
 }) {
   const folded = useMemo(
     () =>
@@ -533,10 +563,20 @@ function MessageList({
                   <span>{FUN_SOUNDS.find((s) => s.id === message.sfxId)?.emoji ?? '🔊'}</span>
                   <span>{isFunSoundId(message.sfxId) ? funSoundLabel(message.sfxId) : message.sfxId}</span>
                 </div>
+              ) : message.voteKick ? (
+                <div className="mt-2 rounded-xl border border-[hsl(var(--accent)/.35)] bg-[hsl(var(--accent)/.08)] px-3 py-2" data-testid={`message-votekick-${message.id}`}>
+                  <p className="text-sm font-semibold">🗳️ Кикнуть {message.voteKick.targetName}?</p>
+                  <p className="mt-1 text-[11px] text-[hsl(var(--muted-foreground))]">Без бана — сможет зайти снова по ссылке. Нужно большинство онлайн.</p>
+                  <button type="button" className="primary-btn mt-2 !h-8 !px-3 text-xs" onClick={() => onVoteYes(message.id)} data-testid={`button-vote-yes-${message.id}`}>
+                    За ({(message.reactions?.['✅'] ?? []).length})
+                  </button>
+                </div>
+              ) : message.kickNotice ? (
+                <p className="mt-1 text-sm italic text-[hsl(var(--muted-foreground))]">{message.content}</p>
               ) : (
                 renderMessageBody(message.content, memberNames, message.deleted)
               )}
-              {message.reactions && Object.keys(message.reactions).length > 0 && (
+              {message.reactions && Object.keys(message.reactions).length > 0 && !message.voteKick && (
                 <div className="mt-2 flex flex-wrap gap-1" data-testid={`message-reactions-${message.id}`}>
                   {Object.entries(message.reactions).map(([emoji, authors]) => (
                     <button key={emoji} type="button" className="rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.4)] px-2 py-0.5 text-[11px]" onClick={() => onReact(message.id, emoji)} title={authors.join(', ')}>
@@ -545,19 +585,26 @@ function MessageList({
                   ))}
                 </div>
               )}
-              {!message.deleted && !message.sfxId && (
+              {!message.deleted && !message.sfxId && !message.kickNotice && (
                 <div className="mt-1 flex flex-wrap gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100" data-testid={`message-actions-${message.id}`}>
-                  <button type="button" className="ghost-btn !h-7 !px-2 text-[10px]" onClick={() => onReply(message.id)} data-testid={`button-reply-${message.id}`}>Ответить</button>
-                  {REACTION_EMOJIS.map((emoji) => (
-                    <button key={emoji} type="button" className="ghost-btn !h-7 !w-7 !p-0 text-sm" onClick={() => onReact(message.id, emoji)} aria-label={`Реакция ${emoji}`}>{emoji}</button>
-                  ))}
-                  {message.isCurrentUser && (
+                  {!message.voteKick && (
+                    <>
+                      <button type="button" className="ghost-btn !h-7 !px-2 text-[10px]" onClick={() => onReply(message.id)} data-testid={`button-reply-${message.id}`}>Ответить</button>
+                      {REACTION_EMOJIS.map((emoji) => (
+                        <button key={emoji} type="button" className="ghost-btn !h-7 !w-7 !p-0 text-sm" onClick={() => onReact(message.id, emoji)} aria-label={`Реакция ${emoji}`}>{emoji}</button>
+                      ))}
+                    </>
+                  )}
+                  {message.isCurrentUser && !message.voteKick && (
                     <button type="button" className="ghost-btn !h-7 !px-2 text-[10px]" onClick={() => { const next = window.prompt('Новый текст сообщения', message.content); if (next != null && next.trim()) onEdit(message.id, next.trim()); }} data-testid={`button-edit-${message.id}`}>Изменить</button>
                   )}
-                  {message.isCurrentUser && (
-                    <button type="button" className="ghost-btn !h-7 !px-2 text-[10px] text-[hsl(var(--accent))]" onClick={() => { if (window.confirm('Удалить сообщение?')) onDelete(message.id); }} data-testid={`button-delete-${message.id}`}>Удалить</button>
+                  {message.isCurrentUser && !message.voteKick && (
+                    <button type="button" className="ghost-btn !h-7 !px-2 text-[10px] text-[hsl(var(--accent))]" onClick={() => { if (window.confirm('Удалить сообщение у всех?')) onDelete(message.id); }} data-testid={`button-delete-${message.id}`}>Удалить у всех</button>
                   )}
-                  <button type="button" className="ghost-btn !h-7 !px-2 text-[10px]" onClick={() => onPin(message.id, !message.pinned)} data-testid={`button-pin-${message.id}`}>{message.pinned ? 'Открепить' : 'Закрепить'}</button>
+                  <button type="button" className="ghost-btn !h-7 !px-2 text-[10px]" onClick={() => onHideLocal(message.id)} data-testid={`button-hide-local-${message.id}`}>Скрыть у себя</button>
+                  {!message.voteKick && (
+                    <button type="button" className="ghost-btn !h-7 !px-2 text-[10px]" onClick={() => onPin(message.id, !message.pinned)} data-testid={`button-pin-${message.id}`}>{message.pinned ? 'Открепить' : 'Закрепить'}</button>
+                  )}
                 </div>
               )}
             </div>
@@ -603,15 +650,36 @@ function ChatComposer({
   onPlayFunSound?: (id: FunSoundId) => void;
 }) {
   const [mentionDismissed, setMentionDismissed] = useState(false);
+  const [slashDismissed, setSlashDismissed] = useState(false);
   const [sfxOpen, setSfxOpen] = useState(false);
+  const slashOptions = slashCommandSuggestions(draft);
+  const showSlashMenu = Boolean(slashOptions && slashOptions.length > 0 && !slashDismissed);
   const mentionState = mentionSuggestions(draft, memberNames);
-  const showMentionMenu = Boolean(mentionState && mentionState.matches.length > 0 && !mentionDismissed);
+  const showMentionMenu = Boolean(!showSlashMenu && mentionState && mentionState.matches.length > 0 && !mentionDismissed);
 
   useEffect(() => {
     setMentionDismissed(false);
+    setSlashDismissed(false);
   }, [draft]);
 
+  const pickSlash = (option: SlashCommandOption) => {
+    onDraftChange(applySlashCommandSuggestion(draft, option));
+    setSlashDismissed(true);
+  };
+
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showSlashMenu && slashOptions?.[0]) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setSlashDismissed(true);
+        return;
+      }
+      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+        event.preventDefault();
+        pickSlash(slashOptions[0]);
+        return;
+      }
+    }
     if (showMentionMenu && mentionState?.matches[0]) {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -630,6 +698,26 @@ function ChatComposer({
 
   return (
     <div className="composer relative">
+      {showSlashMenu && slashOptions && (
+        <div className="mention-menu" role="listbox" aria-label="Команды" data-testid="slash-command-menu">
+          {slashOptions.map((option) => (
+            <button
+              key={option.cmd}
+              type="button"
+              role="option"
+              className="flex w-full flex-col gap-0.5 px-3 py-2 text-left hover:bg-[hsl(var(--muted)/.55)]"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                pickSlash(option);
+              }}
+              data-testid={`slash-option-${option.cmd}`}
+            >
+              <span className="text-sm font-semibold">{option.usage}</span>
+              <span className="text-[11px] text-[hsl(var(--muted-foreground))]">{option.description}</span>
+            </button>
+          ))}
+        </div>
+      )}
       {showMentionMenu && mentionState && (
         <div className="mention-menu" role="listbox" aria-label="Упоминания" data-testid="mention-menu">
           {mentionState.matches.map((name) => (
@@ -727,7 +815,10 @@ export function Workspace() {
   const [peerVolumes, setPeerVolumes] = useState<Record<string, number>>({});
   const [speakingPeers, setSpeakingPeers] = useState<Record<string, boolean>>({});
   const [peerVoiceStates, setPeerVoiceStates] = useState<Record<string, { muted: boolean; deafened: boolean }>>({});
-  const [showMeteredHint, setShowMeteredHint] = useState(false);
+  const [voiceBannerDismissed, setVoiceBannerDismissed] = useState(false);
+  const [sideAlerts, setSideAlerts] = useState<Array<{ id: string; title: string; body: string }>>([]);
+  const executedKickVotesRef = useRef<Set<string>>(new Set());
+  const [hiddenMessageIds, setHiddenMessageIds] = useState<Set<string>>(() => loadHiddenMessageIds(readStore<Server>(SERVER_KEY, seedServer).roomId ?? ''));
   const [voicePeers, setVoicePeers] = useState<Array<{ id: string; name: string }>>([]);
   const [sharingScreen, setSharingScreen] = useState(false);
   const [screenSharePeerId, setScreenSharePeerId] = useState<string | null>(null);
@@ -794,7 +885,10 @@ export function Workspace() {
   deafenedRef.current = deafened;
   const displayName = readStore(PROFILE_NAME_KEY, 'Вы');
   const selectedChannel = channels.find((channel) => channel.id === selectedId) ?? channels[0];
-  const channelMessages = messages.filter((message) => message.channelId === selectedId || (!message.channelId && selectedId === 'general'));
+  const channelMessages = messages.filter((message) => {
+    if (hiddenMessageIds.has(message.id)) return false;
+    return message.channelId === selectedId || (!message.channelId && selectedId === 'general');
+  });
   const outboxCount = channelMessages.filter((message) => message.delivery === 'queued' || message.delivery === 'sent').length;
   const memberNames = useMemo(
     () => [...new Set([displayName, ...members.map((member) => member.name)].filter(Boolean))],
@@ -1068,7 +1162,7 @@ export function Workspace() {
         muted: selfEffectiveMuted,
       },
       ...voicePeers
-        .filter((peer) => peer.id !== peerId && peer.name !== displayName)
+        .filter((peer) => peer.id !== peerId)
         .map((peer) => ({
           id: peer.id,
           name: peer.name,
@@ -1173,8 +1267,36 @@ export function Workspace() {
             roomKey: current.roomKey ?? next.server.roomKey,
           }));
           setChannels((prev) => mergeChannelUnread(prev, next.channels as Channel[]));
-          setVoiceRooms(next.voiceRooms);
           const nextMembers = view.state.members;
+          const mergedVoiceRooms = next.voiceRooms.map((room) => {
+            if (room.id !== voiceChannelRef.current) return room;
+            const byId = new Map(room.participants.map((person) => [person.id, person]));
+            if (peerId) byId.set(peerId, { id: peerId, name: displayName });
+            for (const [id, name] of stickyVoiceNamesRef.current) {
+              if (!byId.has(id)) byId.set(id, { id, name });
+            }
+            const mesh = voiceMeshRef.current;
+            if (mesh) {
+              for (const id of mesh.listLivePeerIds()) {
+                if (id === peerId || byId.has(id)) continue;
+                byId.set(id, {
+                  id,
+                  name:
+                    stickyVoiceNamesRef.current.get(id) ??
+                    nextMembers.find((member) => member.id === id)?.name ??
+                    id.slice(0, 8),
+                });
+              }
+            }
+            const participants = [...byId.values()];
+            return {
+              ...room,
+              participants,
+              participantCount: participants.length,
+              state: participants.length > 0 ? 'live' : 'ready',
+            };
+          });
+          setVoiceRooms(mergedVoiceRooms);
           if (knownMemberIdsRef.current === null) {
             knownMemberIdsRef.current = new Set(nextMembers.map((member) => member.id));
           } else if (!deafenedRef.current) {
@@ -1280,7 +1402,7 @@ export function Workspace() {
           for (const message of mappedMessages) {
             if (knownMessageIdsRef.current.has(message.id) || message.isCurrentUser) continue;
             const parsed = parseWireText(message.content);
-            if (parsed.kind === 'react' || parsed.kind === 'edit' || parsed.kind === 'delete' || parsed.kind === 'pin' || parsed.kind === 'unknown') {
+            if (parsed.kind === 'react' || parsed.kind === 'edit' || parsed.kind === 'delete' || parsed.kind === 'pin' || parsed.kind === 'votekick' || parsed.kind === 'kick' || parsed.kind === 'unknown') {
               continue;
             }
             const preview = messagePreview(message.content);
@@ -1368,9 +1490,38 @@ export function Workspace() {
     };
   }, [server.roomId, server.inviteToken, peerId]);
 
+  useEffect(() => {
+    if (server.roomId) setHiddenMessageIds(loadHiddenMessageIds(server.roomId));
+  }, [server.roomId]);
+
   const sendMessage = () => {
     const body = draft.trim();
     if (!body) return;
+    const command = tryParseChatCommand(body, {
+      selfName: displayName,
+      selfId: peerId,
+      members: members.map((member) => ({ id: member.id, name: member.name, online: member.online })),
+    });
+    if (command) {
+      if (command.kind === 'error' || command.kind === 'help') {
+        setToast(command.text);
+        setDraft('');
+        return;
+      }
+      if (command.kind === 'roll') {
+        if (!sendChatPayload(command.text)) return;
+        setDraft('');
+        setReplyToId(null);
+        return;
+      }
+      if (command.kind === 'votekick') {
+        if (!sendChatPayload(encodeVoteKick(command.targetId, command.targetName))) return;
+        setDraft('');
+        setReplyToId(null);
+        setToast(`Голосование: кикнуть ${command.targetName}`);
+        return;
+      }
+    }
     const mentions = extractMentions(body, memberNames);
     const payload = encodeRichMessage({
       body,
@@ -1438,6 +1589,13 @@ export function Workspace() {
   const onMessageDelete = (targetId: string) => {
     sendChatPayload(encodeDelete(targetId));
   };
+  const onMessageHideLocal = (targetId: string) => {
+    const roomId = server.roomId ?? '';
+    setHiddenMessageIds(hideMessageLocally(roomId, targetId));
+  };
+  const onVoteYes = (voteMessageId: string) => {
+    sendChatPayload(encodeReact(voteMessageId, '✅', 'add'));
+  };
   const onMessagePin = (targetId: string, pinned: boolean) => {
     sendChatPayload(encodePin(targetId, pinned));
   };
@@ -1448,10 +1606,18 @@ export function Workspace() {
     onReact: onMessageReact,
     onEdit: onMessageEdit,
     onDelete: onMessageDelete,
+    onHideLocal: onMessageHideLocal,
     onPin: onMessagePin,
+    onVoteYes,
   };
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } };
   const addChannel = (channelName: string, type: ChannelType) => {
+    const sameType = channels.filter((channel) => channel.type === type).length;
+    const limit = type === 'voice' ? LIMITS.maxVoiceChannels : LIMITS.maxTextChannels;
+    if (sameType >= limit) {
+      setToast(type === 'voice' ? 'Лимит голосовых каналов: 5' : 'Лимит текстовых каналов: 5');
+      return;
+    }
     if (server.roomId) {
       if (!sessionRef.current?.createChannel(channelName, type)) {
         setToast('Нет соединения с комнатой');
@@ -1500,10 +1666,19 @@ export function Workspace() {
             onPeerStatus: (statusPeerId, status, detail) => {
               setVoicePeerStatus(status);
               if (status === 'connecting') setVoiceHint(detail || 'Соединяем…');
-              else if (status === 'connected') setVoiceHint('Голос подключен');
-              else if (status === 'failed') {
-                setShowMeteredHint(true);
+              else if (status === 'connected') {
+                setVoiceHint('Голос подключен');
+                setSideAlerts((current) => current.filter((item) => item.id !== 'voice-turn'));
+              } else if (status === 'failed') {
                 setVoiceHint(detail || 'Нет прямого пути — нужен TURN');
+                setSideAlerts((current) => [
+                  ...current.filter((item) => item.id !== 'voice-turn'),
+                  {
+                    id: 'voice-turn',
+                    title: 'Голос через интернет не подключился',
+                    body: detail || 'Часто это NAT. Metered/свой TURN — в Настройки → Сеть.',
+                  },
+                ]);
               } else setVoiceHint('');
               if (status === 'failed' || status === 'closed') {
                 stickyVoiceNamesRef.current.delete(statusPeerId);
@@ -1558,7 +1733,20 @@ export function Workspace() {
       }
     }
     setActiveVoice(room.id);
-    setVoiceRooms((current) => current.map((item) => item.id === room.id ? { ...item, participantCount: item.participantCount + 1, state: 'live', participants: item.participants.includes(displayName) ? item.participants : [...item.participants, displayName] } : item));
+    setVoiceBannerDismissed(false);
+    setVoiceRooms((current) => current.map((item) => {
+      if (item.id !== room.id) return item;
+      const already = item.participants.some((person) => person.id === peerId);
+      const participants = already
+        ? item.participants
+        : [...item.participants, { id: peerId, name: displayName }];
+      return {
+        ...item,
+        participantCount: participants.length,
+        state: 'live',
+        participants,
+      };
+    }));
     playUiSound('voice-enter');
     setToast(`Вы в комнате «${room.name}»`);
     triggerPatriotPopup();
@@ -1588,7 +1776,16 @@ export function Workspace() {
         void invoke('hide_voice_overlay').catch(() => {});
       });
     }
-    setVoiceRooms((current) => current.map((item) => item.id === activeVoice ? { ...item, participantCount: Math.max(0, item.participantCount - 1), participants: item.participants.filter((person) => person !== displayName), state: item.participantCount <= 1 ? 'ready' : 'live' } : item));
+    setVoiceRooms((current) => current.map((item) => {
+      if (item.id !== activeVoice) return item;
+      const participants = item.participants.filter((person) => person.id !== peerId);
+      return {
+        ...item,
+        participantCount: participants.length,
+        participants,
+        state: participants.length === 0 ? 'ready' : 'live',
+      };
+    }));
     setActiveVoice(null); setMuted(false); setDeafened(false); setToast('Вы вышли из голосовой комнаты');
   };
 
@@ -1658,6 +1855,45 @@ export function Workspace() {
     writeStore(CONNECTION_KEY, 'offline');
     setLocation('/');
   };
+
+  useEffect(() => {
+    const onlineCount = members.filter((member) => member.online).length;
+    const needed = Math.max(1, Math.ceil(onlineCount / 2));
+    for (const message of messages) {
+      const parsed = parseWireText(message.content);
+      if (parsed.kind === 'kick' && parsed.targetId === peerId) {
+        setToast('Вас исключили голосованием. Можно зайти снова по ссылке.');
+        leaveServer();
+        return;
+      }
+      if (parsed.kind !== 'votekick') continue;
+      if (executedKickVotesRef.current.has(message.id)) continue;
+      const folded = foldChatMessages(
+        messages.map((item) => ({
+          id: item.id,
+          channelId: item.channelId,
+          author: item.author,
+          authorId: item.authorId,
+          avatar: item.avatar,
+          content: item.content,
+          timestamp: item.timestamp,
+          isCurrentUser: item.isCurrentUser,
+          delivery: item.delivery,
+        })),
+      );
+      const voteMsg = folded.find((item) => item.id === message.id);
+      const yes = voteMsg?.reactions?.['✅']?.length ?? 0;
+      if (yes < needed) continue;
+      executedKickVotesRef.current.add(message.id);
+      if (!sessionRef.current) continue;
+      if (message.isCurrentUser || peerId <= (message.authorId ?? '')) {
+        void sessionRef.current.sendChat(message.channelId || selectedId, encodeKickNotice(parsed.targetId, parsed.targetName));
+      }
+    }
+  // leaveServer intentionally omitted to avoid re-bind loops
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, members, peerId, selectedId]);
+
   const visibleMembers = members;
   const connectionHint = connectionError && connectionStatus !== 'connected'
     ? connectionError
@@ -1721,6 +1957,8 @@ export function Workspace() {
       pttHeld={pttHeld}
       pttKeyLabel={labelForHotkeyCode(pttKeyCode)}
       voiceQuality={activeVoice ? voiceQuality : null}
+      sharingScreen={sharingScreen}
+      onToggleScreenShare={activeVoice ? () => void toggleScreenShare() : undefined}
     />
     <main className="content-pane">
       <header className="topbar">
@@ -1819,29 +2057,16 @@ export function Workspace() {
       )}
       {selectedVoice ? (
         <div className={`flex min-h-0 flex-1 flex-col ${activeVoice === selectedVoice.id ? '' : 'items-center justify-center px-6 text-center'}`}>
-          {(showMeteredHint || voicePeerStatus === 'failed') && (
-            <div className="mx-4 mt-3 rounded-xl border border-[hsl(var(--accent)/.45)] bg-[hsl(var(--accent)/.12)] px-4 py-3 text-left text-sm" data-testid="banner-voice-turn">
-              <div className="font-semibold">Голос через интернет не подключился</div>
-              <p className="mt-1 text-xs leading-5 text-[hsl(var(--muted-foreground))]">
-                Часто это NAT или firewall: между разными сетями помогает рабочий TURN.
-                Опционально —{' '}
-                <a href="https://www.metered.ca/" target="_blank" rel="noreferrer" className="font-semibold text-[hsl(var(--primary))] underline">metered.ca</a>
-                {' '}API key или свой coturn в Настройки → Расширенные. Metered не обязателен.
-                {voiceHint && <span className="block mt-1 font-mono text-[10px]">{voiceHint}</span>}
-              </p>
-              <button type="button" className="ghost-btn mt-2" onClick={() => setOverlay('settings')} data-testid="button-voice-turn-settings">Открыть настройки</button>
-            </div>
-          )}
-          <div className={`shrink-0 ${activeVoice === selectedVoice.id ? 'border-b border-[hsl(var(--border))] px-4 py-4 sm:px-6' : ''}`}>
-            <div className={`flex flex-col gap-3 ${activeVoice === selectedVoice.id ? 'sm:flex-row sm:items-center sm:justify-between' : 'items-center'}`}>
+          <div className={`shrink-0 ${activeVoice === selectedVoice.id ? 'border-b border-[hsl(var(--border))] px-4 py-3 sm:px-5' : ''}`}>
+            <div className={`flex flex-col gap-2 ${activeVoice === selectedVoice.id ? 'sm:flex-row sm:items-center sm:justify-between' : 'items-center'}`}>
               <div className={`flex items-center gap-3 ${activeVoice === selectedVoice.id ? '' : 'flex-col'}`}>
-                <div className="relative grid h-16 w-16 place-items-center rounded-[22px] bg-[hsl(var(--primary)/.18)] text-[hsl(var(--secondary))] sm:h-14 sm:w-14">
-                  <Volume2 size={activeVoice === selectedVoice.id ? 28 : 36} />
-                  {activeVoice === selectedVoice.id && <span className="animate-pulse-dot absolute right-1 top-1 h-3 w-3 rounded-full bg-[hsl(var(--primary))]" />}
+                <div className="relative grid h-12 w-12 place-items-center rounded-[16px] bg-[hsl(var(--primary)/.18)] text-[hsl(var(--secondary))]">
+                  <Volume2 size={22} />
+                  {activeVoice === selectedVoice.id && <span className="animate-pulse-dot absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-[hsl(var(--primary))]" />}
                 </div>
                 <div className={activeVoice === selectedVoice.id ? 'min-w-0 text-left' : 'text-center'}>
                   <p className="font-mono text-[10px] uppercase tracking-[.2em] text-[hsl(var(--muted-foreground))]">Голосовая комната</p>
-                  <h2 className="font-display text-2xl font-bold tracking-[-.06em] sm:text-xl">{selectedVoice.name}</h2>
+                  <h2 className="font-display text-xl font-bold tracking-[-.06em]">{selectedVoice.name}</h2>
                   {activeVoice === selectedVoice.id && voiceStatusLabel && (
                     <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]" data-testid="text-voice-status">{voiceStatusLabel}</p>
                   )}
@@ -1865,29 +2090,18 @@ export function Workspace() {
                   )}
                 </div>
               </div>
-              <div className={`flex flex-wrap items-center gap-3 ${activeVoice === selectedVoice.id ? '' : 'mt-4 flex-col'}`}>
-                <button
-                  className="primary-btn"
-                  disabled={joiningVoice}
-                  onClick={() => (activeVoice === selectedVoice.id ? leaveVoice() : void joinVoice(selectedVoice))}
-                  data-testid="button-main-voice-toggle"
-                >
-                  {joiningVoice
-                    ? <><Radio size={16} /> Подключаем…</>
-                    : activeVoice === selectedVoice.id
-                      ? <><X size={16} /> Покинуть комнату</>
-                      : <><Radio size={16} /> Войти в комнату</>}
-                </button>
-                {activeVoice === selectedVoice.id && (
+              <div className={`flex flex-wrap items-center gap-2 ${activeVoice === selectedVoice.id ? '' : 'mt-3 flex-col'}`}>
+                {activeVoice !== selectedVoice.id && (
                   <button
-                    className={`ghost-btn ${sharingScreen ? 'border-[hsl(var(--primary))] text-[hsl(var(--primary))]' : ''}`}
-                    onClick={() => void toggleScreenShare()}
-                    data-testid="button-screen-share"
+                    className="primary-btn !h-9 !px-3 text-xs"
+                    disabled={joiningVoice}
+                    onClick={() => void joinVoice(selectedVoice)}
+                    data-testid="button-main-voice-toggle"
                   >
-                    {sharingScreen ? <><MonitorOff size={15} /> Стоп экран</> : <><Monitor size={15} /> Поделиться экраном</>}
+                    {joiningVoice ? <><Radio size={14} /> Подключаем…</> : <><Radio size={14} /> Войти</>}
                   </button>
                 )}
-                <div className="flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]"><Users size={14} /> {selectedVoice.participantCount} в комнате</div>
+                <div className="flex items-center gap-2 text-[11px] text-[hsl(var(--muted-foreground))]"><Users size={13} /> {selectedVoice.participantCount} в комнате</div>
               </div>
             </div>
           </div>
@@ -1959,6 +2173,32 @@ export function Workspace() {
       )}
       <div className="mb-7"><div className="flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Комната</span><span className="h-2 w-2 rounded-full bg-[hsl(var(--primary))]" /></div><div className="mt-4 flex items-center gap-2"><div className="grid h-8 w-8 place-items-center rounded-lg text-xs font-extrabold" style={avatarColors(server.name)}>{avatarInitials(server.name)}</div><div><div className="text-xs font-bold">{server.name}</div><div className="font-mono text-[9px] text-[hsl(var(--muted-foreground))]">координатор: {server.hostName}</div></div></div></div>
       <div className="mb-8"><div className="mb-3 flex items-center justify-between"><span className="font-mono text-[10px] font-bold uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Участники</span><span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">{server.memberCount}</span></div><div className="space-y-3">{visibleMembers.length === 0 ? <p className="text-xs text-[hsl(var(--muted-foreground))]">{connectionStatus === 'connected' ? 'Пока только вы' : 'Ждём подключения…'}</p> : visibleMembers.map((member, index) => <div className={`flex items-center gap-2 ${member.online ? '' : 'opacity-45'}`} key={member.id} data-testid={`member-${index}`}><div className="relative"><div className="member-avatar" style={avatarColors(member.name)}>{avatarInitials(member.name)}</div><span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[hsl(var(--card))] ${member.online ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--muted-foreground))]'}`} /></div><span className="min-w-0 truncate text-xs font-semibold"><PatriotName name={member.name} seed={member.id} /></span>{member.name === server.hostName && <span className="ml-auto font-mono text-[8px] uppercase text-[hsl(var(--muted-foreground))]">координатор</span>}</div>)}</div><button className="mt-4 flex items-center gap-2 text-xs font-bold text-[hsl(var(--secondary))] transition hover:text-[hsl(var(--accent))]" onClick={() => setShowInviteDialog(true)} data-testid="button-member-invite"><Plus size={14} /> Ещё люди</button></div>
+      {sideAlerts.length > 0 && (
+        <div className="mt-auto space-y-2 pb-2" data-testid="side-alerts">
+          {sideAlerts.map((alert) => (
+            <div key={alert.id} className="rounded-xl border border-[hsl(var(--accent)/.4)] bg-[hsl(var(--accent)/.1)] px-3 py-2 text-xs">
+              <div className="flex items-start justify-between gap-2">
+                <strong className="leading-4">{alert.title}</strong>
+                <button
+                  type="button"
+                  className="icon-btn !h-6 !w-6"
+                  aria-label="Скрыть"
+                  onClick={() => {
+                    setSideAlerts((current) => current.filter((item) => item.id !== alert.id));
+                    if (alert.id === 'voice-turn') setVoiceBannerDismissed(true);
+                  }}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+              <p className="mt-1 leading-4 text-[hsl(var(--muted-foreground))]">{alert.body}</p>
+              {alert.id === 'voice-turn' && (
+                <button type="button" className="ghost-btn mt-2 !h-7 !px-2 text-[10px]" onClick={() => setOverlay('settings')}>Настройки</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </aside>
     {showChannelDialog && <CreateChannelDialog onClose={() => setShowChannelDialog(false)} onCreate={addChannel} />}
     {showInviteDialog && (

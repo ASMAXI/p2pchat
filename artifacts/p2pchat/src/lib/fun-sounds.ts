@@ -3,6 +3,8 @@
  * Played by every peer when a [[drift-sfx]] chat event arrives.
  */
 
+import { loadFunSoundsEnabled } from "@/lib/notify-settings";
+
 export type FunSoundId =
   | "fart"
   | "cry"
@@ -70,6 +72,7 @@ let lastAudio: HTMLAudioElement | null = null;
 
 /** Play a soundboard clip for everyone who receives the chat sfx event. */
 export function playFunSound(id: FunSoundId): void {
+  if (!loadFunSoundsEnabled()) return;
   try {
     if (lastAudio) {
       lastAudio.pause();

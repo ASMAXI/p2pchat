@@ -7,6 +7,8 @@ export const EDIT_PREFIX = "[[drift-edit:v1]]";
 export const DEL_PREFIX = "[[drift-del:v1]]";
 export const PIN_PREFIX = "[[drift-pin:v1]]";
 export const SFX_PREFIX = "[[drift-sfx:v1]]";
+export const VOTEKICK_PREFIX = "[[drift-votekick:v1]]";
+export const KICK_PREFIX = "[[drift-kick:v1]]";
 
 export const MAX_FILE_BYTES = 900_000; // keep under plaintext limit with base64 overhead
 export const MAX_FILE_NAME = 120;
@@ -31,6 +33,8 @@ export type EditBody = { v: 1; target: string; body: string };
 export type DelBody = { v: 1; target: string };
 export type PinBody = { v: 1; target: string; pinned: boolean };
 export type SfxBody = { v: 1; id: string };
+export type VoteKickBody = { v: 1; targetId: string; targetName: string };
+export type KickBody = { v: 1; targetId: string; targetName: string };
 
 export type ParsedWireText =
   | { kind: "text"; body: string; replyTo?: string; mentions?: string[]; file?: ChatFileRef }
@@ -40,6 +44,8 @@ export type ParsedWireText =
   | { kind: "delete"; target: string }
   | { kind: "pin"; target: string; pinned: boolean }
   | { kind: "sfx"; id: string }
+  | { kind: "votekick"; targetId: string; targetName: string }
+  | { kind: "kick"; targetId: string; targetName: string }
   | { kind: "unknown"; raw: string };
 
 function parseJson<T>(raw: string): T | null {
@@ -97,6 +103,14 @@ export function encodeSfx(id: string): string {
   return `${SFX_PREFIX}${JSON.stringify({ v: 1, id } satisfies SfxBody)}`;
 }
 
+export function encodeVoteKick(targetId: string, targetName: string): string {
+  return `${VOTEKICK_PREFIX}${JSON.stringify({ v: 1, targetId, targetName } satisfies VoteKickBody)}`;
+}
+
+export function encodeKickNotice(targetId: string, targetName: string): string {
+  return `${KICK_PREFIX}${JSON.stringify({ v: 1, targetId, targetName } satisfies KickBody)}`;
+}
+
 export function parseWireText(text: string | null | undefined): ParsedWireText {
   if (!text) return { kind: "unknown", raw: "" };
   if (text.startsWith(IMAGE_MESSAGE_PREFIX)) {
@@ -137,6 +151,16 @@ export function parseWireText(text: string | null | undefined): ParsedWireText {
     const data = parseJson<SfxBody>(text.slice(SFX_PREFIX.length));
     if (!data?.id || typeof data.id !== "string") return { kind: "unknown", raw: text };
     return { kind: "sfx", id: data.id };
+  }
+  if (text.startsWith(VOTEKICK_PREFIX)) {
+    const data = parseJson<VoteKickBody>(text.slice(VOTEKICK_PREFIX.length));
+    if (!data?.targetId || !data?.targetName) return { kind: "unknown", raw: text };
+    return { kind: "votekick", targetId: data.targetId, targetName: data.targetName };
+  }
+  if (text.startsWith(KICK_PREFIX)) {
+    const data = parseJson<KickBody>(text.slice(KICK_PREFIX.length));
+    if (!data?.targetId || !data?.targetName) return { kind: "unknown", raw: text };
+    return { kind: "kick", targetId: data.targetId, targetName: data.targetName };
   }
   return { kind: "text", body: text };
 }
@@ -211,6 +235,8 @@ export type DisplayMessage = {
   reactions?: Record<string, string[]>; // emoji -> author names
   pinned?: boolean;
   sfxId?: string;
+  voteKick?: { targetId: string; targetName: string };
+  kickNotice?: { targetId: string; targetName: string };
 };
 
 /** Fold control messages (react/edit/delete/pin) into display list. */
@@ -296,6 +322,12 @@ export function foldChatMessages(
       base.replyTo = parsed.replyTo;
       base.mentions = parsed.mentions;
       base.file = parsed.file;
+    } else if (parsed.kind === "votekick") {
+      base.voteKick = { targetId: parsed.targetId, targetName: parsed.targetName };
+      base.content = `Голосование: кикнуть ${parsed.targetName}`;
+    } else if (parsed.kind === "kick") {
+      base.kickNotice = { targetId: parsed.targetId, targetName: parsed.targetName };
+      base.content = `${parsed.targetName} исключён голосованием (можно зайти снова)`;
     } else {
       base.content = item.content;
     }

@@ -28,12 +28,13 @@ export type Message = {
   channelId?: string;
   delivery?: 'queued' | 'sent' | 'synced';
 };
+export type VoiceParticipant = { id: string; name: string };
 export type VoiceRoom = {
   id: string;
   name: string;
   participantCount: number;
   state: 'ready' | 'live';
-  participants: string[];
+  participants: VoiceParticipant[];
 };
 export type StoredVoice = VoiceRoom & { muted?: boolean; deafened?: boolean };
 
@@ -91,7 +92,10 @@ export const roomStateToClientState = (state: ApiRoomState, peerId: string, invi
         name: channel.name,
         participantCount: participants.length,
         state: participants.length > 0 ? 'live' : 'ready',
-        participants: participants.map((participant) => participant.name),
+        participants: participants.map((participant) => ({
+          id: participant.id,
+          name: participant.name,
+        })),
       };
     });
   return {

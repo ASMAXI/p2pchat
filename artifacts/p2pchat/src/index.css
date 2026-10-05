@@ -423,7 +423,7 @@ html[data-theme="gachi"] .nav-icon.active {
   opacity: 0.5;
 }
 .theme-chat-bg--gachi::before {
-  background-image: url("/themes/gachi-chat.jpg");
+  background-image: url("/themes/gachi-chat.png");
   opacity: 0.5;
 }
 .theme-chat-bg > * {
@@ -478,7 +478,7 @@ html[data-theme="gachi"] .nav-icon.active {
 .composer-inner { max-width: 760px; display: flex; align-items: flex-end; gap: 10px; border: 1px solid hsl(var(--border)); background: hsl(var(--card)); border-radius: 14px; padding: 8px 9px 8px 15px; transition: border .2s, box-shadow .2s; }
 .composer-inner:focus-within { border-color: hsl(var(--primary)); box-shadow: 0 0 0 3px hsl(var(--primary) / .12); }
 .composer textarea { min-height: 34px; max-height: 120px; flex: 1; resize: none; border: 0; outline: 0; color: hsl(var(--foreground)); background: transparent; padding: 7px 0; }
-.member-pane { width: var(--member-pane-w, 224px); flex: 0 0 var(--member-pane-w, 224px); border-left: 1px solid hsl(var(--border)); background: hsl(var(--card) / .45); padding: 25px 17px; overflow-y: auto; min-height: 0; position: relative; }
+.member-pane { width: var(--member-pane-w, 224px); flex: 0 0 var(--member-pane-w, 224px); border-left: 1px solid hsl(var(--border)); background: hsl(var(--card) / .45); padding: 25px 17px; overflow-y: auto; min-height: 0; position: relative; display: flex; flex-direction: column; }
 .member-pane.collapsed { width: 0; flex-basis: 0; padding: 0; border: 0; overflow: hidden; }
 .nav-unread-badge {
   position: absolute;
