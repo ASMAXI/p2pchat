@@ -16,7 +16,7 @@ export {
   mergeEventLogs,
   seedEventsFromSnapshot,
 } from "./room-events";
-export { buildConnectPlan, migrationCandidates, preferReachableEndpoints, type ConnectTarget } from "./migration";
+export { buildConnectPlan, migrationCandidates, preferReachableEndpoints, isPublicEndpoint, peerHasPublicEndpoint, type ConnectTarget } from "./migration";
 export {
   RoomSession,
   type ChatMessage,

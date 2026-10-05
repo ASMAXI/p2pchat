@@ -65,11 +65,15 @@ export type SessionTiming = {
   connectTimeoutMs: number;
   notCoordinatorRetryMs: number;
   notCoordinatorRetries: number;
+  /** Extra NOT_COORDINATOR retries while migrating after an abrupt host failure. */
+  migrationNotCoordinatorRetries: number;
   heartbeatMs: number;
   heartbeatTimeoutMs: number;
   probeIntervalMs: number;
   retryDelayMs: number;
   reconnectDelayMs: number;
+  /** How often to push fresh local endpoints into the room replica. */
+  endpointsAnnounceMs: number;
 };
 
 export type RoomSessionOptions = {
@@ -115,11 +119,14 @@ const DEFAULT_TIMING: SessionTiming = {
   connectTimeoutMs: 3000,
   notCoordinatorRetryMs: 500,
   notCoordinatorRetries: 8,
+  /** After host death, wait longer for the lex successor to finish self-host claim. */
+  migrationNotCoordinatorRetries: 24,
   heartbeatMs: 5000,
   heartbeatTimeoutMs: 15000,
   probeIntervalMs: 5000,
   retryDelayMs: 2000,
   reconnectDelayMs: 200,
+  endpointsAnnounceMs: 20000,
 };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -157,15 +164,20 @@ export class RoomSession {
   private voiceChannel: string | null = null;
   private stepDownRedirect?: string[];
   private probeTimer: ReturnType<typeof setInterval> | null = null;
+  private endpointsTimer: ReturnType<typeof setInterval> | null = null;
   private probing = false;
   private rttMs?: number;
   private lastError?: string;
+  private bootstrapOrigins: string[];
+  private localEndpoints: string[];
   private readonly eventLog = new EventLog<RoomEvent>();
 
   constructor(private readonly options: RoomSessionOptions) {
     this.timing = { ...DEFAULT_TIMING, ...options.timing };
     this.state = options.initial?.state ?? null;
     this.lastOrigin = options.initial?.lastOrigin;
+    this.bootstrapOrigins = [...options.bootstrapOrigins];
+    this.localEndpoints = [...(options.localNode?.endpoints ?? [])];
     for (const item of options.initial?.outbox ?? []) this.outbox.set(item.message.id, item);
     for (const event of options.initial?.state?.events ?? []) this.eventLog.stage(event);
   }
@@ -183,9 +195,29 @@ export class RoomSession {
     this.closed = true;
     this.hosting = false;
     this.stopProbe();
+    this.stopEndpointsAnnounce();
     this.send({ type: "leave" });
     this.endConnection?.({ kind: "ended", hostId: this.state?.hostId ?? "", kicked: false });
     this.setStatus("offline");
+  }
+
+  /** Mid-session invite refresh: prefer the live host URL after coordinator takeover. */
+  updateBootstrapOrigins(origins: string[]): void {
+    const next = origins.map((origin) => origin.trim().replace(/\/$/, "")).filter(Boolean);
+    if (next.length === 0) return;
+    this.bootstrapOrigins = next;
+  }
+
+  /** Keep failover dial targets current when the local tunnel rotates. */
+  updateLocalEndpoints(endpoints: string[]): void {
+    const next = endpoints.map((origin) => origin.trim().replace(/\/$/, "")).filter(Boolean);
+    this.localEndpoints = next;
+    if (this.options.localNode) {
+      this.options.localNode.endpoints = next;
+    }
+    if (this.status === "connected") {
+      this.send({ type: "announce_endpoints", endpoints: next });
+    }
   }
 
   getView(): SessionView {
@@ -272,8 +304,8 @@ export class RoomSession {
         state: this.state,
         selfId: this.selfId,
         localOrigin: this.options.localNode?.origin,
-        selfOrigins: this.options.localNode?.endpoints,
-        bootstrapOrigins: this.options.bootstrapOrigins,
+        selfOrigins: this.localEndpoints.length > 0 ? this.localEndpoints : this.options.localNode?.endpoints,
+        bootstrapOrigins: this.bootstrapOrigins,
         failedHostId,
         retryOrigin,
         redirect,
@@ -299,6 +331,10 @@ export class RoomSession {
       }
       emptyPlanRounds = 0;
 
+      const notCoordinatorLimit = failedHostId
+        ? this.timing.migrationNotCoordinatorRetries
+        : this.timing.notCoordinatorRetries;
+
       for (let index = 0; index < plan.length && !this.closed; index += 1) {
         const target = plan[index]!;
         let outcome = await this.attempt(target);
@@ -310,7 +346,7 @@ export class RoomSession {
             break;
           }
           retries += 1;
-          if (retries > this.timing.notCoordinatorRetries) break;
+          if (retries > notCoordinatorLimit) break;
           await sleep(this.timing.notCoordinatorRetryMs);
           outcome = await this.attempt(target);
         }
@@ -325,7 +361,17 @@ export class RoomSession {
       if (ended) {
         failedHostId = ended.redirect ? null : ended.hostId;
         redirect = ended.redirect;
-        retryOrigin = ended.kicked || ended.redirect ? undefined : this.lastOrigin;
+        // Abrupt host death: do not retry the dead origin first — migrate immediately.
+        // Graceful step-down / kick already carries redirect hints.
+        retryOrigin = ended.kicked || ended.redirect || failedHostId ? undefined : this.lastOrigin;
+        if (failedHostId && this.state) {
+          this.state = {
+            ...this.state,
+            members: this.state.members.map((member) =>
+              member.id === failedHostId ? { ...member, online: false } : member,
+            ),
+          };
+        }
         this.setStatus("reconnecting");
         await sleep(ended.redirect ? Math.max(this.timing.reconnectDelayMs, 1500) : this.timing.reconnectDelayMs);
         continue;
@@ -353,7 +399,7 @@ export class RoomSession {
       publicKey: identity.publicKey,
       ts,
       proof: signText(identity, joinProofText(roomId, identity.peerId, ts)),
-      endpoints: this.options.localNode?.endpoints ?? [],
+      endpoints: this.localEndpoints.length > 0 ? this.localEndpoints : (this.options.localNode?.endpoints ?? []),
       host: target.host,
       snapshot: this.state ?? undefined,
     };
@@ -414,6 +460,7 @@ export class RoomSession {
           this.endConnection = null;
           this.hosting = false;
           this.stopProbe();
+          this.stopEndpointsAnnounce();
           this.sentIds.clear();
         }
         try {
@@ -546,6 +593,7 @@ export class RoomSession {
     }
     if (this.voiceChannel) this.send({ type: "voice_join", channelId: this.voiceChannel });
     if (this.hosting) this.startProbe();
+    this.startEndpointsAnnounce();
     this.status = "connected";
     this.persist();
     this.emit();
@@ -685,6 +733,27 @@ export class RoomSession {
     this.probeTimer = null;
   }
 
+  private startEndpointsAnnounce(): void {
+    this.stopEndpointsAnnounce();
+    if (this.localEndpoints.length === 0 && !(this.options.localNode?.endpoints?.length)) return;
+    this.send({
+      type: "announce_endpoints",
+      endpoints: this.localEndpoints.length > 0 ? this.localEndpoints : (this.options.localNode?.endpoints ?? []),
+    });
+    this.endpointsTimer = setInterval(() => {
+      if (this.status !== "connected") return;
+      const endpoints =
+        this.localEndpoints.length > 0 ? this.localEndpoints : (this.options.localNode?.endpoints ?? []);
+      if (endpoints.length === 0) return;
+      this.send({ type: "announce_endpoints", endpoints });
+    }, this.timing.endpointsAnnounceMs);
+  }
+
+  private stopEndpointsAnnounce(): void {
+    if (this.endpointsTimer) clearInterval(this.endpointsTimer);
+    this.endpointsTimer = null;
+  }
+
   /** While coordinating, look for a competing coordinator and yield to it if it wins. */
   private async probe(): Promise<void> {
     if (this.probing || !this.hosting || !this.state) return;
@@ -701,6 +770,7 @@ export class RoomSession {
         for (const endpoint of member.endpoints ?? []) origins.add(endpoint);
       }
       origins.delete(this.options.localNode?.origin ?? "");
+      for (const endpoint of this.localEndpoints) origins.delete(endpoint);
       for (const endpoint of this.options.localNode?.endpoints ?? []) origins.delete(endpoint);
 
       const mine = { epoch: this.state.epoch, hostId: this.selfId };

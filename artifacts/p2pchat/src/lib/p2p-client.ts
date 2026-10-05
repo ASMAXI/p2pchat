@@ -581,6 +581,7 @@ export async function openRoomSession(input: {
 
   let lastStatus: string | null = null;
   let sawCoordinator = false;
+  let lastKnownHostId = snap?.state?.hostId ?? null;
   debugLog("session", "open", {
     roomId: activeMeta.roomId,
     allowSelfHost,
@@ -639,6 +640,51 @@ export async function openRoomSession(input: {
           debugLog("room", "coordinator invite synced", { origins: next.bootstrapOrigins.slice(0, 5), changed });
         });
       }
+      // After takeover (or first connect), point bootstrap/saved invite at the live host
+      // so friends auto-reconnect without waiting for a manually shared link.
+      if (view.status === "connected" && view.state?.hostId) {
+        const hostChanged = view.state.hostId !== lastKnownHostId;
+        lastKnownHostId = view.state.hostId;
+        const host = view.state.members.find((member) => member.id === view.state!.hostId);
+        const hostOrigins = orderBootstrapOrigins(
+          (host?.endpoints ?? [])
+            .map(normalizeOrigin)
+            .filter((origin) => origin && !selfSet.has(origin)),
+        );
+        if (hostOrigins.length > 0) {
+          session.updateBootstrapOrigins(hostOrigins);
+          const shareable = filterShareableInviteOrigins(hostOrigins);
+          if (shareable.length > 0 && (hostChanged || view.isCoordinator)) {
+            const invite = buildInvite({
+              roomId: activeMeta.roomId,
+              inviteToken: activeMeta.inviteToken,
+              roomKey: activeMeta.roomKey,
+              origins: shareable,
+            });
+            if (invite !== activeMeta.invite) {
+              activeMeta = { ...activeMeta, invite, bootstrapOrigins: shareable };
+              saveRoomMeta(activeMeta);
+              input.onInvite?.(activeMeta);
+              debugLog("room", "bootstrap followed live host", {
+                hostId: view.state.hostId,
+                origins: shareable.slice(0, 5),
+              });
+            }
+          }
+        }
+      }
+      if (view.status === "reconnecting" && allowSelfHost) {
+        void ensureLocalNode().then((node) => {
+          if (!node) return;
+          if (node.publicOrigin) applyAutoPublicUrl(node.publicOrigin);
+          const nextEndpoints = collectNodeEndpoints({
+            origin: node.origin,
+            lanOrigins: node.lanOrigins,
+            publicOrigin: node.publicOrigin,
+          });
+          if (nextEndpoints.length > 0) session.updateLocalEndpoints(nextEndpoints);
+        });
+      }
       if (view.state) {
         upsertSavedServer({
           roomId: view.state.id,
@@ -674,12 +720,28 @@ export async function openRoomSession(input: {
       input.onSignal?.(event);
     },
   });
+  const endpointsPoll =
+    allowSelfHost
+      ? window.setInterval(() => {
+          void ensureLocalNode().then((node) => {
+            if (!node) return;
+            if (node.publicOrigin) applyAutoPublicUrl(node.publicOrigin);
+            const nextEndpoints = collectNodeEndpoints({
+              origin: node.origin,
+              lanOrigins: node.lanOrigins,
+              publicOrigin: node.publicOrigin,
+            });
+            if (nextEndpoints.length > 0) session.updateLocalEndpoints(nextEndpoints);
+          });
+        }, 20000)
+      : 0;
   debugLog("session", "start", { roomId: activeMeta.roomId });
   session.start();
   return {
     session,
     close: () => {
       debugLog("session", "stop");
+      if (endpointsPoll) window.clearInterval(endpointsPoll);
       session.stop();
     },
   };

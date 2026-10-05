@@ -158,6 +158,8 @@ export type ClientCommand =
   | { type: "voice_join"; channelId: string }
   | { type: "voice_leave"; channelId: string }
   | { type: "signal"; toPeerId: string; data: unknown }
+  /** Refresh this peer's reachable hub URLs so failover can find a live successor. */
+  | { type: "announce_endpoints"; endpoints: string[] }
   | { type: "leave"; redirect?: string }
   | { type: "ping"; nonce: number };
 

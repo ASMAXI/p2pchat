@@ -30,8 +30,53 @@ export type VotekickMemberOption = {
   insert: string;
 };
 
+/** 1 см … 40 см, десять шуточных диапазонов. */
+export const PISYUNDRIK_MIN_CM = 1;
+export const PISYUNDRIK_MAX_CM = 40;
+
+const PISYUNDRIK_TIERS: Array<{ maxCm: number; note: string }> = [
+  { maxCm: 4, note: "Ну тут только выпрыгнуть в окно" },
+  { maxCm: 8, note: "Микро-набор «обида и надежда»" },
+  { maxCm: 12, note: "Видно только в микроскоп и при хорошем настроении" },
+  { maxCm: 16, note: "Стандарт «хватит на минуту стыда»" },
+  { maxCm: 20, note: "Норм для пикника, слабо для легенд" },
+  { maxCm: 24, note: "Уже можно не оправдываться в чате" },
+  { maxCm: 28, note: "Пора оформлять страховку на штаны" },
+  { maxCm: 32, note: "Соседи жалуются на сейсмическую активность" },
+  { maxCm: 36, note: "NASA просит координаты для посадки" },
+  { maxCm: 40, note: "Это уже не орган, это инфраструктурный проект" },
+];
+
+export function formatPisyundrikSize(cm: number): string {
+  const value = Math.max(PISYUNDRIK_MIN_CM, Math.min(PISYUNDRIK_MAX_CM, Math.round(cm)));
+  return `${value} см`;
+}
+
+export function pisyundrikNote(cm: number): string {
+  const value = Math.max(PISYUNDRIK_MIN_CM, Math.min(PISYUNDRIK_MAX_CM, Math.round(cm)));
+  for (const tier of PISYUNDRIK_TIERS) {
+    if (value <= tier.maxCm) return tier.note;
+  }
+  return PISYUNDRIK_TIERS[PISYUNDRIK_TIERS.length - 1]!.note;
+}
+
+export function rollPisyundrik(selfName: string, random = Math.random): { cm: number; text: string } {
+  const span = PISYUNDRIK_MAX_CM - PISYUNDRIK_MIN_CM + 1;
+  const cm = PISYUNDRIK_MIN_CM + Math.floor(random() * span);
+  return {
+    cm,
+    text: `🍌 ${selfName}: размер писиюндрика — ${formatPisyundrikSize(cm)}. ${pisyundrikNote(cm)}`,
+  };
+}
+
 export const SLASH_COMMANDS: SlashCommandOption[] = [
   { cmd: "roll", usage: "/roll [число]", description: "Бросок 1…N (по умолчанию 100)", insert: "/roll " },
+  {
+    cmd: "писиюндрик",
+    usage: "/писиюндрик",
+    description: "Замер писиюндрика: 1…40 см + прикол",
+    insert: "/писиюндрик",
+  },
   { cmd: "votekick", usage: "/votekick", description: "Голосование за кик — выберите участника", insert: "/votekick " },
   { cmd: "help", usage: "/help", description: "Список команд", insert: "/help" },
 ];
@@ -43,6 +88,8 @@ export function slashCommandSuggestions(draft: string): SlashCommandOption[] | n
   const query = (match[1] ?? "").toLowerCase();
   const aliases: Record<string, string> = {
     кости: "roll",
+    pp: "писиюндрик",
+    размер: "писиюндрик",
     кик: "votekick",
     команды: "help",
   };
@@ -169,7 +216,7 @@ export function tryParseChatCommand(
   if (cmd === "help" || cmd === "команды") {
     return {
       kind: "help",
-      text: `Команды: /roll [число] · /votekick (выбор участника) · /help. Кик: нужно ${needed} «За» при ${onlineCount} онлайн.`,
+      text: `Команды: /roll [число] · /писиюндрик · /votekick · /help. Кик: нужно ${needed} «За» при ${onlineCount} онлайн.`,
     };
   }
 
@@ -181,6 +228,10 @@ export function tryParseChatCommand(
       kind: "roll",
       text: `🎲 ${ctx.selfName} выбрасывает 1–${parsed.max}: ${value}`,
     };
+  }
+
+  if (cmd === "писиюндрик" || cmd === "pp" || cmd === "размер") {
+    return { kind: "roll", text: rollPisyundrik(ctx.selfName).text };
   }
 
   if (cmd === "votekick" || cmd === "кик") {

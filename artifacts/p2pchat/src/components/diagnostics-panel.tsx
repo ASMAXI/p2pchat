@@ -37,7 +37,7 @@ export function Diagnostics({ onClose }: { onClose?: () => void }) {
     ['Control plane / Signaling', connectionStatus === 'connected' ? 'OK' : connectionLabel, 'Текст и WebRTC signaling через peer-узел. Публичный доступ — туннель (чат ≠ голос).'],
     ['ICE / TURN', iceLabel, customTurn ? 'Кастомный relay из настроек.' : iceFlags.meteredConfigured ? `Metered (${iceFlags.meteredAppName || 'app'}), source=${iceFlags.iceSource}.` : 'Metered/свой TURN не заданы (опционально). В разных NAT голос может молчать — ключ в Настройки → Расширенные.'],
     ['Публичный URL', publicUrl ? 'Авто/задан' : 'Нет', publicUrl ? publicUrl : 'Туннель не поднялся — повторите в настройках.'],
-    ['Переезд координатора', 'Защищён', 'При уходе хоста пиры идут на endpoints преемника (сначала публичный URL).'],
+    ['Переезд координатора', 'Защищён', 'При уходе хоста преемник — peer с публичным туннелем (иначе по peerId); сначала его public URL.'],
   ];
   useEffect(() => subscribeDebugLogs(() => setLogTick((n) => n + 1)), []);
   const check = () => { setChecking(true); window.setTimeout(() => { setChecking(false); setLastChecked('только что'); }, 1000); };

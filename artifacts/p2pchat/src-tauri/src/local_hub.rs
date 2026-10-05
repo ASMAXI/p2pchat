@@ -739,16 +739,13 @@ fn join(hub: &mut Hub, command: &Value, tx: &Tx, socket_id: u64) -> Result<(Stri
             .map(|id| room.clients.contains_key(id))
             .unwrap_or(false);
         if !coordinating {
-            let hint = room
-                .state
-                .members
-                .iter()
-                .find(|member| member.id == room.state.host_id)
-                .map(|member| member.endpoints.clone());
+            // Empty redirect: the lex successor may still be finishing host:true on this
+            // node. Never hint the previous hostId endpoints — that poisons reconnect
+            // plans with a dead Cloudflare/LAN address after abrupt PC-off.
             return Err(HubError {
                 code: "NOT_COORDINATOR",
                 message: "Этот участник сейчас не координирует комнату".to_string(),
-                redirect: hint,
+                redirect: None,
             });
         }
     }
@@ -1079,6 +1076,36 @@ fn depart(hub: &mut Hub, room_id: &str, peer_id: &str, socket_id: u64, redirect:
     broadcast_presence(room);
 }
 
+fn announce_endpoints(hub: &mut Hub, room_id: &str, peer_id: &str, command: &Value) -> Result<(), HubError> {
+    let endpoints: Vec<String> = command
+        .get("endpoints")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|item| bounded(item, 200))
+                .take(8)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let Hub { rooms, db } = hub;
+    let Some(room) = rooms.get_mut(room_id) else {
+        return Ok(());
+    };
+    let Some(member) = room.state.members.iter_mut().find(|member| member.id == peer_id) else {
+        return Ok(());
+    };
+    if member.endpoints == endpoints {
+        return Ok(());
+    }
+    member.endpoints = endpoints;
+    persist(db, room);
+    broadcast_presence(room);
+    Ok(())
+}
+
 fn dispatch(
     hub: &mut Hub,
     command: &Value,
@@ -1115,6 +1142,7 @@ fn dispatch(
         "voice_join" => voice(hub, &room_id, &peer_id, command, true),
         "voice_leave" => voice(hub, &room_id, &peer_id, command, false),
         "signal" => relay_signal(hub, &room_id, &peer_id, command),
+        "announce_endpoints" => announce_endpoints(hub, &room_id, &peer_id, command),
         "leave" => {
             let redirect = command.get("redirect").and_then(Value::as_str).map(str::to_string);
             depart(hub, &room_id, &peer_id, socket_id, redirect);

@@ -258,8 +258,8 @@ export class RoomHub {
     if (!this.alwaysHost && !command.host) {
       const hostClient = room.hostPeerId ? room.clients.get(room.hostPeerId) : undefined;
       if (!hostClient) {
-        const hint = room.state.members.find((member) => member.id === room!.state.hostId)?.endpoints;
-        throw new HubError("NOT_COORDINATOR", "Этот участник сейчас не координирует комнату", hint);
+        // Empty redirect — wait for successor claim on this node; do not send dead host URLs.
+        throw new HubError("NOT_COORDINATOR", "Этот участник сейчас не координирует комнату");
       }
     }
 
@@ -499,6 +499,21 @@ export class RoomHub {
         this.depart(room.state.id, client.peerId, client.socket, command.redirect);
         client.socket.close(1000, "left");
         return;
+      case "announce_endpoints": {
+        const endpoints = Array.isArray(command.endpoints)
+          ? command.endpoints.filter((item) => isString(item, 200)).slice(0, 8)
+          : [];
+        const member = room.state.members.find((item) => item.id === client.peerId);
+        if (!member) return;
+        const same =
+          endpoints.length === member.endpoints.length &&
+          endpoints.every((origin, index) => origin === member.endpoints[index]);
+        if (same) return;
+        member.endpoints = endpoints;
+        this.persist(room);
+        this.broadcastPresence(room);
+        return;
+      }
       default:
         return;
     }

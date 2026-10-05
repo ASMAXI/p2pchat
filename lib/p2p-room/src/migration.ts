@@ -52,6 +52,18 @@ function isLanOrigin(origin: string): boolean {
   }
 }
 
+/** Reachable from the public internet (tunnel / public DNS), not LAN or loopback. */
+export function isPublicEndpoint(origin: string): boolean {
+  if (!origin) return false;
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    return !isLoopbackOrigin(origin) && !isLanOrigin(origin);
+  } catch {
+    return false;
+  }
+}
+
 function normalizeForCompare(origin: string): string {
   return origin.trim().replace(/\/$/, "");
 }
@@ -67,9 +79,20 @@ export function preferReachableEndpoints(endpoints: string[]): string[] {
   return [...unique].sort((left, right) => score(left) - score(right));
 }
 
+export function peerHasPublicEndpoint(endpoints: string[]): boolean {
+  return endpoints.some((origin) => isPublicEndpoint(origin));
+}
+
 /**
  * Peers that may take over the coordinator role, in deterministic order. Every peer computes
  * the same list from the same replicated state, so they converge on the same successor.
+ *
+ * Prefer peers that advertised a public/tunnel URL, then break ties by peerId. Pure LAN
+ * parties (no public endpoints anywhere) still fall back to lexicographic peerId order.
+ *
+ * After an abrupt host death the replica still marks everyone "online", but a stale offline
+ * flag must not hide a desktop peer that advertised endpoints — otherwise failover has nobody
+ * to dial and friends need a fresh invite.
  */
 export function migrationCandidates(
   state: WireRoomState,
@@ -80,13 +103,18 @@ export function migrationCandidates(
   return state.members
     .filter((member) => member.id !== failedHostId)
     .filter((member) =>
-      member.id === selfId ? selfCanHost : member.online && (member.endpoints?.length ?? 0) > 0,
+      member.id === selfId ? selfCanHost : (member.endpoints?.length ?? 0) > 0,
     )
     .map((member) => ({
       peerId: member.id,
       endpoints: preferReachableEndpoints(member.endpoints ?? []),
     }))
-    .sort((left, right) => (left.peerId < right.peerId ? -1 : left.peerId > right.peerId ? 1 : 0));
+    .sort((left, right) => {
+      const leftPublic = peerHasPublicEndpoint(left.endpoints) ? 0 : 1;
+      const rightPublic = peerHasPublicEndpoint(right.endpoints) ? 0 : 1;
+      if (leftPublic !== rightPublic) return leftPublic - rightPublic;
+      return left.peerId < right.peerId ? -1 : left.peerId > right.peerId ? 1 : 0;
+    });
 }
 
 export function buildConnectPlan(input: ConnectPlanInput): ConnectTarget[] {
