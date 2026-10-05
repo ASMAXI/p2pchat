@@ -596,6 +596,7 @@ export class RoomSession {
       next = {
         ...folded,
         messages,
+        // foldRoomState already merges base snapshot channels with event creates
         channels: folded.channels.length > 0 ? folded.channels : state.channels,
         events: eventSource,
       };

@@ -575,6 +575,15 @@ html[data-theme="gachi"] .nav-icon.active {
 .field-label { display: block; margin-bottom: 8px; color: hsl(var(--foreground)); font-size: 12px; font-weight: 800; letter-spacing: .03em; }
 .field-input { width: 100%; border: 1px solid hsl(var(--input)); border-radius: 10px; background: hsl(var(--background)); color: hsl(var(--foreground)); padding: 12px 13px; outline: 0; transition: border .2s, box-shadow .2s; }
 .field-input:focus { border-color: hsl(var(--primary)); box-shadow: 0 0 0 3px hsl(var(--primary) / .12); }
+.field-input::placeholder { color: hsl(var(--muted-foreground)); opacity: 1; }
+.field-input:-webkit-autofill,
+.field-input:-webkit-autofill:hover,
+.field-input:-webkit-autofill:focus {
+  -webkit-text-fill-color: hsl(var(--foreground));
+  caret-color: hsl(var(--foreground));
+  box-shadow: 0 0 0 1000px hsl(var(--background)) inset;
+  transition: background-color 99999s ease-out;
+}
 .toast { position: fixed; right: 22px; bottom: 22px; z-index: 60; display: flex; align-items: center; gap: 10px; max-width: min(370px, calc(100vw - 44px)); border-radius: 12px; padding: 13px 15px; background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground)); box-shadow: 0 16px 35px hsl(225 29% 12% / .2); animation: rise-in .3s both; font-size: 13px; }
 .metric-card { border: 1px solid hsl(var(--border)); background: hsl(var(--card)); border-radius: 14px; padding: 17px; }
 .diag-line { height: 1px; flex: 1; background: repeating-linear-gradient(90deg, hsl(var(--border)), hsl(var(--border)) 4px, transparent 4px, transparent 8px); }

@@ -1296,7 +1296,28 @@ export function Workspace() {
               state: participants.length > 0 ? ('live' as const) : ('ready' as const),
             };
           });
-          setVoiceRooms(mergedVoiceRooms);
+          setVoiceRooms((prev) => {
+            const byId = new Map(mergedVoiceRooms.map((room) => [room.id, room]));
+            const activeId = voiceChannelRef.current;
+            if (activeId && !byId.has(activeId)) {
+              const sticky = prev.find((room) => room.id === activeId);
+              if (sticky) {
+                const byPeer = new Map(sticky.participants.map((person) => [person.id, person]));
+                if (peerId) byPeer.set(peerId, { id: peerId, name: displayName });
+                for (const [id, name] of stickyVoiceNamesRef.current) {
+                  if (!byPeer.has(id)) byPeer.set(id, { id, name });
+                }
+                const participants = [...byPeer.values()];
+                byId.set(activeId, {
+                  ...sticky,
+                  participants,
+                  participantCount: participants.length,
+                  state: participants.length > 0 ? ('live' as const) : ('ready' as const),
+                });
+              }
+            }
+            return [...byId.values()];
+          });
           if (knownMemberIdsRef.current === null) {
             knownMemberIdsRef.current = new Set(nextMembers.map((member) => member.id));
           } else if (!deafenedRef.current) {

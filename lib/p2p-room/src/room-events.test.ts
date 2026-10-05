@@ -77,4 +77,26 @@ describe("room events", () => {
     assert.ok(merged.some((event) => event.kind === "message"));
     assert.ok(merged.some((event) => event.kind === "channel_create" && event.channel.id === "extra"));
   });
+
+  it("keeps snapshot channels when the event log only has later creates", () => {
+    const lateOnly = [
+      {
+        kind: "channel_create" as const,
+        eventId: "e-late",
+        sequence: 1,
+        ts: "2026-01-01T00:00:00.000Z",
+        channel: {
+          id: "channel-extra",
+          name: "новый",
+          type: "text" as const,
+          unreadCount: 0,
+          members: 0,
+        },
+      },
+    ];
+    const folded = foldRoomState(base, lateOnly);
+    assert.ok(folded.channels.some((channel) => channel.id === "general"));
+    assert.ok(folded.channels.some((channel) => channel.id === "lounge"));
+    assert.ok(folded.channels.some((channel) => channel.id === "channel-extra"));
+  });
 });

@@ -99,7 +99,9 @@ export function mergeEventLogs(local: RoomEvent[] | undefined, remote: RoomEvent
 /** Derive messages / channels / coordinator fields from the event log (source of truth). */
 export function foldRoomState(base: WireRoomState, events: RoomEvent[]): WireRoomState {
   const ordered = [...events].sort((a, b) => a.sequence - b.sequence);
-  const channels: WireChannel[] = [];
+  // Keep snapshot/default channels; event log may only contain later creates (e.g. Rust hub
+  // without a seeded log). Replacing base with sparse events used to wipe lounge/general.
+  const channels: WireChannel[] = base.channels.map((channel) => ({ ...channel }));
   const messages: WireMessage[] = [];
   let hostId = base.hostId;
   let hostName = base.hostName;
@@ -123,7 +125,7 @@ export function foldRoomState(base: WireRoomState, events: RoomEvent[]): WireRoo
 
   return {
     ...base,
-    channels: channels.length > 0 ? channels : base.channels,
+    channels,
     messages,
     hostId,
     hostName,

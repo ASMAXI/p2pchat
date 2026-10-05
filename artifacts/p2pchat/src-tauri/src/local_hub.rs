@@ -521,6 +521,45 @@ fn append_room_event(room: &mut Room, kind: &str, fields: Value) {
     }
 }
 
+/// Ensure every channel in the snapshot has a matching `channel_create` in the event log.
+fn ensure_channel_create_events(room: &mut Room) {
+    let logged: std::collections::HashSet<String> = room
+        .state
+        .events
+        .iter()
+        .filter(|event| event.get("kind").and_then(Value::as_str) == Some("channel_create"))
+        .filter_map(|event| {
+            event
+                .get("channel")
+                .and_then(|channel| channel.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    let missing: Vec<Channel> = room
+        .state
+        .channels
+        .iter()
+        .filter(|channel| !logged.contains(&channel.id))
+        .cloned()
+        .collect();
+    for channel in missing {
+        append_room_event(
+            room,
+            "channel_create",
+            json!({
+                "channel": {
+                    "id": channel.id,
+                    "name": channel.name,
+                    "type": channel.kind,
+                    "unreadCount": 0,
+                    "members": 0,
+                }
+            }),
+        );
+    }
+}
+
 fn append_coordinator_takeover(room: &mut Room, host_id: &str, host_name: &str, epoch: u64, previous_host_id: Option<&str>) {
     append_room_event(
         room,
@@ -887,6 +926,9 @@ fn create_channel(hub: &mut Hub, room_id: &str, command: &Value) -> Result<(), H
             },
         ));
     }
+    // Seed channel_create events for snapshot defaults before the first custom create,
+    // otherwise clients that fold the event log would drop lounge/general.
+    ensure_channel_create_events(room);
     let channel = Channel {
         id: format!("channel-{}", random_token(9)),
         name,

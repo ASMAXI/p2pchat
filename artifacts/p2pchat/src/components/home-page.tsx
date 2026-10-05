@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useLocation } from 'wouter';
-import { ArrowRight, Link2, LockKeyhole, Settings, ShieldCheck, Trash2 } from 'lucide-react';
+import { ArrowRight, LockKeyhole, Settings, ShieldCheck, Trash2 } from 'lucide-react';
 import { activateSavedServer, createLocalRoom, getBootstrapOrigin, getPeerId, isDesktopShell, isLocalhostOrigin, loadSavedServers, parseInvite, prepareJoin, removeSavedServer, setBootstrapOrigin, type SavedServer } from '@/lib/p2p-client';
 import { isValidDisplayName, normalizeDisplayName, PENDING_INVITE_EVENT, takePendingInvite } from '@/lib/invite-deep-link';
 import { avatarColors, avatarInitials } from '@/lib/avatar';
@@ -236,9 +236,26 @@ export function Home() {
                 <button className="primary-btn mt-6 w-full" type="submit" disabled={busy || !nameOk} data-testid="button-create-server">{busy ? 'Подключаем комнату…' : 'Создать приватный сервер'} {!busy && <ArrowRight size={16} />}</button>
               </form>
             ) : (
-              <form onSubmit={joinServer} className="animate-rise" data-testid="form-join-server">
+              <form onSubmit={joinServer} className="animate-rise" autoComplete="off" data-testid="form-join-server">
                 <label className="field-label" htmlFor="invite-code">Ссылка приглашения</label>
-                <div className="relative"><Link2 size={17} className="absolute left-3.5 top-3.5 text-[hsl(var(--muted-foreground))]" /><input id="invite-code" className="field-input pl-10" value={invite} onChange={(event) => setInvite(event.target.value)} placeholder="https://… или drift://j/…" data-testid="input-invite-code" autoFocus /></div>
+                <input
+                  id="invite-code"
+                  name="drift-invite-url"
+                  className="field-input"
+                  value={invite}
+                  onChange={(event) => setInvite(event.target.value)}
+                  placeholder="https://… или drift://j/…"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  inputMode="url"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  data-form-type="other"
+                  data-testid="input-invite-code"
+                  autoFocus
+                />
                 <p className="mt-3 text-xs leading-5 text-[hsl(var(--muted-foreground))]">В Steam шлите https-ссылку из «Пригласить» — она кликабельна. После перезапуска хоста попросите свежую: меняется адрес туннеля.</p>
                 <button className="primary-btn mt-6 w-full" type="submit" disabled={busy || !nameOk || !invite.trim()} data-testid="button-join-server">{busy ? 'Проверяем приглашение…' : 'Войти в комнату'} {!busy && <ArrowRight size={16} />}</button>
               </form>
