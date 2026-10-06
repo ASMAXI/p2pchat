@@ -1015,7 +1015,7 @@ fn relay_signal(hub: &mut Hub, room_id: &str, peer_id: &str, command: &Value) ->
             ));
         }
         client.signal_sent_at.push(now);
-    } else if room.clients.get(peer_id).is_none() {
+    } else if !room.clients.contains_key(peer_id) {
         return Ok(());
     }
     let target = command.get("toPeerId").and_then(Value::as_str).unwrap_or("");
