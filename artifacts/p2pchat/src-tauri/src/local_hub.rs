@@ -1052,6 +1052,17 @@ fn depart(hub: &mut Hub, room_id: &str, peer_id: &str, socket_id: u64, redirect:
         Some(client) if client.socket_id == socket_id => {}
         _ => return,
     }
+    let display_name = room
+        .clients
+        .get(peer_id)
+        .map(|client| client.display_name.clone())
+        .unwrap_or_else(|| "Участник".to_string());
+    let voice_channels: Vec<String> = room
+        .voice
+        .iter()
+        .filter(|(_, participants)| participants.iter().any(|(id, _)| id == peer_id))
+        .map(|(channel_id, _)| channel_id.clone())
+        .collect();
     room.clients.remove(peer_id);
     for participants in room.voice.values_mut() {
         participants.retain(|(id, _)| id != peer_id);
@@ -1067,6 +1078,20 @@ fn depart(hub: &mut Hub, room_id: &str, peer_id: &str, socket_id: u64, redirect:
         }
         room.clients.clear();
         room.voice.clear();
+    } else {
+        // Explicit voice leave so remotes drop WebRTC mesh (presence alone left zombies).
+        for channel_id in voice_channels {
+            broadcast(
+                room,
+                &json!({
+                    "type": "voice",
+                    "channelId": channel_id,
+                    "peerId": peer_id,
+                    "displayName": display_name,
+                    "joined": false
+                }),
+            );
+        }
     }
     let online: Vec<String> = room.clients.keys().cloned().collect();
     for member in &mut room.state.members {

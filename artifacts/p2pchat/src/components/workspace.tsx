@@ -20,7 +20,6 @@ import { playUiSound } from '@/lib/ui-sounds';
 import { labelForHotkeyCode, loadDeafenHotkeyCode, loadMuteHotkeyCode, loadPttKeyCode, loadVoiceOverlayEnabled, loadVoiceOverlayInteractive, loadVoiceOverlayOpacity, loadVoiceTalkMode, hotkeyVkForCode, pttVkForCode, VOICE_OVERLAY_PAYLOAD_KEY, type PttKeyCode, type VoiceOverlayPayload, type VoiceTalkMode } from '@/lib/voice-settings';
 import { dismissOnboardingGuide, loadOnboardingGuide } from '@/lib/onboarding-guide';
 import { hideMessageLocally, loadHiddenMessageIds } from '@/lib/hidden-messages';
-import { emitPendingInvite } from '@/lib/invite-deep-link';
 import {
   applySlashCommandSuggestion,
   applyVotekickMemberSuggestion,
@@ -906,6 +905,8 @@ export function Workspace() {
   const executedKickVotesRef = useRef<Set<string>>(new Set());
   const processedKickNoticesRef = useRef<Set<string>>(new Set());
   const kickHistoryPrimedRef = useRef(false);
+  const prevConnectionStatusRef = useRef<SessionStatus>('offline');
+  const voiceRemeshGenRef = useRef(0);
   const [hiddenMessageIds, setHiddenMessageIds] = useState<Set<string>>(() => loadHiddenMessageIds(readStore<Server>(SERVER_KEY, seedServer).roomId ?? ''));
   const [voicePeers, setVoicePeers] = useState<Array<{ id: string; name: string }>>([]);
   const [sharingScreen, setSharingScreen] = useState(false);
@@ -1343,6 +1344,32 @@ export function Workspace() {
         setIsCoordinator(view.isCoordinator);
         if (view.lastError && view.status !== 'connected') setConnectionError(view.lastError);
         if (view.status === 'connected') setConnectionError('');
+        const prevStatus = prevConnectionStatusRef.current;
+        prevConnectionStatusRef.current = view.status;
+        // After control-plane reconnect, force voice leave→join so peers recreate mesh
+        // (stale PC in "new" otherwise waits forever for an offer that never comes).
+        if (
+          view.status === 'connected' &&
+          (prevStatus === 'reconnecting' || prevStatus === 'connecting') &&
+          voiceChannelRef.current &&
+          sessionRef.current
+        ) {
+          const channelId = voiceChannelRef.current;
+          const gen = ++voiceRemeshGenRef.current;
+          debugLog('voice', 'remesh after control-plane reconnect', { channelId, prevStatus });
+          const mesh = voiceMeshRef.current;
+          if (mesh) {
+            for (const id of mesh.listPeerIds()) mesh.removePeer(id);
+          }
+          stickyVoiceNamesRef.current.clear();
+          setVoicePeers([]);
+          sessionRef.current.setVoiceChannel(null);
+          window.setTimeout(() => {
+            if (voiceRemeshGenRef.current !== gen) return;
+            if (voiceChannelRef.current !== channelId) return;
+            sessionRef.current?.setVoiceChannel(channelId);
+          }, 150);
+        }
         if (view.state) {
           const next = roomStateToClientState(view.state, peerId, server.invite);
           next.server.inviteToken = server.inviteToken;
@@ -1363,7 +1390,8 @@ export function Workspace() {
           // everyone moved with you.
           if (activeVoiceId && voiceMeshRef.current) {
             const allowed = new Set((serverVoiceByChannel[activeVoiceId] ?? []).map((peer) => peer.id));
-            for (const id of voiceMeshRef.current.listLivePeerIds()) {
+            // Include stuck "new" peers — listLivePeerIds skipped them and left zombies.
+            for (const id of voiceMeshRef.current.listPeerIds()) {
               if (id === peerId) continue;
               if (!allowed.has(id)) {
                 stickyVoiceNamesRef.current.delete(id);
@@ -1540,9 +1568,13 @@ export function Workspace() {
             void notifyDesktop('voice-join', event.displayName, 'Подключился к голосовому каналу');
           }
           if (event.peerId !== peerId) triggerPatriotPopup();
-          void voiceMeshRef.current?.addPeer(event.peerId, peerId < event.peerId).catch((error) => {
-            setToast(error instanceof Error ? error.message : 'Не удалось подключить голосовой канал');
-          });
+          const mesh = voiceMeshRef.current;
+          if (mesh && event.peerId !== peerId) {
+            const force = !mesh.hasLivePeer(event.peerId);
+            void mesh.addPeer(event.peerId, peerId < event.peerId, { force }).catch((error) => {
+              setToast(error instanceof Error ? error.message : 'Не удалось подключить голосовой канал');
+            });
+          }
           setVoicePeers((current) => {
             if (event.peerId === peerId || current.some((peer) => peer.id === event.peerId)) return current;
             return [...current, { id: event.peerId, name: event.displayName }];
@@ -2081,6 +2113,9 @@ export function Workspace() {
     );
 
     if (!kickHistoryPrimedRef.current) {
+      // Wait for real history — priming on [] made rejoins treat old kicks as new
+      // and bounce the peer in a join/leave loop (name flicker on the host).
+      if (messages.length === 0) return;
       for (const message of messages) {
         const parsed = parseWireText(message.content);
         if (parsed.kind === 'kick' && parsed.targetId === peerId) {
@@ -2102,7 +2137,7 @@ export function Workspace() {
       if (parsed.kind === 'kick' && parsed.targetId === peerId) {
         if (processedKickNoticesRef.current.has(message.id)) continue;
         processedKickNoticesRef.current.add(message.id);
-        if (server.invite) emitPendingInvite(server.invite);
+        // Do not auto-rejoin — that re-loads history and re-triggers this kick.
         setToast('Вас исключили голосованием. Можно зайти снова по ссылке.');
         leaveServer();
         return;
@@ -2115,6 +2150,11 @@ export function Workspace() {
       if (yes < needed) continue;
       executedKickVotesRef.current.add(message.id);
       if (!sessionRef.current) continue;
+      const alreadyKicked = messages.some((item) => {
+        const notice = parseWireText(item.content);
+        return notice.kind === 'kick' && notice.targetId === parsed.targetId;
+      });
+      if (alreadyKicked) continue;
       if (message.isCurrentUser || peerId <= (message.authorId ?? '')) {
         void sessionRef.current.sendChat(message.channelId || selectedId, encodeKickNotice(parsed.targetId, parsed.targetName));
       }

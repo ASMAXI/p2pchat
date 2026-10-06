@@ -554,6 +554,10 @@ export class RoomHub {
     const room = this.rooms.get(roomId);
     const current = room?.clients.get(peerId);
     if (!room || !current || current.socket !== socket) return;
+    const displayName = current.displayName;
+    const voiceChannels = [...room.voice.entries()]
+      .filter(([, participants]) => participants.has(peerId))
+      .map(([channelId]) => channelId);
     room.clients.delete(peerId);
     for (const [channelId, participants] of room.voice) {
       participants.delete(peerId);
@@ -574,8 +578,19 @@ export class RoomHub {
       }
       room.clients.clear();
       room.voice.clear();
-    } else if (this.alwaysHost && room.state.hostId === peerId) {
-      this.electHost(room);
+    } else {
+      for (const channelId of voiceChannels) {
+        this.broadcast(room, {
+          type: "voice",
+          channelId,
+          peerId,
+          displayName,
+          joined: false,
+        });
+      }
+      if (this.alwaysHost && room.state.hostId === peerId) {
+        this.electHost(room);
+      }
     }
     for (const member of room.state.members) member.online = room.clients.has(member.id);
     this.persist(room);

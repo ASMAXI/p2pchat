@@ -147,6 +147,8 @@ export class VoiceMesh {
   private peerSetup = new Map<string, Promise<void>>();
   /** Serialize SDP/ICE handling per remote peer (avoid parallel setRemoteDescription). */
   private signalQueues = new Map<string, Promise<void>>();
+  /** One empty-mesh recreate per peerId to avoid timeout loops. */
+  private emptyMeshRecreateOnce = new Set<string>();
   /** Same PC as voice: screen is an extra video track + renegotiation (not a second mesh). */
   private screenStream: MediaStream | null = null;
   private screenSharing = false;
@@ -702,8 +704,23 @@ export class VoiceMesh {
     }, 120);
   }
 
-  async addPeer(peerId: string, initiator: boolean): Promise<void> {
+  async addPeer(peerId: string, initiator: boolean, opts?: { force?: boolean }): Promise<void> {
     if (peerId === this.selfId) return;
+    const force = Boolean(opts?.force);
+    if (force) {
+      const existing = this.peers.get(peerId);
+      if (existing && existing.connection.connectionState !== "connected") {
+        debugLog(
+          "voice",
+          "force recreate peer",
+          { peerId: peerId.slice(0, 8), state: existing.connection.connectionState },
+          "warn",
+        );
+        this.removePeer(peerId);
+      } else if (existing?.connection.connectionState === "connected") {
+        return;
+      }
+    }
     const inflight = this.peerSetup.get(peerId);
     if (inflight) {
       await inflight;
@@ -745,6 +762,7 @@ export class VoiceMesh {
     if (existing) {
       const state = existing.connection.connectionState;
       // "new" is normal right after create — recreating orphans the first offer.
+      // Stale "new" recovery goes through addPeer(..., { force: true }) / handleFailed.
       if (state === "connected" || state === "connecting" || state === "new") return;
       debugLog(
         "voice",
@@ -890,6 +908,7 @@ export class VoiceMesh {
         runtime.failTimer = undefined;
         if (runtime.connectTimer) window.clearTimeout(runtime.connectTimer);
         runtime.connectTimer = undefined;
+        this.emptyMeshRecreateOnce.delete(peerId);
         this.options.onPeerStatus?.(peerId, "connected");
         this.emitSignal(peerId, { kind: "voice-state", muted: this.muted, deafened: this.deafened });
         // Delayed getStats so inbound audio bytes can accumulate (chat OK / media silent).
@@ -940,7 +959,23 @@ export class VoiceMesh {
 
   private async handleFailed(peerId: string, runtime: PeerRuntime, initiator: boolean): Promise<void> {
     if (!this.peers.has(peerId)) return;
-    if (!runtime.restartAttempted) {
+    // Stuck in "new" with no remote SDP — iceRestart cannot help; one full recreate.
+    if (
+      !this.emptyMeshRecreateOnce.has(peerId) &&
+      (!runtime.remoteReady || runtime.connection.connectionState === "new")
+    ) {
+      this.emptyMeshRecreateOnce.add(peerId);
+      debugLog(
+        "voice",
+        "recreate after empty mesh",
+        { peerId: peerId.slice(0, 8), initiator, remoteReady: runtime.remoteReady },
+        "warn",
+      );
+      this.removePeer(peerId);
+      await this.addPeer(peerId, this.selfId < peerId, { force: true });
+      return;
+    }
+    if (!runtime.restartAttempted && runtime.remoteReady) {
       runtime.restartAttempted = true;
       debugLog("voice", "iceRestart", { peerId, sawRelay: runtime.sawRelay, initiator }, "warn");
       this.options.onPeerStatus?.(peerId, "connecting", "Переподключаем голос…");
@@ -986,6 +1021,11 @@ export class VoiceMesh {
 
   listLivePeerIds(): string[] {
     return [...this.peers.keys()].filter((peerId) => this.hasLivePeer(peerId));
+  }
+
+  /** All mesh peers, including stuck "new" zombies (for prune / remesh). */
+  listPeerIds(): string[] {
+    return [...this.peers.keys()];
   }
 
   async handleSignal(fromPeerId: string, data: unknown): Promise<void> {
@@ -1133,6 +1173,9 @@ export class VoiceMesh {
       this.options.onScreenShare?.(this.selfId, null);
     }
     for (const peerId of [...this.peers.keys()]) this.removePeer(peerId);
+    this.emptyMeshRecreateOnce.clear();
+    this.peerSetup.clear();
+    this.signalQueues.clear();
     if (this.selfSpeakTimer) window.clearInterval(this.selfSpeakTimer);
     this.selfSpeakTimer = null;
     this.micSource?.disconnect();
