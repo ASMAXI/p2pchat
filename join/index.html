@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Drift — открыть приглашение</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #12161a;
+        --fg: #f5f0df;
+        --muted: #9aa3a8;
+        --accent: #d8fa67;
+        --card: #1c2329;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: #12161a;
+        color: var(--fg);
+      }
+      main {
+        width: 440px;
+        max-width: 100%;
+        background: #1c2329;
+        border: 1px solid #2e3942;
+        border-radius: 20px;
+        padding: 28px 24px;
+      }
+      h1 { margin: 0 0 8px; font-size: 1.55rem; }
+      p { margin: 0 0 14px; color: var(--muted); line-height: 1.5; font-size: 0.95rem; }
+      a.btn, button.btn {
+        display: block;
+        width: 100%;
+        margin-top: 8px;
+        border: 0;
+        border-radius: 12px;
+        padding: 12px 16px;
+        font-weight: 700;
+        text-decoration: none;
+        cursor: pointer;
+        background: var(--accent);
+        color: #12161a;
+        font-size: 1rem;
+        text-align: center;
+      }
+      button.secondary, a.secondary {
+        background: transparent;
+        color: var(--fg);
+        border: 1px solid #3a4650;
+      }
+      code {
+        display: block;
+        margin-top: 14px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: #0d1114;
+        color: #c9d1d9;
+        font-size: 0.72rem;
+        word-break: break-all;
+      }
+      .ok { color: var(--accent); }
+      .err { color: #f28262; }
+      .steps { margin: 12px 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.85rem; line-height: 1.45; }
+      .warn {
+        margin: 12px 0;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid #f28262;
+        background: rgba(242, 130, 98, 0.12);
+        color: #f5f0df;
+        font-size: 0.9rem;
+        line-height: 1.45;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Drift</h1>
+      <p id="status">Нажмите кнопку, чтобы открыть приложение с приглашением.</p>
+      <div id="ieWarn" class="warn" style="display:none">
+        Открыт Internet Explorer / старый браузер — Drift так не запустится.
+        Скопируйте ссылку ниже и откройте её в <strong>Chrome</strong> или <strong>Edge</strong>,
+        либо вставьте приглашение вручную в Drift (вкладка «Войти по ссылке»).
+        В Steam: ПКМ по ссылке → Open Link in Default Browser / Открыть во внешнем браузере.
+      </div>
+      <div id="steamWarn" class="warn" style="display:none">
+        Вы в <strong>браузере Steam Overlay</strong> (Shift+Tab) — он часто показывает
+        «нет подключения к серверу» и не открывает Drift.
+        <br /><br />
+        Закройте оверлей и откройте ссылку во <strong>внешнем Chrome/Edge</strong>:
+        ПКМ по ссылке в чате Steam → «Открыть ссылку в браузере по умолчанию».
+        Либо скопируйте https-ссылку кнопкой ниже и вставьте в браузер / в Drift → «Войти по ссылке».
+      </div>
+      <a class="btn" id="open" href="#">Открыть Drift</a>
+      <button class="btn secondary" id="copy" type="button">Скопировать drift:// ссылку</button>
+      <button class="btn secondary" id="copyHttps" type="button">Скопировать эту https-страницу</button>
+      <ol class="steps">
+        <li>Установите Drift (Windows).</li>
+        <li>Открывайте ссылку в Chrome/Edge, не в Internet Explorer.</li>
+        <li>Если браузер спросит — разрешите открыть приложение.</li>
+      </ol>
+      <code id="deep"></code>
+    </main>
+    <script>
+      (function () {
+        var params = new URLSearchParams(location.search);
+        var payload = (params.get("dz") || params.get("d") || params.get("payload") || "").trim();
+        if (!payload && location.hash) {
+          payload = location.hash.replace(/^#/, "").replace(/^(?:dz|d)=/i, "").trim();
+        }
+        var status = document.getElementById("status");
+        var openBtn = document.getElementById("open");
+        var copyBtn = document.getElementById("copy");
+        var copyHttpsBtn = document.getElementById("copyHttps");
+        var deepEl = document.getElementById("deep");
+        var ieWarn = document.getElementById("ieWarn");
+        var steamWarn = document.getElementById("steamWarn");
+        var ua = navigator.userAgent || "";
+        var isIE = /MSIE|Trident\//.test(ua);
+        var isSteamOverlay =
+          /Valve|Steam|GameOverlay/i.test(ua) ||
+          (typeof window.external !== "undefined" && /Steam/i.test(String(window.external)));
+        var isAncient = isIE || (!window.URLSearchParams && !window.chrome);
+
+        if (!payload) {
+          status.className = "err";
+          status.textContent = "В ссылке нет приглашения. Попросите свежую ссылку из Drift.";
+          openBtn.style.display = "none";
+          copyBtn.style.display = "none";
+          copyHttpsBtn.style.display = "none";
+          return;
+        }
+
+        var deep = "drift://jz/" + decodeURIComponent(payload);
+        deepEl.textContent = deep;
+        openBtn.href = deep;
+
+        if (isIE || isAncient) {
+          ieWarn.style.display = "block";
+          status.className = "err";
+          status.textContent = "Этот браузер не умеет открыть Drift. Используйте Chrome или Edge.";
+        } else if (isSteamOverlay) {
+          steamWarn.style.display = "block";
+          status.className = "err";
+          status.textContent = "Steam Overlay не открывает Drift — используйте внешний браузер.";
+        }
+
+        function launch(fromUser) {
+          if (isIE) {
+            status.className = "err";
+            status.textContent = "IE не поддерживается — скопируйте ссылку и откройте в Edge/Chrome.";
+            return;
+          }
+          if (isSteamOverlay && !fromUser) {
+            return;
+          }
+          if (isSteamOverlay) {
+            status.className = "err";
+            status.textContent = "Из Steam Overlay обычно не работает. Скопируйте https-ссылку и откройте в Chrome/Edge.";
+          }
+          status.className = "ok";
+          status.textContent = fromUser
+            ? "Запускаем Drift… Разрешите открытие приложения, если браузер спросит."
+            : "Пробуем открыть Drift… Если не вышло — нажмите зелёную кнопку.";
+          try {
+            var iframe = document.createElement("iframe");
+            iframe.style.display = "none";
+            iframe.src = deep;
+            document.body.appendChild(iframe);
+            setTimeout(function () {
+              try { document.body.removeChild(iframe); } catch (e) {}
+            }, 1500);
+          } catch (e) {}
+          try { window.location.href = deep; } catch (e2) {}
+        }
+
+        openBtn.onclick = function () { launch(true); };
+
+        function copyText(text, okMsg) {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(
+              function () {
+                status.className = "ok";
+                status.textContent = okMsg;
+              },
+              function () {
+                status.textContent = "Не удалось скопировать — выделите код ниже";
+              },
+            );
+          } else {
+            try {
+              var range = document.createRange();
+              range.selectNodeContents(deepEl);
+              var sel = window.getSelection();
+              sel.removeAllRanges();
+              sel.addRange(range);
+              document.execCommand("copy");
+              status.className = "ok";
+              status.textContent = okMsg;
+            } catch (e) {
+              status.textContent = "Выделите код ниже и скопируйте вручную (Ctrl+C)";
+            }
+          }
+        }
+
+        copyBtn.onclick = function () {
+          copyText(deep, "Ссылка drift:// скопирована — вставьте в Drift → Войти по ссылке");
+        };
+        copyHttpsBtn.onclick = function () {
+          copyText(location.href, "https-ссылка скопирована — откройте её в Chrome/Edge");
+        };
+
+        if (!isIE && !isSteamOverlay) setTimeout(function () { launch(false); }, 250);
+      })();
+    </script>
+  </body>
+</html>
