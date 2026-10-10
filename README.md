@@ -1,5 +1,3 @@
-
-v0.11.10
  # Drift
 
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/ASMAXI/p2pchat)](https://github.com/ASMAXI/p2pchat/releases/latest)
