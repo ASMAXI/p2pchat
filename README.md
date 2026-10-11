@@ -38,7 +38,6 @@ Drift работает иначе — P2P.
 2. Укажите имя и создайте комнату (или войдите по ссылке друга).
 3. Дождитесь туннеля и отправьте приглашение друзьям.
 
-Подробности и советы — в разделе About последнего релиза / в приложении (Диагностика, Настройки).
 <img width="1536" height="1024" alt="ui" src="https://github.com/user-attachments/assets/072610b4-d2d9-4b6c-b8ce-37e5b1fff015" />
 <img width="1086" height="1448" alt="q4r3ku-imHIBMvnPJFdpYM6oiHG3pcP2ZZjUTMkDi1YflXOL2l0rjsD4R3CCmvUHnRuW2HSOuqcT6HkmYD0dtnfA" src="https://github.com/user-attachments/assets/1e2f2f4a-99c5-41a8-a88f-90fc0cea3a74" />
 ## Исходный код
