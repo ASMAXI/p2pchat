@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Drift — комнаты между вашими компьютерами</title>
+    <meta name="description" content="Drift — чат и голос между компьютерами друзей. Без аккаунта. Текст переписки на сервер не записывается." />
+    <link rel="icon" href="favicon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="site.css" />
+  </head>
+  <body>
+    <header class="site-header">
+    <div class="wrap nav">
+      <a class="brand" href="./"><img src="brand/drift-icon.png" alt="" /> Drift</a>
+      <nav class="nav-links">
+        <a href="#how">Как устроено</a>
+        <a href="#faq">Вопросы</a>
+        <a href="privacy/">Конфиденциальность</a>
+        <a class="btn" id="nav-download" href="https://github.com/ASMAXI/p2pchat/releases/latest">Скачать</a>
+      </nav>
+    </div>
+    </header>
+
+    <main>
+      <section class="wrap hero">
+        <div>
+          <p class="kicker">Windows · без аккаунта</p>
+          <h1>Комната живёт у вас, не на чужом сервере.</h1>
+          <p class="lede">
+            Drift — чат и голос между компьютерами друзей. Сообщения шифруются и остаются у участников.
+            Сервер нужен только как мост, когда у провайдера нет прямого пути.
+          </p>
+          <div class="actions" id="download">
+            <a class="btn" id="download-btn" href="https://github.com/ASMAXI/p2pchat/releases/latest">
+              Скачать для Windows
+            </a>
+            <a class="btn ghost" href="#faq">Как это работает</a>
+          </div>
+          <p class="fine" id="download-note">
+            Кнопка открывает последний официальный релиз
+            <a href="https://github.com/ASMAXI/p2pchat/releases/latest">ASMAXI/p2pchat</a>.
+            Установщик — <span id="asset-name">setup.exe</span>.
+          </p>
+        </div>
+        <div class="mark" aria-hidden="true">
+          <div class="orbit"></div>
+          <img src="brand/drift-icon.png" alt="" />
+        </div>
+      </section>
+
+      <section class="wrap" id="how">
+        <div class="panel">
+          <article class="card">
+            <span>01</span>
+            <h2>Комната на вашем ПК</h2>
+            <p>Создатель комнаты держит её у себя. Пока Drift открыт у координатора, друзья могут зайти по ссылке.</p>
+          </article>
+          <article class="card">
+            <span>02</span>
+            <h2>Текст не уезжает на сервер</h2>
+            <p>Сообщения шифруются на устройствах участников. Drift Edge не получает текст переписки и ключ комнаты.</p>
+          </article>
+          <article class="card">
+            <span>03</span>
+            <h2>Серый IP — не помеха</h2>
+            <p>Постоянный белый адрес не нужен. Хост сам выходит на VPS, и друзья подключаются уже к этому мосту.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="faq">
+        <div class="wrap">
+          <h2>Вопросы и ответы</h2>
+          <p class="intro">Коротко, как Drift устроен на самом деле — без схемы «всё лежит в облаке».</p>
+          <div class="faq">
+            <details open>
+              <summary>Как приложение хранит данные?</summary>
+              <p>
+                Переписка, ключ комнаты и список друзей лежат на компьютерах участников. Ключи личности хранятся в защищённом хранилище Windows.
+                На сервер Drift Edge уходят имя, публичный ключ, факт «в сети», адрес моста и зашифрованное приглашение для друга.
+                Текст сообщений туда не записывается. Подробности — в <a href="privacy/">политике конфиденциальности</a>.
+              </p>
+            </details>
+            <details>
+              <summary>Как оно работает без сервера?</summary>
+              <p>
+                Комната координируется одним из участников, обычно тем, кто её создал. Чат и сигналы голоса идут к его Drift, а не в общую базу.
+                Сервер не читает комнату и не является её владельцем. Если координатор закрыл приложение, зайти некуда, пока комнату снова не откроют или координация не перейдёт к другому участнику, который онлайн.
+              </p>
+            </details>
+            <details>
+              <summary>Зачем тогда VPS?</summary>
+              <p>
+                У большинства дома нет белого IP: роутер, CGNAT, провайдер не пускает входящие соединения. Друг не может сам «достучаться» до вашего компьютера.
+                Drift Edge на VPS принимает исходящее соединение хоста и даёт друзьям стабильный адрес вида <code>/hub/…</code>. Это почтовый ящик для соединения, не копия вашей переписки.
+                Тот же VPS может пропустить голос через TURN, если два компьютера не видят друг друга напрямую.
+              </p>
+            </details>
+            <details>
+              <summary>Что, если NAT закрытый или IP постоянно меняется?</summary>
+              <p>
+                Так и задумано. Хосту не нужен постоянный адрес: Drift сам поднимает мост наружу, когда вы открываете комнату.
+                Сменился IP — хост переподключает мост, друзья идут уже на актуальный адрес.
+                Закрытый NAT мешает прямому голосу. Тогда звук идёт через TURN на VPS, а не «в никуда». Чат при этом всё равно идёт через мост к координатору.
+              </p>
+            </details>
+            <details>
+              <summary>Кто видит, что я онлайн?</summary>
+              <p>
+                Это настраивается: никто, только друзья или все. По умолчанию — друзья. Зайти в вашу комнату «потому что вы онлайн» без приглашения нельзя: приглашение зашифровано для конкретных друзей.
+              </p>
+            </details>
+            <details>
+              <summary>Нужен ли аккаунт?</summary>
+              <p>
+                Нет. Имя и ключ создаются на вашем компьютере. Почта и телефон для входа не спрашиваются.
+              </p>
+            </details>
+            <details>
+              <summary>Куда ведёт кнопка «Скачать»?</summary>
+              <p>
+                На последний релиз <a href="https://github.com/ASMAXI/p2pchat/releases/latest">ASMAXI/p2pchat</a> — официальный установщик Windows.
+                Внутри Drift обновление сверяется по SHA-256. Сборки публикует ASMAXI.
+              </p>
+            </details>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="wrap">
+      <span>Drift · ASMAXI</span>
+      <span>
+        <a href="privacy/">Конфиденциальность</a>
+        ·
+        <a href="https://github.com/ASMAXI/p2pchat">GitHub</a>
+      </span>
+    </footer>
+
+    <script>
+      (function () {
+        var fallback = "https://github.com/ASMAXI/p2pchat/releases/latest";
+        var buttons = [document.getElementById("download-btn"), document.getElementById("nav-download")];
+        fetch("https://api.github.com/repos/ASMAXI/p2pchat/releases/latest", {
+          headers: { Accept: "application/vnd.github+json" },
+        })
+          .then(function (response) { return response.ok ? response.json() : null; })
+          .then(function (release) {
+            if (!release || !release.assets) return;
+            var asset = release.assets.find(function (item) { return /setup\.exe$/i.test(item.name); })
+              || release.assets.find(function (item) { return /\.msi$/i.test(item.name); })
+              || release.assets.find(function (item) { return /\.exe$/i.test(item.name); });
+            if (!asset) return;
+            buttons.forEach(function (button) {
+              if (button) button.href = asset.browser_download_url;
+            });
+            var note = document.getElementById("asset-name");
+            if (note) note.textContent = asset.name;
+            var main = document.getElementById("download-btn");
+            if (main && release.tag_name) main.textContent = "Скачать " + release.tag_name;
+          })
+          .catch(function () {
+            buttons.forEach(function (button) {
+              if (button) button.href = fallback;
+            });
+          });
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Drift — конфиденциальность</title>
+    <meta name="description" content="Политика конфиденциальности Drift. Что остаётся на компьютере и что видит Drift Edge." />
+    <link rel="icon" href="../favicon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="../site.css" />
+  </head>
+  <body>
+    <header class="site-header">
+    <div class="wrap nav">
+      <a class="brand" href="../"><img src="../brand/drift-icon.png" alt="" /> Drift</a>
+      <nav class="nav-links">
+        <a href="../#faq">Вопросы</a>
+        <a href="./">Конфиденциальность</a>
+        <a class="btn" href="https://github.com/ASMAXI/p2pchat/releases/latest">Скачать</a>
+      </nav>
+    </div>
+    </header>
+
+    <main class="wrap prose" style="padding-bottom: 64px">
+      <p class="kicker">Privacy policy · Microsoft Store</p>
+      <h1>Конфиденциальность Drift</h1>
+      <p>Дата: 13 октября 2026. Издатель: ASMAXI. Эта страница — политика конфиденциальности приложения Drift. Её адрес можно указать в Microsoft Store.</p>
+      <div class="lang">
+        <a href="#ru" aria-current="true">Русский</a>
+        <a href="#en">English</a>
+      </div>
+
+      <section id="ru">
+        <h2>Кто мы</h2>
+        <p>Drift публикует ASMAXI. Приложение — настольный чат и голос для Windows. Аккаунта Drift нет: личность создаётся на вашем компьютере.</p>
+        <p>Связаться с издателем: <a href="https://github.com/ASMAXI/p2pchat/issues">вопросы на GitHub</a>.</p>
+
+        <h2>Что остаётся на вашем компьютере</h2>
+        <ul>
+          <li>Имя, которое вы сами указали.</li>
+          <li>Ключи личности и ключи комнат — в защищённом хранилище Windows.</li>
+          <li>История сообщений комнаты, список друзей и настройки — в данных приложения на этом ПК.</li>
+        </ul>
+        <p>Удаление Drift стирает данные приложения в AppData и регистрации ссылок drift:// и p2pchat://.</p>
+
+        <h2>Что видит Drift Edge</h2>
+        <p>Drift Edge — сервер ASMAXI, который помогает соединиться, если до компьютера нельзя достучаться напрямую. Он не хозяин комнаты и не читает переписку.</p>
+        <ul>
+          <li>IP-адрес в момент соединения с Edge.</li>
+          <li>Публичный ключ, идентификатор и отображаемое имя.</li>
+          <li>Статус «в сети», по желанию — имя комнаты и адрес моста.</li>
+          <li>Зашифрованное приглашение для друга. Ключ комнаты на Edge в открытом виде не хранится.</li>
+          <li>Служебные данные заявок в друзья и зашифрованные снимки комнаты, которые клиент сам туда положил.</li>
+        </ul>
+
+        <h2>Голос</h2>
+        <p>Голос по возможности идёт напрямую между участниками. Если прямой путь не складывается, медиа проходит через TURN на том же VPS. Разговор на сервере не записывается. TURN видит IP-адреса сторон, пока идёт реле.</p>
+
+        <h2>Обновления</h2>
+        <p>Новая версия скачивается с GitHub (репозиторий ASMAXI/p2pchat) и сверяется по SHA-256. GitHub при скачивании обрабатывает запрос по своим правилам.</p>
+
+        <h2>Чего мы не собираем</h2>
+        <ul>
+          <li>Текст сообщений и содержимое голоса.</li>
+          <li>Почту, телефон и пароль — их у Drift нет.</li>
+          <li>Контакты, фото и геолокацию устройства.</li>
+          <li>Рекламные идентификаторы. В приложении нет рекламы и сторонней аналитики.</li>
+        </ul>
+
+        <h2>Зачем эти данные</h2>
+        <p>Чтобы доставить соединение до комнаты, показать друзьям, что вы в сети (если вы это разрешили), передать зашифрованное приглашение и отдать обновление программы. Других целей нет.</p>
+
+        <h2>Кому передаём</h2>
+        <p>Данные не продаются. Их видят участники вашей комнаты — в объёме, который нужен для чата и голоса. Технически запрос проходит через Drift Edge и, при скачивании обновления, через GitHub. Если вы ставите Drift из Microsoft Store, учётная запись магазина подчиняется политике Microsoft; само приложение в Microsoft содержимое переписки не отправляет.</p>
+
+        <h2>Сколько храним</h2>
+        <p>Присутствие на Edge истекает само и перестаёт считаться «в сети». Зашифрованные снимки комнат на Edge живут ограниченное время (порядка 30 дней) и не содержат текста в открытом виде. На вашем ПК данные лежат, пока вы их не удалите или не удалите Drift.</p>
+
+        <h2>Ваш выбор</h2>
+        <ul>
+          <li>Видимость в сети: никто, только друзья или все. По умолчанию — друзья.</li>
+          <li>Автозапуск выключен, пока вы сами не согласитесь.</li>
+          <li>Можно не пользоваться приложением и удалить его вместе с локальными данными.</li>
+        </ul>
+
+        <h2>Дети</h2>
+        <p>Drift не предназначен для детей младше 13 лет, и мы сознательно не собираем данные детей.</p>
+
+        <h2>Изменения</h2>
+        <p>Если набор данных изменится, эта страница обновится, и дата вверху сменится. Для Microsoft Store действует опубликованная здесь версия.</p>
+      </section>
+
+      <section id="en">
+        <h2>Who we are</h2>
+        <p>Drift is published by ASMAXI. It is a Windows desktop chat and voice app. There is no Drift account: your identity is created on your computer.</p>
+        <p>Contact: <a href="https://github.com/ASMAXI/p2pchat/issues">GitHub issues</a>.</p>
+
+        <h2>What stays on your computer</h2>
+        <ul>
+          <li>The display name you chose.</li>
+          <li>Identity keys and room keys, in the Windows credential store.</li>
+          <li>Room message history, your friend list, and settings, in the app data on that PC.</li>
+        </ul>
+        <p>Uninstalling Drift removes its AppData and the drift:// and p2pchat:// link registrations.</p>
+
+        <h2>What Drift Edge can see</h2>
+        <p>Drift Edge is a server run by ASMAXI. It helps computers connect when a direct path is not possible. It does not own the room and does not read the conversation.</p>
+        <ul>
+          <li>Your IP address while you are connected to Edge.</li>
+          <li>Your public key, peer id, and display name.</li>
+          <li>Online status and, if you are in a room, the room name and bridge address.</li>
+          <li>A sealed friend invite. The room key is not stored on Edge in the clear.</li>
+          <li>Friend-request metadata and encrypted room snapshots the client chooses to upload.</li>
+        </ul>
+
+        <h2>Voice</h2>
+        <p>Voice is peer-to-peer when the network allows it. Otherwise media is relayed through TURN on the same VPS. Calls are not recorded. TURN sees the IP addresses of the peers while it is relaying.</p>
+
+        <h2>Updates</h2>
+        <p>Updates are downloaded from GitHub (ASMAXI/p2pchat) and checked with SHA-256. GitHub processes that download under its own policy.</p>
+
+        <h2>What we do not collect</h2>
+        <ul>
+          <li>Message text or voice contents.</li>
+          <li>Email, phone number, or a password. Drift has none of these.</li>
+          <li>Your contacts, photos, or device location.</li>
+          <li>Advertising identifiers. The app has no ads and no third-party analytics.</li>
+        </ul>
+
+        <h2>Why we process this</h2>
+        <p>To connect you to a room, to show friends that you are online when you allow it, to deliver a sealed invite, and to ship app updates. Nothing else.</p>
+
+        <h2>Who else receives it</h2>
+        <p>We do not sell data. People in your room see what the chat and voice session needs. Traffic passes through Drift Edge and, for updates, through GitHub. If you install Drift from the Microsoft Store, the Store account is covered by Microsoft’s own policy. The app does not send conversation contents to Microsoft.</p>
+
+        <h2>How long we keep it</h2>
+        <p>Presence on Edge expires and then you are no longer shown as online. Encrypted room snapshots on Edge are kept for a limited time (about 30 days) and do not contain plaintext. On your PC, data stays until you delete it or uninstall Drift.</p>
+
+        <h2>Your choices</h2>
+        <ul>
+          <li>Online visibility: nobody, friends only, or everyone. The default is friends.</li>
+          <li>Start with Windows is off until you agree.</li>
+          <li>You can stop using Drift and uninstall it, which removes local data.</li>
+        </ul>
+
+        <h2>Children</h2>
+        <p>Drift is not directed at children under 13, and we do not knowingly collect their data.</p>
+
+        <h2>Changes</h2>
+        <p>If the data we handle changes, this page and the date above will change. The Microsoft Store privacy policy URL should point at this page.</p>
+      </section>
+    </main>
+
+    <footer class="wrap">
+      <span>Drift · ASMAXI</span>
+      <span>
+        <a href="../">На главную</a>
+        ·
+        <a href="https://github.com/ASMAXI/p2pchat">GitHub</a>
+      </span>
+    </footer>
+  </body>
+</html>
