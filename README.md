@@ -25,7 +25,7 @@ Drift работает иначе — P2P.
 Создатель — **ASMAXI**.
 
 ## Скачать
-
+Установщик для MacOS(dmg) находится на странице релизов в Drift v0.12.11 BETA
 Установщики Windows — на странице релизов:
 
 **https://github.com/ASMAXI/p2pchat/releases**
