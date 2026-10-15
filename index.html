@@ -27,7 +27,7 @@
     <main>
       <section class="wrap hero">
         <div>
-          <p class="kicker">Windows · без аккаунта</p>
+          <p class="kicker">Windows и macOS · без аккаунта</p>
           <h1>Комната живёт у вас, не на чужом сервере.</h1>
           <p class="lede">
             Drift — чат и голос между компьютерами друзей. Сообщения шифруются и остаются у участников.
@@ -37,12 +37,19 @@
             <a class="btn" id="download-btn" href="https://github.com/ASMAXI/p2pchat/releases/latest">
               Скачать для Windows
             </a>
+            <a class="btn" id="download-mac" href="https://github.com/ASMAXI/p2pchat/releases/download/v0.12.11/Drift_0.12.11_aarch64.dmg">
+              Скачать для macOS
+            </a>
             <a class="btn ghost" href="#faq">Как это работает</a>
           </div>
           <p class="fine" id="download-note">
-            Кнопка открывает последний официальный релиз
-            <a href="https://github.com/ASMAXI/p2pchat/releases/latest">ASMAXI/p2pchat</a>.
-            Установщик — <span id="asset-name">setup.exe</span>.
+            Windows — последний релиз
+            <a href="https://github.com/ASMAXI/p2pchat/releases/latest">ASMAXI/p2pchat</a>,
+            файл <span id="asset-name">setup.exe</span>.
+            macOS — сборка
+            <a href="https://github.com/ASMAXI/p2pchat/releases/tag/v0.12.11">v0.12.11</a>
+            для Mac с чипом Apple (M1 и новее),
+            файл <span id="mac-asset-name">Drift_0.12.11_aarch64.dmg</span>.
           </p>
         </div>
         <div class="mark" aria-hidden="true">
@@ -120,9 +127,10 @@
               </p>
             </details>
             <details>
-              <summary>Куда ведёт кнопка «Скачать»?</summary>
+              <summary>Куда ведут кнопки «Скачать»?</summary>
               <p>
-                На последний релиз <a href="https://github.com/ASMAXI/p2pchat/releases/latest">ASMAXI/p2pchat</a> — официальный установщик Windows.
+                Windows — последний релиз <a href="https://github.com/ASMAXI/p2pchat/releases/latest">ASMAXI/p2pchat</a>, официальный установщик.
+                macOS — отдельный файл DMG из релиза <a href="https://github.com/ASMAXI/p2pchat/releases/tag/v0.12.11">v0.12.11</a>, для Mac с чипом Apple (M1 и новее). В более новых релизах этой сборки пока нет.
                 Внутри Drift обновление сверяется по SHA-256. Сборки публикует ASMAXI.
               </p>
             </details>
@@ -160,12 +168,30 @@
             var note = document.getElementById("asset-name");
             if (note) note.textContent = asset.name;
             var main = document.getElementById("download-btn");
-            if (main && release.tag_name) main.textContent = "Скачать " + release.tag_name;
+            if (main && release.tag_name) main.textContent = "Скачать Windows " + release.tag_name;
           })
           .catch(function () {
             buttons.forEach(function (button) {
               if (button) button.href = fallback;
             });
+          });
+
+        var macFallback = "https://github.com/ASMAXI/p2pchat/releases/download/v0.12.11/Drift_0.12.11_aarch64.dmg";
+        var macButton = document.getElementById("download-mac");
+        fetch("https://api.github.com/repos/ASMAXI/p2pchat/releases/tags/v0.12.11", {
+          headers: { Accept: "application/vnd.github+json" },
+        })
+          .then(function (response) { return response.ok ? response.json() : null; })
+          .then(function (release) {
+            if (!release || !release.assets || !macButton) return;
+            var asset = release.assets.find(function (item) { return /\.dmg$/i.test(item.name); });
+            if (!asset) return;
+            macButton.href = asset.browser_download_url;
+            var note = document.getElementById("mac-asset-name");
+            if (note) note.textContent = asset.name;
+          })
+          .catch(function () {
+            if (macButton) macButton.href = macFallback;
           });
       })();
     </script>
