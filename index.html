@@ -37,7 +37,7 @@
             <a class="btn" id="download-btn" href="https://github.com/ASMAXI/p2pchat/releases/latest">
               Скачать для Windows
             </a>
-            <a class="btn" id="download-mac" href="https://github.com/ASMAXI/p2pchat/releases/download/v0.12.11/Drift_0.12.11_aarch64.dmg">
+            <a class="btn" id="download-mac" href="https://github.com/ASMAXI/p2pchat/releases/download/v0.12.21/Drift_0.12.21_aarch64.dmg">
               Скачать для macOS
             </a>
             <a class="btn ghost" href="#faq">Как это работает</a>
@@ -47,9 +47,9 @@
             <a href="https://github.com/ASMAXI/p2pchat/releases/latest">ASMAXI/p2pchat</a>,
             файл <span id="asset-name">setup.exe</span>.
             macOS — сборка
-            <a href="https://github.com/ASMAXI/p2pchat/releases/tag/v0.12.11">v0.12.11</a>
+            <a href="https://github.com/ASMAXI/p2pchat/releases/tag/v0.12.21">v0.12.21</a>
             для Mac с чипом Apple (M1 и новее),
-            файл <span id="mac-asset-name">Drift_0.12.11_aarch64.dmg</span>.
+            файл <span id="mac-asset-name">Drift_0.12.21_aarch64.dmg</span>.
           </p>
         </div>
         <div class="mark" aria-hidden="true">
@@ -130,7 +130,7 @@
               <summary>Куда ведут кнопки «Скачать»?</summary>
               <p>
                 Windows — последний релиз <a href="https://github.com/ASMAXI/p2pchat/releases/latest">ASMAXI/p2pchat</a>, официальный установщик.
-                macOS — отдельный файл DMG из релиза <a href="https://github.com/ASMAXI/p2pchat/releases/tag/v0.12.11">v0.12.11</a>, для Mac с чипом Apple (M1 и новее). В более новых релизах этой сборки пока нет.
+                macOS — файл DMG из релиза <a href="https://github.com/ASMAXI/p2pchat/releases/tag/v0.12.21">v0.12.21</a>, для Mac с чипом Apple (M1 и новее).
                 Внутри Drift обновление сверяется по SHA-256. Сборки публикует ASMAXI.
               </p>
             </details>
@@ -176,9 +176,9 @@
             });
           });
 
-        var macFallback = "https://github.com/ASMAXI/p2pchat/releases/download/v0.12.11/Drift_0.12.11_aarch64.dmg";
+        var macFallback = "https://github.com/ASMAXI/p2pchat/releases/download/v0.12.21/Drift_0.12.21_aarch64.dmg";
         var macButton = document.getElementById("download-mac");
-        fetch("https://api.github.com/repos/ASMAXI/p2pchat/releases/tags/v0.12.11", {
+        fetch("https://api.github.com/repos/ASMAXI/p2pchat/releases/tags/v0.12.21", {
           headers: { Accept: "application/vnd.github+json" },
         })
           .then(function (response) { return response.ok ? response.json() : null; })
