@@ -3,6 +3,7 @@
 
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/ASMAXI/p2pchat)](https://github.com/ASMAXI/p2pchat/releases/latest)
 
+Официальный сайт https://privatedrift.ru
 
 Drift — голосовой чат без «облака»
 
