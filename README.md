@@ -4,7 +4,7 @@
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/ASMAXI/p2pchat)](https://github.com/ASMAXI/p2pchat/releases/latest)
 
 Официальный сайт https://privatedrift.ru
-
+ВНИМАНИЕ!!! Все новые сборки исключительно с официального сайта https://privatedrift.ru - На GutHub  ОСТАЮТСЯ ТОЛЬКО СТАРЫЕ
 Drift — голосовой чат без «облака»
 
 Обычные приложения (Steam Chat, Discord и т.п.) гонят голос через свои сервера: ты → их сервер → друг. Даже если вы в одной комнате / одной сети.
