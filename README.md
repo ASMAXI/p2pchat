@@ -32,8 +32,8 @@ Drift работает иначе — P2P.
 ## Скачать
 - Установщик для MacOS(dmg) находится на странице релизов 
 - Установщики Windows — на странице релизов:
-
-**https://github.com/ASMAXI/p2pchat/releases**
+**с официального сайта https://privatedrift.ru**
+- старые релизы - **https://github.com/ASMAXI/p2pchat/releases**
 
 В приложении: **Настройки → Проверить обновления**.
 
