@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Drift — открыть приглашение</title>
+    <meta name="drift-join" content="1" />
     <style>
       :root {
         color-scheme: dark;
@@ -169,15 +170,8 @@
           status.textContent = fromUser
             ? "Запускаем Drift… Разрешите открытие приложения, если браузер спросит."
             : "Пробуем открыть Drift… Если не вышло — нажмите зелёную кнопку.";
-          try {
-            var iframe = document.createElement("iframe");
-            iframe.style.display = "none";
-            iframe.src = deep;
-            document.body.appendChild(iframe);
-            setTimeout(function () {
-              try { document.body.removeChild(iframe); } catch (e) {}
-            }, 1500);
-          } catch (e) {}
+          // One launch. A hidden iframe plus this navigation started Drift twice,
+          // and the second copy closed the window that was already open.
           try { window.location.href = deep; } catch (e2) {}
         }
 
@@ -217,7 +211,39 @@
           copyText(location.href, "https-ссылка скопирована — откройте её в Chrome/Edge");
         };
 
-        if (!isIE && !isSteamOverlay) setTimeout(function () { launch(false); }, 250);
+        function boot() {
+          if (!isIE && !isSteamOverlay) setTimeout(function () { launch(false); }, 250);
+        }
+
+        // GitHub Pages is the backup. Always try the site first, including old
+        // links with ?direct=1. Reading the page body needs CORS and used to
+        // fail while the site itself was fine, so this page then opened Drift
+        // on its own. A no-cors check only asks whether the site answers.
+        var onGithub = /github\.io$/i.test(location.hostname);
+        if (isIE || isSteamOverlay) {
+          // The warning above stays. Do not hop to the site or launch Drift.
+        } else if (!onGithub) {
+          boot();
+        } else {
+          var moved = false;
+          var hash = /^(?:#dz=|#d=)/i.test(location.hash) ? location.hash : "#dz=" + encodeURIComponent(payload);
+          var giveUp = setTimeout(function () {
+            if (moved) return;
+            moved = true;
+            boot();
+          }, 2500);
+          fetch("https://privatedrift.ru/join/", { method: "GET", mode: "no-cors", cache: "no-store" }).then(function () {
+            if (moved) return;
+            moved = true;
+            clearTimeout(giveUp);
+            location.replace("https://privatedrift.ru/join/" + hash);
+          }).catch(function () {
+            if (moved) return;
+            moved = true;
+            clearTimeout(giveUp);
+            boot();
+          });
+        }
       })();
     </script>
   </body>
