@@ -4,7 +4,7 @@
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/ASMAXI/p2pchat)](https://github.com/ASMAXI/p2pchat/releases/latest)
 
 Официальный сайт https://privatedrift.ru
-Сайт и VPS временно недоступны - все новости в https://vk.ru/club242552705. Приложение работаем временно по резервному каналу пока BEGET введут работы по восстановлению. Все данный по резерву в вк сообщетсве
+все новости в https://vk.ru/club242552705. 
 
 
 - ВНИМАНИЕ!!! Все новые сборки исключительно с официального сайта https://privatedrift.ru - На GutHub  ОСТАЮТСЯ ТОЛЬКО СТАРЫЕ
